@@ -52,7 +52,8 @@ firmware and get stock centering again.
 | `i` | Motor info |
 | `w` `e` `x` | Gain sweep / magnitude sweep / direction test |
 | `g` `m` `d` `f` | Set gain / magnitude / duration / frequency |
-| `c` | Cycle firmware condition sign convention (firmware ignores it — diagnostic only) |
+| `b` | Show the firmware effects that don't work (hidden by default; they still run if typed) |
+| `c` | Force one condition sign convention on all effects instead of the measured per-effect one |
 | `r` | Release the motor, restore firmware centering |
 | `s` | Stop all effects |
 | `q` | Quit |
@@ -64,7 +65,24 @@ firmware and get stock centering again.
 | Constant force | Works — direction and magnitude both honoured |
 | Ramp force | Works — must sweep through zero to be felt |
 | Sine / square / triangle / sawtooth | Silent on firmware — loads, runs, no torque. Sine and square are synthesised instead (`y` / `z`) |
-| Spring / damper / friction / inertia | **Inverted** on firmware — adds force to your motion instead of resisting it. All four work as software effects (`1s`–`4s`) |
+| Spring | Works — pulls back to centre, and does so on either sign convention |
+| Damper | Works — resistance scales with turning speed |
+| Friction | Works, but **only on a flipped sign**. On the documented convention it drives the wheel to full lock on its own |
+| Inertia | Produces force, but it feels like cogging rather than resistance to acceleration. Safe — it never runs away — but not usable as inertia |
+
+**The sign convention is not the same for every condition effect.** Damper needs the
+documented direction and friction needs it flipped, so no single global setting is correct
+for both. The tool applies a measured per-effect sign automatically; `c` forces one
+convention across all four, and exists only to re-run that sweep if the firmware changes.
+
+These verdicts come from logged position traces, not from how the wheel felt. The test:
+while an effect holds the motor the wheel parks wherever it is left, so once your hands come
+off, any sustained motion is the effect's doing — a passive effect ends at rest, an inverted
+one drives to the end stop and is still moving seconds later. Each condition run prints a
+`MOTION` summary and writes a downsampled trace to the log, so any verdict here can be
+re-checked without re-running the hardware.
+
+All four also exist as software effects (`1s`–`4s`), which are unaffected by any of this.
 
 The software effects hold one `ConstantForceEffect` open and rewrite its magnitude ~80×/sec
 from the wheel's own position reading — the same technique games use to drive hardware that

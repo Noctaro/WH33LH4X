@@ -482,17 +482,28 @@ def _periodic(kind, magnitude, duration, freq, label):
     return e, "%s at %.2f Hz" % (label, freq)
 
 
-# Sign convention for condition effects -- switchable at runtime with the "c" key.
+# Sign convention for condition effects.
 #
-# The WGI docs say positive coefficients RESIST (a centring spring, a drag). On this
-# wheel's firmware the docs convention was observed to do the opposite: Friction
-# ACCELERATED the wheel in the direction it was already turning, which is the runaway
-# positive-feedback behaviour the docs attribute to NEGATIVE coefficients. So the sign is
-# evidently inverted somewhere between the API and this firmware.
+# The WGI docs say positive coefficients RESIST (a centring spring, a drag). This firmware
+# does not follow one convention for all four kinds, which is the whole reason this table
+# exists per effect rather than globally.
 #
-# Two independent ways to flip it -- flipping the direction vector and flipping the
-# coefficients should be equivalent, but "should" has not survived contact with this
-# device yet, so both are offered. Flipping both cancels out and is back to A.
+# MEASURED 2026-08-23, hands-off release tests logged to logs/wgi_probe_20260823_00*.log.
+# The test: with the motor held the wheel parks wherever it is left, so after the hand
+# comes off, any sustained motion is the effect's doing. A passive effect ends at rest; an
+# inverted one drives to the end stop and is still moving seconds later.
+#
+#            sign A                          sign B
+#   Spring   centres                         centres          -> insensitive to the flip
+#   Damper   passive, resists speed          RUNAWAY to stop  -> needs A
+#   Friction RUNAWAY to stop                 passive          -> needs B
+#   Inertia  passive                         passive          -> never runs away either way
+#
+# Damper and friction need OPPOSITE signs, so no global setting can be correct for both --
+# which is what the old single "c" toggle assumed. Spring centring on both signs is
+# genuinely odd; the likeliest explanation is that the firmware derives spring force from
+# the displacement sign internally and ignores the supplied direction vector for that kind.
+# Not chased further: it works either way, which is all that is required of it.
 #
 #   name, direction.x, positiveCoefficient, negativeCoefficient
 CONDITION_SIGNS = [
@@ -500,7 +511,15 @@ CONDITION_SIGNS = [
     ("B  flip dir  dir -X, coeff +1/+1", -1.0, 1.0, 1.0),
     ("C  flip coef dir +X, coeff -1/-1", 1.0, -1.0, -1.0),
 ]
-CONDITION_SIGN = 0
+# Per-effect, from the measurements above. "c" overrides every kind at once for
+# experiments; None means "use the measured default for this kind".
+CONDITION_SIGN_FOR = {
+    ff.ConditionForceEffectKind.SPRING: 0,    # A -- centres on either, keep the documented one
+    ff.ConditionForceEffectKind.DAMPER: 0,    # A -- B drives it into the end stop
+    ff.ConditionForceEffectKind.INERTIA: 0,   # A -- passive on both, no reason to differ
+    ff.ConditionForceEffectKind.FRICTION: 1,  # B -- A drives it into the end stop
+}
+CONDITION_SIGN = None
 
 # Broken firmware effects are hidden from the menu by default -- see EFFECTS below.
 SHOW_BROKEN = False
@@ -528,7 +547,8 @@ def _condition(kind, magnitude, label):
     #
     # The max magnitudes stay POSITIVE in every convention -- that is not a sign choice,
     # the runtime rejects a negative one with E_INVALIDARG regardless.
-    sign_name, dir_x, pos_c, neg_c = CONDITION_SIGNS[CONDITION_SIGN]
+    which = CONDITION_SIGN if CONDITION_SIGN is not None else CONDITION_SIGN_FOR.get(kind, 0)
+    sign_name, dir_x, pos_c, neg_c = CONDITION_SIGNS[which]
     e.set_parameters(Vector3(dir_x, 0.0, 0.0),
                      pos_c, neg_c,
                      magnitude, magnitude,
@@ -571,21 +591,27 @@ EFFECTS = [
     ("Sawtooth down", lambda m, d, f: _periodic(ff.PeriodicForceEffectKind.SAWTOOTH_WAVE_DOWN, m, d, f,
                                                 "snap up then ramp down"), "wave", "silent"),
     ("Spring", lambda m, d, f: _condition(ff.ConditionForceEffectKind.SPRING, m,
-                                          "pulls back to centre"), "condition", "inverted"),
+                                          "pulls back to centre"), "condition", "works"),
     ("Damper", lambda m, d, f: _condition(ff.ConditionForceEffectKind.DAMPER, m,
-                                          "resists speed -- turn fast vs slow"), "condition", "inverted"),
+                                          "resists speed -- turn fast vs slow"), "condition", "works"),
     ("Inertia", lambda m, d, f: _condition(ff.ConditionForceEffectKind.INERTIA, m,
                                            "resists acceleration -- heavy to start turning"),
-     "condition", "inverted"),
+     "condition", "coarse"),
     ("Friction", lambda m, d, f: _condition(ff.ConditionForceEffectKind.FRICTION, m,
                                             "constant drag whenever the wheel moves"),
-     "condition", "inverted"),
+     "condition", "works"),
 ]
 
 VERDICT_TAGS = {
     "works": "",
     "silent": "  [silent on this firmware]",
     "inverted": "  [INVERTED -- adds to your motion]",
+    # Produces force, but not the force it advertises. Passive on both signs -- it never
+    # runs away -- and it is definitely doing something: held against a silent effect that
+    # occupies the motor identically, only this one feels notchy. But cogging is not
+    # acceleration resistance, which should be a smooth weight at the start of a turn and
+    # free once moving. Safe to run, not usable as inertia.
+    "coarse": "  [produces force, but notchy -- not acceleration resistance]",
 }
 
 HOW_TO_FEEL = {
@@ -629,6 +655,170 @@ class Session:
             return self.wheel.get_current_reading().wheel
         except Exception:
             return None
+
+    # Below this speed (reading-units/sec) the wheel counts as stationary. At rest the
+    # reading dithers by a bit or two and the derivative of that noise is meaningless.
+    MOVING_SPEED = 0.05
+
+    def report_motion(self, samples, label, release_at):
+        """
+        Turn a position trace into evidence about what an effect did.
+
+        The firmware's commanded force cannot be read back, so every number here comes from
+        position over time. The discriminator, which needs no force sensing:
+
+            A correct spring, damper, friction or inertia is PASSIVE. It removes energy, or
+            returns the wheel toward centre. An inverted one INJECTS energy.
+
+        That test is only valid once the hand is off. While a hand drives the wheel the
+        motion is whatever the hand imposes; a steady back-and-forth accelerates half the
+        time and decelerates half the time whatever the motor is doing. So the active phase
+        is reported for context only, and the verdict comes from the released phase.
+        """
+        if len(samples) < 10:
+            print("  (no usable position trace -- %d samples)" % len(samples))
+            log.event("motion.none", effect=label, samples=len(samples))
+            return
+
+        active = [(t, p) for t, p in samples if t < release_at]
+        freed = [(t, p) for t, p in samples if t >= release_at]
+
+        print()
+        print("  MOTION  %d samples over %.1fs (released at %.1fs)"
+              % (len(samples), samples[-1][0], release_at))
+        if active:
+            span = max(p for _t, p in active) - min(p for _t, p in active)
+            print("          active phase : travel %.3f, peak speed %.2f/s"
+                  % (span, self._peak_speed(active)))
+
+        if len(freed) < 10:
+            print("          released phase too short to judge -- no verdict")
+            log.event("motion.summary", effect=label, verdict="no-release-phase",
+                      samples=len(samples))
+            return
+
+        # Anchor on where the hand ACTUALLY left the wheel, not on where the prompt was
+        # printed. Nobody releases on zero reaction time, and the prompt can land mid-swing:
+        # measured once at +0.028 while the real release was 0.4s later at +0.245, which
+        # turned a textbook centring trace into "coasted". The release is the last outward
+        # extreme -- after it, nothing pushes the wheel outward again unless the effect does.
+        # Only the first half is searched, so there is always motion left to observe.
+        whole_freed = freed
+        head = freed[:max(2, len(freed) // 2)]
+        anchor = max(range(len(head)), key=lambda i: abs(head[i][1]))
+        freed = freed[anchor:]
+
+        start_pos, end_pos = freed[0][1], freed[-1][1]
+        drift = abs(end_pos) - abs(start_pos)
+        peak = self._peak_speed(freed)
+        end_speed = self._peak_speed(freed[-max(5, len(freed) // 4):])
+
+        print("          hands off at %+.3f (t=%.1fs) -> ended %+.3f  (%+.3f toward the"
+              " stop)" % (start_pos, freed[0][0], end_pos, drift))
+        print("          peak speed after release %.2f/s, final %.2f/s" % (peak, end_speed))
+
+        # Coast numbers, measured over the WHOLE released window rather than from the
+        # anchor. These are what compare a dissipative effect against a silent one: run the
+        # same flick under a silent effect (a periodic -- it holds the motor but produces no
+        # torque here) and under the damper. Shorter coast under the damper is the damper
+        # working, measured rather than felt. The anchor is deliberately not used: on a
+        # flick the wheel is released while moving fast and travels further out afterwards,
+        # so the furthest point is the END of the coast, not the start of it.
+        coast_travel = max(p for _t, p in whole_freed) - min(p for _t, p in whole_freed)
+        stopped_at = None
+        for (t0, p0), (t1, p1) in zip(whole_freed, whole_freed[1:]):
+            dt = t1 - t0
+            if dt > 0 and abs((p1 - p0) / dt) > self.MOVING_SPEED:
+                stopped_at = t1 - whole_freed[0][0]
+        print("          coast: travelled %.3f, still moving %s"
+              % (coast_travel,
+                 "%.2fs after release" % stopped_at if stopped_at else "not at all"))
+
+        # Withhold the verdict when the released window was clearly not hands-off.
+        #
+        # This firmware drives a free wheel at up to about 2 reading-units/sec at the gains
+        # used here. Anything far above that is a hand, or a reading discontinuity. Measured:
+        # a sine effect -- silent, incapable of moving anything -- scored "CENTRING" at a
+        # peak of 20/s purely because the flick landed inside the window the tool believed
+        # was unattended. A verdict from a contaminated window is worse than no verdict,
+        # because it looks like evidence.
+        HAND_SPEED = 5.0
+        if peak > HAND_SPEED:
+            print("          >>> NO VERDICT -- peak %.1f/s is far above what this firmware"
+                  % peak)
+            print("              can drive on its own. The wheel was still being handled")
+            print("              (or the reading jumped). Hands OFF before the prompt.")
+            log.event("motion.summary", effect=label, verdict="contaminated",
+                      peak_speed=round(peak, 3), coast=round(coast_travel, 3))
+            return
+
+        # Interpretation, in the order the cases can be told apart.
+        #
+        # Runaway is decisive: nothing passive can drive a released wheel outward at
+        # sustained speed. Centring is equally decisive the other way, but only a spring
+        # should do it -- a damper, friction or inertia that pulls to centre is a spring
+        # wearing the wrong name. Everything else is "stayed put", which is correct for the
+        # three dissipative effects and indistinguishable from doing nothing at all -- the
+        # released phase cannot separate a working damper from a silent one, only the
+        # active-phase feel can.
+        # Still moving at the end is the decisive test, and it beats drift.
+        #
+        # A passive effect dissipates: whatever the wheel was doing when the hand left, it
+        # ends at rest. Only an effect injecting energy keeps it going indefinitely. Drift
+        # was the original signal and it is unreliable -- measured on friction, the wheel
+        # ran to full lock, bounced off the mechanical stop and came back across centre, so
+        # the displacement was NEGATIVE and scored "centring" on a textbook runaway.
+        # Hitting the stop is the same story: nothing passive reaches it from a standstill.
+        # "Reached the end stop" has to mean DROVE there, not "was already parked there".
+        # A wheel left against the stop at the end of the active phase sits at 0.999 for the
+        # whole released window; without the travel guard that scored as a runaway on a sine
+        # effect, which cannot move anything at all. Requiring real travel first also costs
+        # nothing on a true runaway -- friction on sign A covered 1.127 getting there.
+        hit_stop = (coast_travel > 0.25
+                    and max(abs(p) for _t, p in whole_freed) >= 0.98)
+        if end_speed > self.MOVING_SPEED or hit_stop:
+            verdict = "runaway"
+            print("          >>> RUNAWAY -- %s"
+                  % ("drove itself into the end stop." if hit_stop
+                     else "still moving %.2f/s when the window ended." % end_speed))
+            print("              Nothing passive can do this. The sign is INVERTED.")
+        elif drift < -0.05:
+            verdict = "centring"
+            print("          >>> CENTRING -- returned toward centre on its own.")
+            print("              Correct for a spring; wrong for damper/friction/inertia.")
+        elif peak < self.MOVING_SPEED:
+            verdict = "held"
+            print("          >>> HELD STILL -- no self-driven motion.")
+            print("              Correct for damper/friction/inertia; a spring should have")
+            print("              pulled back, so for a spring this means silent or dead.")
+        else:
+            verdict = "coasted"
+            print("          >>> COASTED to a stop without returning to centre.")
+            print("              Consistent with a dissipative effect, or with none at all.")
+
+        if abs(start_pos) < 0.10:
+            print("          NOTE: released near centre (%+.3f) -- a spring has almost"
+                  " nothing" % start_pos)
+            print("                to pull against there. Release further out to be sure.")
+
+        log.event("motion.summary", effect=label, verdict=verdict,
+                  samples=len(samples), released_at=round(release_at, 2),
+                  start=round(start_pos, 3), end=round(end_pos, 3),
+                  drift=round(drift, 3), peak_speed=round(peak, 3),
+                  end_speed=round(end_speed, 3), coast=round(coast_travel, 3),
+                  moving_for=round(stopped_at, 2) if stopped_at else 0.0)
+        # Downsample to ~10 Hz so the trace is re-checkable without flooding the log.
+        trace = ["%.2f:%+.3f" % (t, p) for i, (t, p) in enumerate(samples) if i % 5 == 0]
+        log.event("motion.trace", effect=label, points=" ".join(trace))
+
+    @staticmethod
+    def _peak_speed(points):
+        peak = 0.0
+        for (t0, p0), (t1, p1) in zip(points, points[1:]):
+            dt = t1 - t0
+            if dt > 0:
+                peak = max(peak, abs((p1 - p0) / dt))
+        return peak
 
     def sync(self, coro):
         return self.loop.run_until_complete(coro)
@@ -729,23 +919,59 @@ class Session:
             except Exception:
                 pass
 
-            for remaining in range(int(duration), 0, -1):
-                # Keep re-asserting foreground, and show whether we actually hold it.
-                self.grab_foreground()
-                fg = self.is_foreground()
-                flag = "" if fg is None else ("  [foreground OK]" if fg
-                                              else "  [!! NOT foreground - no force !!]")
-                state = ""
-                try:
-                    state = "  state=%s" % STATE_NAMES.get(effect.state, effect.state)
-                except Exception:
-                    pass
-                print("    %2ds remaining%s%s" % (remaining, state, flag), flush=True)
-                time.sleep(1.0)
-            time.sleep(duration - int(duration))
+            # Sample the wheel while the effect holds the motor.
+            #
+            # Without this the log records only that the effect ran, which is why the
+            # condition verdicts had to be judged by feel -- and feel is how the wrong
+            # verdicts got recorded in the first place. Position over time is the only
+            # evidence available: the force the firmware commands cannot be read back, but
+            # a correct spring, damper, friction or inertia can only remove energy or pull
+            # toward centre. None of them can make the wheel speed up on its own, so
+            # "does it accelerate the hand" is answerable from position alone.
+            # The hold is split into an ACTIVE phase and a RELEASED phase.
+            #
+            # Only the released phase carries a verdict. While a hand is driving the wheel
+            # the motion is whatever the hand imposes -- a steady back-and-forth spends half
+            # its ticks accelerating and half decelerating no matter what the motor does, so
+            # no statistic taken over that phase can separate a working effect from an
+            # inverted one. With the hand off, the wheel moves only under the effect, and
+            # the question becomes trivial: passive effects cannot speed it up.
+            release_at = max(1.5, duration - 3.0)
+            released = False
+            samples = []
+            start = time.monotonic()
+            end = start + duration
+            next_tick = start + 1.0
+            remaining = int(duration)
+            while time.monotonic() < end:
+                now = time.monotonic()
+                pos = self.read_wheel()
+                if pos is not None:
+                    samples.append((now - start, pos))
+                if not released and now - start >= release_at:
+                    released = True
+                    print()
+                    print("  >>>>>>  LET GO NOW -- hands OFF until FORCE OFF  <<<<<<",
+                          flush=True)
+                if now >= next_tick:
+                    # Keep re-asserting foreground, and show whether we actually hold it.
+                    self.grab_foreground()
+                    fg = self.is_foreground()
+                    flag = "" if fg is None else ("  [foreground OK]" if fg
+                                                  else "  [!! NOT foreground - no force !!]")
+                    state = ""
+                    try:
+                        state = "  state=%s" % STATE_NAMES.get(effect.state, effect.state)
+                    except Exception:
+                        pass
+                    print("    %2ds remaining%s%s" % (remaining, state, flag), flush=True)
+                    remaining -= 1
+                    next_tick += 1.0
+                time.sleep(0.02)
 
             effect.stop()
             print("  >>>>>>  FORCE OFF <<<<<<")
+            self.report_motion(samples, label, release_at)
             print()
             print("  (The wheel may feel LOOSE now rather than snapping back -- while we")
             print("   hold the motor the firmware auto-centering stays suspended. Use 'r'")
@@ -1036,7 +1262,7 @@ def menu(session):
         print("  FIRMWARE EFFECTS")
         hidden = 0
         for i, (label, _b, kind, verdict) in enumerate(EFFECTS, start=1):
-            if verdict != "works" and not SHOW_BROKEN:
+            if verdict in ("silent", "inverted") and not SHOW_BROKEN:
                 hidden += 1
                 continue
             print("   %2d) %-16s %s%s" % (i, label, tags[kind], VERDICT_TAGS[verdict]))
@@ -1059,7 +1285,9 @@ def menu(session):
         print("    b) show firmware effects that don't work (%s)"
               % ("shown" if SHOW_BROKEN else "hidden"))
         if SHOW_BROKEN:
-            print("    c) firmware condition sign (%s)" % CONDITION_SIGNS[CONDITION_SIGN][0])
+            print("    c) condition sign override (%s)"
+                  % ("per-effect, as measured" if CONDITION_SIGN is None
+                     else "ALL forced to %s" % CONDITION_SIGNS[CONDITION_SIGN][0]))
         print()
         print("    r) release motor (restore stock centering)    s) stop all    q) quit")
         print()
@@ -1120,8 +1348,18 @@ def menu(session):
             SHOW_BROKEN = not SHOW_BROKEN
             continue
         if choice == "c":
-            CONDITION_SIGN = (CONDITION_SIGN + 1) % len(CONDITION_SIGNS)
-            print("    conditions now use: %s" % CONDITION_SIGNS[CONDITION_SIGN][0])
+            # Cycles None -> A -> B -> C -> None. None is the measured per-effect mapping
+            # and is what you want; the forced modes exist to re-run the sign sweep if a
+            # firmware update changes the conventions again.
+            if CONDITION_SIGN is None:
+                CONDITION_SIGN = 0
+            elif CONDITION_SIGN + 1 < len(CONDITION_SIGNS):
+                CONDITION_SIGN += 1
+            else:
+                CONDITION_SIGN = None
+            print("    conditions now use: %s"
+                  % ("per-effect, as measured" if CONDITION_SIGN is None
+                     else "ALL forced to %s" % CONDITION_SIGNS[CONDITION_SIGN][0]))
             continue
         if choice == "r":
             session.reset()
