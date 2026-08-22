@@ -75,6 +75,36 @@ import wheel_profile as wp
 
 HORI_VENDOR_ID = 0x0F0D
 
+# vJoy's own virtual device -- root\VID_1234&PID_BEAD, i.e. VENDOR_N_ID / PRODUCT_N_ID from
+# vJoy's public.h. It shows up under whatever product name it was configured with ("Forza
+# EmuWheel" on this machine), reports 0 force-feedback motors, and being a root-enumerated
+# software device it enumerates FASTER than the real wheel does over USB. Recognised here so
+# it can be named in the report and never mistaken for the hardware.
+VJOY_VENDOR_ID = 0x1234
+VJOY_PRODUCT_ID = 0xBEAD
+
+# How long to keep listening after the FIRST device shows up.
+#
+# This exists because of a measured race: the vJoy virtual device enumerated at t=0.047s and
+# the real HORI wheel at t=0.094s, but detection returned at t=0.078s -- so the tool reported
+# "no force-feedback motor" while the wheel was plugged in the whole time. Returning on the
+# first non-empty poll is simply wrong when more than one device exists.
+DEVICE_SETTLE_SECONDS = 2.0
+
+
+def is_vjoy(vendor_id, product_id):
+    return vendor_id == VJOY_VENDOR_ID and product_id == VJOY_PRODUCT_ID
+
+
+def _is_vjoy_controller(controller):
+    """is_vjoy() for a live RawGameController. Fails closed: a device we cannot identify
+    is treated as real, so a read error can never make us discard the actual wheel."""
+    try:
+        return is_vjoy(controller.hardware_vendor_id, controller.hardware_product_id)
+    except Exception:
+        return False
+
+
 AXIS_NAMES = [("X", ff.ForceFeedbackEffectAxes.X),
               ("Y", ff.ForceFeedbackEffectAxes.Y),
               ("Z", ff.ForceFeedbackEffectAxes.Z)]
@@ -153,6 +183,7 @@ class PumpThread(threading.Thread):
         self._stop = threading.Event()
         self.ready = threading.Event()
         self.hwnd = None
+        self._warned_foreground = False
 
     def run(self):
         self.hwnd = user32.CreateWindowExW(
@@ -163,7 +194,7 @@ class PumpThread(threading.Thread):
             # only populates its device lists for a foregrounded process -- showing the
             # window without activating it is not enough, enumeration stays empty.
             user32.ShowWindow(self.hwnd, SW_SHOW)
-            user32.SetForegroundWindow(self.hwnd)
+            self.ensure_foreground()
         self.ready.set()
 
         msg = MSG()
@@ -177,6 +208,31 @@ class PumpThread(threading.Thread):
             user32.DestroyWindow(self.hwnd)
             self.hwnd = None
 
+    def ensure_foreground(self):
+        """
+        Assert foreground, and report honestly when Windows refuses.
+
+        SetForegroundWindow is not guaranteed: Windows blocks foreground steals from a
+        process that does not currently own focus. Whether it succeeds depends on what had
+        focus when the tool was launched, so the failure is intermittent by nature -- and
+        because enumeration AND force output are both foreground-gated, a silent refusal
+        looks exactly like absent hardware. The old code called it once and ignored the
+        result, which is why detection worked "sometimes".
+        """
+        if not self.hwnd:
+            return False
+        if user32.GetForegroundWindow() == self.hwnd:
+            return True
+        user32.SetForegroundWindow(self.hwnd)
+        ok = user32.GetForegroundWindow() == self.hwnd
+        if not ok and not self._warned_foreground:
+            self._warned_foreground = True
+            print("  NOTE: Windows refused to foreground the probe window."
+                  " Click the 'FFB probe' window once -- until then the wheel may not")
+            print("        enumerate and force output will be silent.")
+            log.event("foreground.refused")
+        return ok
+
     def stop(self):
         self._stop.set()
 
@@ -185,22 +241,143 @@ class PumpThread(threading.Thread):
 # Detection
 # ---------------------------------------------------------------------------
 
-def wait_for_devices(timeout_seconds):
+class ArrivalWatch:
+    """
+    Subscribes to the device-arrival events.
+
+    This is NOT optional bookkeeping, and polling the static collections alone is not
+    equivalent. Windows.Gaming.Input populates `raw_game_controllers` / `racing_wheels` in
+    response to arrival notifications dispatched through the message pump; a process that
+    never registers a handler may simply never see them, so a poll-only loop finds the
+    wheel sometimes and misses it other times with the device plugged in the whole time.
+    That was the intermittent-detection bug.
+
+    The handler objects are kept alive deliberately -- if they are garbage collected the
+    subscription dies with them and the symptom returns, intermittently, which is a
+    genuinely horrible thing to debug.
+    """
+
+    def __init__(self):
+        self.seen = threading.Event()
+        self._handlers = []
+        self._tokens = []
+
+    def _on_added(self, kind):
+        def handler(sender, device):
+            log.event("device.added", kind=kind)
+            self.seen.set()
+        return handler
+
+    def start(self):
+        subscriptions = [
+            ("raw controller", gi.RawGameController, "add_raw_game_controller_added"),
+            ("racing wheel", gi.RacingWheel, "add_racing_wheel_added"),
+        ]
+        for kind, cls, adder in subscriptions:
+            try:
+                handler = self._on_added(kind)
+                token = getattr(cls, adder)(handler)
+                # Keep BOTH alive: the delegate and the token.
+                self._handlers.append(handler)
+                self._tokens.append((cls, adder, token))
+                log.event("device.subscribed", kind=kind)
+            except Exception as exc:
+                # Not fatal -- polling still runs underneath. But say so, because it
+                # downgrades detection to the unreliable path.
+                print("  WARNING: could not subscribe to %s arrivals: %s" % (kind, exc))
+                log.event("device.subscribe_failed", kind=kind, error=str(exc))
+
+
+def wait_for_devices(timeout_seconds, pump=None):
     print("  Waiting for Windows.Gaming.Input to enumerate...")
+    watch = ArrivalWatch()
+    watch.start()
     deadline = time.monotonic() + timeout_seconds
     last = None
+    first_seen = None
     while time.monotonic() < deadline:
+        # Re-assert foreground while waiting. Enumeration is foreground-gated, and the
+        # initial grab at startup can be refused by Windows depending on which process
+        # held focus when the tool launched -- another source of "sometimes".
+        if pump is not None:
+            pump.ensure_foreground()
         raw = list(gi.RawGameController.raw_game_controllers)
         wheels = list(gi.RacingWheel.racing_wheels)
-        if raw or wheels:
-            print("  Detected %d raw controller(s), %d racing wheel(s)." % (len(raw), len(wheels)))
-            return raw, wheels
+
+        # vJoy does not start the settle clock. It is root-enumerated and always wins the
+        # race, so treating it as "a device arrived" would burn the settle window on the
+        # decoy and abandon the remaining timeout while the real wheel is still coming up.
+        real = [c for c in raw if not _is_vjoy_controller(c)]
+
+        if real or wheels:
+            now = time.monotonic()
+            if first_seen is None:
+                first_seen = now
+                log.event("detect.first_device", raw=len(raw), wheels=len(wheels))
+
+            # Stop as soon as something with an actual motor is present -- that is the
+            # device we came for. Otherwise keep listening: a motorless device (vJoy) may
+            # simply have got here first.
+            if has_motor(raw, wheels):
+                print("  Detected %d raw controller(s), %d racing wheel(s)."
+                      % (len(raw), len(wheels)))
+                return raw, wheels
+
+            waited = now - first_seen
+            if waited >= DEVICE_SETTLE_SECONDS:
+                print("  Detected %d raw controller(s), %d racing wheel(s)"
+                      " -- none with a force-feedback motor." % (len(raw), len(wheels)))
+                return raw, wheels
+            if last != "settling":
+                print("    device seen but no motor yet -- waiting %.0fs for slower"
+                      " hardware..." % DEVICE_SETTLE_SECONDS, flush=True)
+                last = "settling"
+            time.sleep(0.05)
+            continue
+
         remaining = int(deadline - time.monotonic())
         if remaining != last and remaining % 5 == 0:
-            print("    nothing yet... %ds left (press a wheel button)" % remaining, flush=True)
+            note = " (only the vJoy virtual device so far -- ignoring it)" if raw else ""
+            print("    nothing yet... %ds left (press a wheel button)%s"
+                  % (remaining, note), flush=True)
             last = remaining
         time.sleep(0.05)
+
+    log.event("detect.timeout", raw=len(gi.RawGameController.raw_game_controllers),
+              wheels=len(gi.RacingWheel.racing_wheels))
     return [], []
+
+
+def has_motor(raw, wheels):
+    """
+    True once a device with a real force-feedback motor is present.
+
+    vJoy MUST be excluded here, not just in report(). vJoy's virtual device does expose a
+    WGI force-feedback motor, so a naive motor check is satisfied by the decoy and detection
+    returns before the real wheel -- which is slower, being actual USB hardware -- has
+    arrived. Measured in logs/wgi_probe_20260822_233138.log: vJoy at t=0.047 with a motor,
+    detection returned at t=0.110, the racing-wheel arrival fired at t=0.094 and was thrown
+    away. Same race as before the settle window was added, just re-entered through a
+    different door.
+    """
+    for c in raw:
+        try:
+            if is_vjoy(c.hardware_vendor_id, c.hardware_product_id):
+                continue
+            if list(c.force_feedback_motors):
+                log.event("detect.motor_found", kind="raw",
+                          vid=hex(c.hardware_vendor_id), pid=hex(c.hardware_product_id))
+                return True
+        except Exception:
+            pass
+    for w in wheels:
+        try:
+            if w.wheel_motor is not None:
+                log.event("detect.motor_found", kind="wheel")
+                return True
+        except Exception:
+            pass
+    return False
 
 
 def report(raw, wheels):
@@ -211,20 +388,29 @@ def report(raw, wheels):
     rule("Raw game controllers")
     for i, c in enumerate(raw):
         motors = list(c.force_feedback_motors)
+        virtual = is_vjoy(c.hardware_vendor_id, c.hardware_product_id)
         print("  [%d] %s" % (i, c.display_name or "(unnamed)"))
         print("       VID 0x%04X  PID 0x%04X   axes=%d buttons=%d switches=%d"
               % (c.hardware_vendor_id, c.hardware_product_id,
                  c.axis_count, c.button_count, c.switch_count))
-        if not identity["key"]:
-            # Identifies the saved calibration profile. VID:PID rather than the instance
-            # id, so the profile survives replugging and different USB ports -- but note
-            # the wheel's two modes have different PIDs and so calibrate separately.
-            identity["key"] = wp.device_key(c.hardware_vendor_id, c.hardware_product_id)
-            identity["name"] = c.display_name or "(unnamed)"
         print("       force_feedback_motors : %d" % len(motors))
+        if virtual:
+            print("       (vJoy virtual device, not hardware -- ignored for FFB)")
         if c.hardware_vendor_id == HORI_VENDOR_ID:
             print("       >>> HORI device <<<")
-        if motor is None and motors:
+
+        # Key the saved calibration to the device we actually DRIVE. Taking the first
+        # controller in the list would key it to whichever device enumerated first --
+        # on this machine the vJoy device, whose VID:PID is not the wheel's.
+        #
+        # VID:PID rather than instance id, so the profile survives replugging and
+        # different USB ports; the wheel's two modes have different PIDs and so
+        # calibrate separately.
+        if motors and not virtual and not identity["key"]:
+            identity["key"] = wp.device_key(c.hardware_vendor_id, c.hardware_product_id)
+            identity["name"] = c.display_name or "(unnamed)"
+
+        if motor is None and motors and not virtual:
             motor, label = motors[0], "RawGameController.force_feedback_motors[0]"
         print()
 
@@ -238,6 +424,17 @@ def report(raw, wheels):
         print("       wheel_motor : %s" % ("present" if wm else "None"))
         if wm is not None and motor is None:
             motor, label = wm, "RacingWheel.wheel_motor"
+
+    if identity["key"] is None:
+        # Motor came from RacingWheel, or nothing has a motor at all. Fall back to the
+        # first device that is not the vJoy virtual one, so calibration is never keyed to
+        # a software device.
+        for c in raw:
+            if not is_vjoy(c.hardware_vendor_id, c.hardware_product_id):
+                identity["key"] = wp.device_key(c.hardware_vendor_id, c.hardware_product_id)
+                identity["name"] = c.display_name or "(unnamed)"
+                break
+
     return motor, label, (wheels[0] if wheels else None), identity
 
 
@@ -305,6 +502,9 @@ CONDITION_SIGNS = [
 ]
 CONDITION_SIGN = 0
 
+# Broken firmware effects are hidden from the menu by default -- see EFFECTS below.
+SHOW_BROKEN = False
+
 
 def _condition(kind, magnitude, label):
     e = ff.ConditionForceEffect(kind)
@@ -344,29 +544,49 @@ def _condition(kind, magnitude, label):
 #               signal. Held rigidly these feel like faint pressure and are easy to miss.
 #   "condition" reactive. No force at all unless the wheel is moving. Hold and turn.
 #
-# label, builder(magnitude, duration, frequency) -> (effect, description), class
+# VERDICT is what this firmware was MEASURED to do, not what the API promises:
+#
+#   "works"     honoured properly. Direction and magnitude both land.
+#   "silent"    loads Succeeded, reports Running, produces no torque whatsoever.
+#   "inverted"  produces force that ADDS to your motion instead of resisting it. Worse
+#               than silent: actively wrong, and it fights you.
+#
+# Only "works" effects are listed in the menu by default -- offering nine broken entries
+# to a first-time user buries the two real ones. They all still RUN if typed by number,
+# because reproducing these results is the whole point of the tool, and the numbering
+# stays fixed at 1-11 so logs and notes from earlier sessions still line up.
+#
+# label, builder(magnitude, duration, frequency) -> (effect, description), class, verdict
 EFFECTS = [
-    ("Constant force", lambda m, d, f: build_constant(m, d), "push"),
-    ("Ramp force", lambda m, d, f: build_ramp(m, d), "push"),
+    ("Constant force", lambda m, d, f: build_constant(m, d), "push", "works"),
+    ("Ramp force", lambda m, d, f: build_ramp(m, d), "push", "works"),
     ("Sine wave", lambda m, d, f: _periodic(ff.PeriodicForceEffectKind.SINE_WAVE, m, d, f,
-                                            "smooth left-right rocking"), "wave"),
+                                            "smooth left-right rocking"), "wave", "silent"),
     ("Square wave", lambda m, d, f: _periodic(ff.PeriodicForceEffectKind.SQUARE_WAVE, m, d, f,
-                                              "hard alternating jolts"), "wave"),
+                                              "hard alternating jolts"), "wave", "silent"),
     ("Triangle wave", lambda m, d, f: _periodic(ff.PeriodicForceEffectKind.TRIANGLE_WAVE, m, d, f,
-                                                "linear rise and fall"), "wave"),
+                                                "linear rise and fall"), "wave", "silent"),
     ("Sawtooth up", lambda m, d, f: _periodic(ff.PeriodicForceEffectKind.SAWTOOTH_WAVE_UP, m, d, f,
-                                              "ramp up then snap back"), "wave"),
+                                              "ramp up then snap back"), "wave", "silent"),
     ("Sawtooth down", lambda m, d, f: _periodic(ff.PeriodicForceEffectKind.SAWTOOTH_WAVE_DOWN, m, d, f,
-                                                "snap up then ramp down"), "wave"),
+                                                "snap up then ramp down"), "wave", "silent"),
     ("Spring", lambda m, d, f: _condition(ff.ConditionForceEffectKind.SPRING, m,
-                                          "pulls back to centre"), "condition"),
+                                          "pulls back to centre"), "condition", "inverted"),
     ("Damper", lambda m, d, f: _condition(ff.ConditionForceEffectKind.DAMPER, m,
-                                          "resists speed -- turn fast vs slow"), "condition"),
+                                          "resists speed -- turn fast vs slow"), "condition", "inverted"),
     ("Inertia", lambda m, d, f: _condition(ff.ConditionForceEffectKind.INERTIA, m,
-                                           "resists acceleration -- heavy to start turning"), "condition"),
+                                           "resists acceleration -- heavy to start turning"),
+     "condition", "inverted"),
     ("Friction", lambda m, d, f: _condition(ff.ConditionForceEffectKind.FRICTION, m,
-                                            "constant drag whenever the wheel moves"), "condition"),
+                                            "constant drag whenever the wheel moves"),
+     "condition", "inverted"),
 ]
+
+VERDICT_TAGS = {
+    "works": "",
+    "silent": "  [silent on this firmware]",
+    "inverted": "  [INVERTED -- adds to your motion]",
+}
 
 HOW_TO_FEEL = {
     "push": ["HOLD THE WHEEL FIRMLY. This pushes one direction; let go and it",
@@ -419,8 +639,8 @@ class Session:
         menu command in the console drops it, which is why an effect can load and take the
         motor (the wheel goes loose) yet produce no torque. Re-assert before every effect.
         """
-        if self.pump is not None and self.pump.hwnd:
-            user32.SetForegroundWindow(self.pump.hwnd)
+        if self.pump is not None:
+            self.pump.ensure_foreground()
 
     def is_foreground(self):
         if self.pump is None or not self.pump.hwnd:
@@ -447,7 +667,7 @@ class Session:
         return self.gain * self.magnitude
 
     def run_effect(self, index):
-        label, builder, kind = EFFECTS[index]
+        label, builder, kind, verdict = EFFECTS[index]
         # duration 0 means "a long look" -- 15s. It deliberately does NOT wait on Enter,
         # because pressing Enter needs console focus, and taking console focus kills the
         # force output we are trying to feel.
@@ -461,6 +681,10 @@ class Session:
         print()
         rule()
         print("  %s -- %s" % (label.upper(), description))
+        if verdict != "works":
+            # Say so up front. Otherwise a silent wheel reads as "the tool is broken"
+            # rather than "this is the documented result being reproduced".
+            print("  KNOWN RESULT: %s" % VERDICT_TAGS[verdict].strip().strip("[]"))
         print("  gain %.2f x magnitude %.2f = %.0f%% of full torque"
               % (self.gain, self.magnitude, self.effective() * 100))
         for i, line in enumerate(HOW_TO_FEEL[kind]):
@@ -790,7 +1014,7 @@ class Session:
 def menu(session):
     # Module-level, because the EFFECTS builders are plain lambdas that only receive
     # (magnitude, duration, frequency) and have no session object to read a setting from.
-    global CONDITION_SIGN
+    global CONDITION_SIGN, SHOW_BROKEN
     while True:
         rule("INTERACTIVE -- effects on demand")
         fg = session.is_foreground()
@@ -810,8 +1034,15 @@ def menu(session):
                 "condition": "(hold AND turn)"}
         print()
         print("  FIRMWARE EFFECTS")
-        for i, (label, _b, kind) in enumerate(EFFECTS, start=1):
-            print("   %2d) %-16s %s" % (i, label, tags[kind]))
+        hidden = 0
+        for i, (label, _b, kind, verdict) in enumerate(EFFECTS, start=1):
+            if verdict != "works" and not SHOW_BROKEN:
+                hidden += 1
+                continue
+            print("   %2d) %-16s %s%s" % (i, label, tags[kind], VERDICT_TAGS[verdict]))
+        if hidden:
+            print("       (%d more the firmware ignores or inverts -- 'b' to show;"
+                  " they still run if typed)" % hidden)
         print()
         print("  SOFTWARE EFFECTS  (computed here from constant force -- need calibration)")
         print("    y) sine        z) square")
@@ -825,7 +1056,10 @@ def menu(session):
               % (session.gain, session.magnitude,
                  15.0 if session.duration <= 0 else session.duration, session.frequency))
         print("    g) gain   m) magnitude   d) duration   f) frequency")
-        print("    c) firmware condition sign (%s)" % CONDITION_SIGNS[CONDITION_SIGN][0])
+        print("    b) show firmware effects that don't work (%s)"
+              % ("shown" if SHOW_BROKEN else "hidden"))
+        if SHOW_BROKEN:
+            print("    c) firmware condition sign (%s)" % CONDITION_SIGNS[CONDITION_SIGN][0])
         print()
         print("    r) release motor (restore stock centering)    s) stop all    q) quit")
         print()
@@ -881,6 +1115,9 @@ def menu(session):
                 action()
             except KeyboardInterrupt:
                 session.stop_all()
+            continue
+        if choice == "b":
+            SHOW_BROKEN = not SHOW_BROKEN
             continue
         if choice == "c":
             CONDITION_SIGN = (CONDITION_SIGN + 1) % len(CONDITION_SIGNS)
@@ -966,7 +1203,7 @@ def main():
 
     session = None
     try:
-        raw, wheels = wait_for_devices(args.wait)
+        raw, wheels = wait_for_devices(args.wait, pump)
         if not raw and not wheels:
             rule("RESULT")
             print("  Nothing enumerated. Make sure the wheel is in Xbox mode and press a")
