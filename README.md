@@ -93,6 +93,36 @@ One expected side effect: while a software effect holds the motor there's no cen
 zero-mean waveform (sine/square) lets the wheel drift. A real game would run a spring effect
 underneath to counter that.
 
+## In progress: a bridge into real games
+
+Both of the wheel's USB modes are dead ends for sims. In PC mode DirectInput sees the wheel
+but its joystick collection is input-only, so there is no force feedback for any driver to
+expose. In Xbox mode force feedback works, but only through `Windows.Gaming.Input`, and
+Assetto Corsa, rFactor, LFS and ETS2 all drive wheels through DirectInput. So this wheel
+currently has **no force feedback in any PC sim**.
+
+The bridge presents a virtual force-feedback wheel to DirectInput and renders the effects
+games send it on the real motor via WGI. It is being built now; nothing below is finished.
+
+**If you want to follow along, install [`BrunnerInnovation/vJoy`
+v2.2.2.0](https://github.com/BrunnerInnovation/vJoy).** The version matters more than it
+looks. vJoy 2.1.9.x has no force-feedback *effect block index*: every effect reports index
+`1`, so concurrent effects cannot be told apart. That is invisible while testing one effect
+at a time and fatal in a real game, which runs a centring spring, a damper and road texture
+simultaneously. `njz3` added the block index in 2.2.0 and Brunner's 2.2.2.0 adds EV signing
+for Windows 11. The driver and the interface DLL are not compatible across the 2.1.9 → 2.2.0
+boundary, so do not mix them.
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install pyvjoyffb
+.\.venv\Scripts\python.exe vjoy_ffb_spike.py     # checks the vJoy foundation end to end
+```
+
+`vjoy_ffb_spike.py` is both halves of the test: it sends DirectInput effects to the virtual
+device and logs what comes back out of vJoy's force-feedback callback, so it verifies the
+whole path without a game or a control-panel tab. It never touches the real wheel. Run it
+first — if it does not report `PASS`, nothing built on top of vJoy will work.
+
 ## Logging
 
 Every run writes `logs/wgi_probe_<timestamp>.log` — console output with elapsed timestamps,
@@ -106,10 +136,11 @@ Pass `--no-log` to disable it.
 |---|---|
 | `wgi_probe.py` | The tool: detection, message pump, effect menu, sweeps, cleanup |
 | `wheel_profile.py` | Calibration, `wheel_profile.json` persistence, software condition effects |
+| `vjoy_ffb_spike.py` | Verifies the vJoy force-feedback path the game bridge is being built on |
 | `probe_log.py` | Session logging to `logs/` |
 | `hid_probe.py` | Reads raw HID report descriptors — shows why DirectInput/GameInput can't reach this wheel |
 | `probe.py` + `gameinput_abi.py` | GameInput diagnostic (negative result, kept as evidence) |
-| `dinput_probe.py` + `dinput_abi.py` | DirectInput 8 diagnostic (negative result, kept as evidence) |
+| `dinput_probe.py` + `dinput_abi.py` | DirectInput 8 diagnostic (negative result on the wheel, kept as evidence). `dinput_abi.py` is also the DirectInput binding the bridge test uses |
 
 Why the other three APIs fail, the discovery process, and every gotcha found along the way
 are written up in `.claude/memory/` rather than here — see `hori-wheel-ffb-probe-goal.md`

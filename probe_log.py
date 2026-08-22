@@ -79,8 +79,14 @@ class _Tee(object):
         return getattr(self._stream, item)
 
 
-def start(directory=LOG_DIR):
-    """Begin logging. Returns the log path, or None if it could not be opened."""
+def start(directory=LOG_DIR, prefix="wgi_probe"):
+    """
+    Begin logging. Returns the log path, or None if it could not be opened.
+
+    `prefix` names the file so a session can be told apart from the others in logs/ at a
+    glance -- the FFB bridge spike writes vjoy_ffb_* rather than pretending to be a
+    wgi_probe run.
+    """
     global _file, _start_time, _path, _saved_stdout, _saved_stderr
     if _file is not None:
         return _path
@@ -89,7 +95,7 @@ def start(directory=LOG_DIR):
         if not os.path.isdir(directory):
             os.makedirs(directory)
         _path = os.path.join(
-            directory, "wgi_probe_%s.log" % datetime.now().strftime("%Y%m%d_%H%M%S"))
+            directory, "%s_%s.log" % (prefix, datetime.now().strftime("%Y%m%d_%H%M%S")))
         _file = open(_path, "w", encoding="utf-8")
     except (IOError, OSError) as exc:
         sys.stderr.write("  (could not open log file: %s)\n" % exc)
@@ -97,7 +103,8 @@ def start(directory=LOG_DIR):
         return None
 
     _start_time = time.monotonic()
-    _file.write("# wgi_probe session log -- %s\n" % datetime.now().isoformat(timespec="seconds"))
+    _file.write("# %s session log -- %s\n"
+                % (prefix, datetime.now().isoformat(timespec="seconds")))
     _file.write("# channel '|' = console output, '.' = structured event\n")
     _file.write("# python %s\n" % sys.version.replace("\n", " "))
     _file.write("# argv %r\n" % (sys.argv,))

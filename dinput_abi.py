@@ -27,6 +27,7 @@ from ctypes import (
     c_uint32,
     c_void_p,
     c_wchar,
+    c_wchar_p,
     cast,
 )
 
@@ -505,7 +506,7 @@ def create_direct_input():
     return IDirectInput8(out)
 
 
-def make_axis_data_format(axis_count=8):
+def make_axis_data_format(axis_count=6):
     """
     Build a minimal DIDATAFORMAT of N absolute axes.
 
@@ -514,6 +515,13 @@ def make_axis_data_format(axis_count=8):
     A NULL pguid with DIDFT_AXIS|DIDFT_ANYINSTANCE matches any axis the device has, which
     avoids having to reproduce the 164-entry c_dfDIJoystick2 table (that symbol lives in
     dinput8.lib, not in the DLL, so ctypes cannot borrow it).
+
+    N MUST NOT EXCEED THE AXES THE DEVICE ACTUALLY HAS. Every entry has to match a real
+    object or SetDataFormat fails wholesale with E_INVALIDARG -- there is no partial match.
+    The default is 6 because that is the classic DIJOYSTATE set (X Y Z RX RY RZ) and the
+    most any plain HID joystick is guaranteed to carry; the old default of 8 could not
+    succeed on vJoy, which presents exactly 6 axes to DirectInput. Prefer
+    negotiate_axis_data_format() over guessing.
 
     The returned tuple keeps the object array alive; if it is garbage collected the
     format's rgodf pointer dangles.
@@ -535,6 +543,32 @@ def make_axis_data_format(axis_count=8):
     return fmt, objects
 
 
+def negotiate_axis_data_format(device, max_axes=6):
+    """
+    Set the largest all-axis data format the device accepts, and report how many that was.
+
+    SetDataFormat is all-or-nothing: one unmatched entry fails the whole call with
+    E_INVALIDARG, which says nothing about how many axes would have worked. Since force
+    feedback needs a data format only so that Acquire will succeed -- the effect itself
+    binds to one axis -- the sensible move is to negotiate downward rather than hard-code a
+    count and be wrong on the next device.
+
+    Returns (fmt, objects, axis_count). Keep the first two alive for as long as the device
+    is acquired; rgodf is a borrowed pointer.
+    """
+    last = None
+    for count in range(max_axes, 0, -1):
+        fmt, objects = make_axis_data_format(count)
+        try:
+            device.set_data_format(fmt)
+            return fmt, objects, count
+        except DirectInputError as exc:
+            last = exc
+    raise DirectInputError(
+        "No all-axis data format from %d down to 1 was accepted. The device may expose no "
+        "absolute axes at all. Last error: %s" % (max_axes, last))
+
+
 def get_console_hwnd():
     """
     Exclusive access is required to play force-feedback effects, and exclusive access
@@ -542,3 +576,86 @@ def get_console_hwnd():
     """
     _kernel32.GetConsoleWindow.restype = c_void_p
     return _kernel32.GetConsoleWindow()
+
+
+# A hidden window created by ensure_hwnd(). Module-level because the window class, the
+# window and the WNDPROC must outlive the call: if the WNDPROC is collected, the next
+# message dispatched to the window calls a freed pointer.
+_hidden_window = None
+_hidden_wndproc = None
+
+_user32 = ctypes.WinDLL("user32", use_last_error=True)
+WS_OVERLAPPED = 0x00000000
+CW_USEDEFAULT = -0x80000000
+
+
+class _WNDCLASSW(Structure):
+    _fields_ = [
+        ("style", c_uint32),
+        ("lpfnWndProc", c_void_p),
+        ("cbClsExtra", c_int32),
+        ("cbWndExtra", c_int32),
+        ("hInstance", c_void_p),
+        ("hIcon", c_void_p),
+        ("hCursor", c_void_p),
+        ("hbrBackground", c_void_p),
+        ("lpszMenuName", c_wchar_p),
+        ("lpszClassName", c_wchar_p),
+    ]
+
+
+def ensure_hwnd():
+    """
+    Return an HWND usable for SetCooperativeLevel, creating a hidden one if needed.
+
+    DirectInput refuses exclusive access -- and therefore all force feedback -- without a
+    real top-level window. A console window normally supplies it, but there is not always
+    one: launched from a service, from a GUI host, or from any tool that captures output
+    rather than allocating a console, GetConsoleWindow() returns NULL and force feedback
+    becomes unavailable for a reason that has nothing to do with the hardware.
+
+    The window is never shown. It only has to exist and be top-level; combined with
+    DISCL_BACKGROUND, DirectInput is satisfied and effects play regardless of focus.
+    """
+    global _hidden_window, _hidden_wndproc
+
+    hwnd = get_console_hwnd()
+    if hwnd:
+        return hwnd
+    if _hidden_window:
+        return _hidden_window
+
+    _user32.DefWindowProcW.restype = c_void_p
+    _user32.DefWindowProcW.argtypes = [c_void_p, c_uint32, c_void_p, c_void_p]
+    _user32.CreateWindowExW.restype = c_void_p
+    _user32.CreateWindowExW.argtypes = [c_uint32, c_wchar_p, c_wchar_p, c_uint32,
+                                        c_int32, c_int32, c_int32, c_int32,
+                                        c_void_p, c_void_p, c_void_p, c_void_p]
+    _kernel32.GetModuleHandleW.restype = c_void_p
+    _kernel32.GetModuleHandleW.argtypes = [c_void_p]
+
+    wndproc_type = ctypes.WINFUNCTYPE(c_void_p, c_void_p, c_uint32, c_void_p, c_void_p)
+    _hidden_wndproc = wndproc_type(
+        lambda h, msg, wp, lp: _user32.DefWindowProcW(h, msg, wp, lp))
+
+    hinst = _kernel32.GetModuleHandleW(None)
+    cls = _WNDCLASSW()
+    cls.lpfnWndProc = cast(_hidden_wndproc, c_void_p)
+    cls.hInstance = hinst
+    cls.lpszClassName = "WH33LH4X_DInputHost"
+    # A non-zero atom means registered; failure is usually "already registered" from a
+    # previous call in the same process, which is fine -- CreateWindowExW will still find
+    # the class. Any other failure surfaces as a NULL window below.
+    _user32.RegisterClassW(byref(cls))
+    cls._keepalive = _hidden_wndproc
+
+    _hidden_window = _user32.CreateWindowExW(
+        0, "WH33LH4X_DInputHost", "WH33LH4X", WS_OVERLAPPED,
+        CW_USEDEFAULT, CW_USEDEFAULT, 1, 1, None, None, hinst, None)
+
+    if not _hidden_window:
+        raise DirectInputError(
+            "No console window, and creating a hidden one failed (error %d). DirectInput "
+            "cannot take exclusive access without a window, so force feedback is "
+            "unavailable." % ctypes.get_last_error())
+    return _hidden_window
