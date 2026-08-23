@@ -63,6 +63,7 @@ static const IID IID_AsyncInfo_ =
 #define EFFECT_DURATION_100NS (3600LL * 10000000LL)
 
 struct wgi_motor {
+    IRacingWheel_ *wheel;      /* kept for reading; the motor alone cannot report position */
     IMotor_    *motor;
     IConstant_ *effect;
     IEffect_   *effect_base;
@@ -314,11 +315,16 @@ wgi_motor *wgi_open(DWORD timeout_ms)
                 }
                 if (SUCCEEDED(wheel->lpVtbl->get_WheelMotor(wheel, &motor)) && motor) {
                     m = (wgi_motor *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*m));
-                    if (m)
+                    if (m) {
                         m->motor = motor;
-                    else
+                        /* Keep the wheel too: position readings come from it, not the motor,
+                         * and reading has to happen in this process for the same
+                         * foreground reason the writing does. */
+                        m->wheel = wheel;
+                    } else {
                         motor->lpVtbl->Release(motor);
-                    wheel->lpVtbl->Release(wheel);
+                        wheel->lpVtbl->Release(wheel);
+                    }
                     shim_log("wgi: wheel %u of %u has a force-feedback motor", i, count);
                     break;
                 }
@@ -456,17 +462,57 @@ BOOL wgi_set_force(wgi_motor *m, float magnitude)
     return TRUE;
 }
 
+BOOL wgi_read(wgi_motor *m, float *wheel, float *throttle, float *brake,
+              float *clutch, float *handbrake, UINT32 *buttons, INT32 *shifter_gear)
+{
+    __x_ABI_CWindows_CGaming_CInput_CRacingWheelReading r;
+
+    if (!m || !m->wheel)
+        return FALSE;
+    memset(&r, 0, sizeof(r));
+    if (FAILED(m->wheel->lpVtbl->GetCurrentReading(m->wheel, &r)))
+        return FALSE;
+
+    *wheel        = (float)r.Wheel;
+    *throttle     = (float)r.Throttle;
+    *brake        = (float)r.Brake;
+    *clutch       = (float)r.Clutch;
+    *handbrake    = (float)r.Handbrake;
+    *buttons      = (UINT32)r.Buttons;
+    *shifter_gear = (INT32)r.PatternShifterGear;
+    return TRUE;
+}
+
+void wgi_release_effect(wgi_motor *m)
+{
+    if (!m || !m->effect_base)
+        return;
+    if (m->started) {
+        m->effect_base->lpVtbl->Stop(m->effect_base);
+        m->started = FALSE;
+    }
+    if (m->motor) {
+        IInspectable *op = NULL;
+        if (SUCCEEDED(m->motor->lpVtbl->TryUnloadEffectAsync(m->motor, m->effect_base,
+                (__FIAsyncOperation_1_boolean **)&op)) && op) {
+            await_async(op, 2000);
+            op->lpVtbl->Release(op);
+        }
+    }
+    m->effect_base->lpVtbl->Release(m->effect_base);
+    m->effect_base = NULL;
+    if (m->effect) {
+        m->effect->lpVtbl->Release(m->effect);
+        m->effect = NULL;
+    }
+    m->have_last = FALSE;
+}
+
 void wgi_close(wgi_motor *m)
 {
     if (!m)
         return;
-    if (m->effect_base) {
-        if (m->started)
-            m->effect_base->lpVtbl->Stop(m->effect_base);
-        m->effect_base->lpVtbl->Release(m->effect_base);
-    }
-    if (m->effect)
-        m->effect->lpVtbl->Release(m->effect);
+    wgi_release_effect(m);
     if (m->motor) {
         /* Resetting matters: releasing a held motor can otherwise leave it accepting effects
          * while producing no torque, which looks identical to a hardware fault. */
@@ -478,6 +524,8 @@ void wgi_close(wgi_motor *m)
         }
         m->motor->lpVtbl->Release(m->motor);
     }
+    if (m->wheel)
+        m->wheel->lpVtbl->Release(m->wheel);
     shim_log("wgi: closed (%lu writes, %lu failure(s))", m->writes, m->failures);
     HeapFree(GetProcessHeap(), 0, m);
 }

@@ -24,7 +24,7 @@ if (-not (Test-Path $zig)) {
 if (-not (Test-Path $outDir)) { New-Item -ItemType Directory -Path $outDir | Out-Null }
 
 $out     = Join-Path $outDir 'dinput8.dll'
-$sources = @('dinput8.c', 'wgi.c') | ForEach-Object { Join-Path $shimDir $_ }
+$sources = @('dinput8.c', 'wgi.c', 'ipc.c') | ForEach-Object { Join-Path $shimDir $_ }
 $def     = Join-Path $shimDir 'dinput8.def'
 
 # The Windows SDK's MIDL-generated WinRT headers give us C vtable structs for

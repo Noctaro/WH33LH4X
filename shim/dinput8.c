@@ -37,6 +37,7 @@
 #include <string.h>
 #include <strsafe.h>
 
+#include "ipc.h"
 #include "shim_log.h"
 #include "wgi.h"
 
@@ -174,7 +175,11 @@ static void ensure_real(void)
  * that ambiguity: if any force is reaching the motor, 1.00 cannot be missed.
  */
 #define SELFTEST_HOLD_MS   1500
-#define SELFTEST_TICK_MS   62      /* ~16 Hz, the rate WGI re-sends at */
+#define SELFTEST_TICK_MS   62      /* ~16 Hz, fine for a hand-judged sweep */
+
+/* ~100 Hz, matching the rate the bridge rewrites force at. Faster would burn the game's CPU
+ * for nothing; slower would smear the detail the renderer works to produce. */
+#define BRIDGE_TICK_MS     10
 
 static BOOL  g_cfg_selftest;
 static volatile LONG g_stop;
@@ -252,9 +257,80 @@ static void selftest_loop(wgi_motor *m)
  * if enumeration works and force does not, the log says which, and those are different
  * problems. `selftest=` gates only the force half.
  */
+/*
+ * Follow the bridge: apply whatever force it publishes, for as long as it is alive.
+ *
+ * The effect is loaded when a bridge appears and released when it goes away, rather than held
+ * for the life of the game. Holding the motor while nothing is driving it is precisely the
+ * state that leaves the wheel dead for every other application.
+ */
+static void bridge_loop(wgi_motor *m, wh_ipc *ipc)
+{
+    BOOL  loaded = FALSE;
+    float gain = 1.0f;
+    DWORD reported = 0;
+
+    shim_log("ipc: waiting for the bridge");
+
+    while (!stopping()) {
+        wh_reading r;
+        BOOL       have;
+
+        /*
+         * Publish the reading EVERY tick, whether or not a bridge is driving force. The game
+         * cannot bind an axis that never moves, and it will not send force feedback for an
+         * axis it has not bound -- so input has to flow before output can. Making this
+         * conditional on the bridge being live would deadlock the two halves against each
+         * other.
+         */
+        have = wgi_read(m, &r.wheel, &r.throttle, &r.brake, &r.clutch, &r.handbrake,
+                        &r.buttons, &r.shifter_gear);
+
+        if (wh_ipc_bridge_alive(ipc)) {
+            if (!loaded) {
+                gain = ipc->block->gain;
+                if (gain <= 0.0f || gain > 1.0f)
+                    gain = 1.0f;
+                if (!wgi_load_effect(m, gain)) {
+                    shim_log("ipc: could not load the effect -- stopping");
+                    return;
+                }
+                loaded = TRUE;
+                shim_log("ipc: bridge is live, effect loaded (gain %.2f)", (double)gain);
+            }
+            wgi_set_force(m, ipc->block->force);
+            wh_ipc_publish(ipc, WH_STATE_ACTIVE, have ? &r : NULL);
+        } else if (loaded) {
+            /* The bridge stopped stamping. Zero the force and give the motor back rather
+             * than leaving the last commanded value pulling forever. */
+            shim_log("ipc: bridge went quiet -- releasing the motor");
+            wgi_set_force(m, 0.0f);
+            wgi_release_effect(m);
+            loaded = FALSE;
+            wh_ipc_publish(ipc, WH_STATE_MOTOR, have ? &r : NULL);
+        } else {
+            wh_ipc_publish(ipc, WH_STATE_MOTOR, have ? &r : NULL);
+        }
+
+        /* One line the first time a reading arrives, so a dead input path is obvious in the
+         * log rather than being something you have to infer from vJoy sitting still. */
+        if (have && !reported) {
+            reported = 1;
+            shim_log("ipc: publishing readings (wheel %+.3f)", (double)r.wheel);
+        }
+        Sleep(BRIDGE_TICK_MS);
+    }
+
+    if (loaded) {
+        wgi_set_force(m, 0.0f);
+        wgi_release_effect(m);
+    }
+}
+
 static DWORD WINAPI worker_main(LPVOID param)
 {
     wgi_motor *m;
+    wh_ipc     ipc;
     (void)param;
 
     m = wgi_open(10000);
@@ -264,20 +340,24 @@ static DWORD WINAPI worker_main(LPVOID param)
         return 0;
     }
 
-    if (!g_cfg_selftest) {
-        shim_log("wgi: motor found; selftest off, so not loading an effect");
+    /* selftest= is the standalone diagnostic: drive the motor with no bridge at all, so the
+     * output path can be judged by hand without the rest of the pipeline running. */
+    if (g_cfg_selftest) {
+        if (wgi_load_effect(m, 1.0f))
+            selftest_loop(m);
+        wgi_set_force(m, 0.0f);
         wgi_close(m);
+        shim_log("wgi: worker done (selftest)");
         return 0;
     }
 
-    if (!wgi_load_effect(m, 1.0f)) {
+    if (!wh_ipc_open(&ipc)) {
         wgi_close(m);
         return 0;
     }
-
-    selftest_loop(m);
-
-    wgi_set_force(m, 0.0f);
+    bridge_loop(m, &ipc);
+    wh_ipc_publish(&ipc, WH_STATE_NONE, NULL);
+    wh_ipc_close(&ipc);
     wgi_close(m);
     shim_log("wgi: worker done");
     return 0;

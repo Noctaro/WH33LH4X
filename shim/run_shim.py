@@ -49,6 +49,8 @@ def main():
                     help="do not clear the shim log first")
     ap.add_argument("--winrt-assist", action="store_true",
                     help="also subscribe from Python, to test whether the C needs to at all")
+    ap.add_argument("--drive", action="store_true",
+                    help="act as the bridge too: publish a force sweep over the shared section")
     args = ap.parse_args()
 
     if not os.path.exists(PROXY):
@@ -94,11 +96,38 @@ def main():
     print("  DirectInput8Create through the proxy: ok (worker started)")
     print("  holding the window foreground for %.0f s ..." % args.seconds)
 
+    sink = None
+    if args.drive:
+        # Exercise the full IPC path without a game: this process publishes force exactly the
+        # way vjoy_bridge.py will, and the shim's worker -- in this same process, but reaching
+        # the motor through WGI -- follows it. If the wheel moves here, the only thing left
+        # between this and a game is which process the shim is loaded into.
+        from motor_sink import IpcMotorSink
+        sink = IpcMotorSink(max_force=1.0, gain=1.0).open()
+        print("  --drive: publishing a force sweep over the shared section")
+        print("  HANDS ON THE WHEEL.")
+
+    steps = [(0.0, "rest"), (0.35, "right 35%"), (1.0, "right FULL"),
+             (-0.35, "left 35%"), (-1.0, "left FULL"), (0.0, "rest")]
     deadline = time.time() + args.seconds
+    step_len = args.seconds / len(steps) if args.drive else args.seconds
+    index = -1
     while time.time() < deadline:
         pump.ensure_foreground()
-        time.sleep(0.25)
+        if sink is not None:
+            elapsed = args.seconds - (deadline - time.time())
+            which = min(int(elapsed / step_len), len(steps) - 1)
+            if which != index:
+                index = which
+                print("    %-11s x = %+.2f      %s"
+                      % (steps[which][1], steps[which][0], sink.describe()))
+            sink.set_force(steps[which][0])
+            time.sleep(0.01)          # ~100 Hz, the rate the real bridge runs at
+        else:
+            time.sleep(0.25)
 
+    if sink is not None:
+        sink.close()
     dinput.release()
     del proxy
     pump.stop()

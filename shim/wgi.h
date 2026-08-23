@@ -42,6 +42,26 @@ BOOL wgi_load_effect(wgi_motor *m, float gain);
 /* Rewrite the held effect's magnitude, -1.0 .. +1.0. Clamped. Cheap enough for ~100 Hz. */
 BOOL wgi_set_force(wgi_motor *m, float magnitude);
 
+/*
+ * Read the wheel's current position and pedals.
+ *
+ * Reading is foreground-gated just like output, which is why it has to happen HERE rather than
+ * in the bridge: a background process reads zeros while a game is in front, vJoy's axes never
+ * move, and a game that cannot bind steering never sends force feedback either.
+ *
+ * `wheel` is -1..+1, pedals 0..1. FALSE means no reading was available.
+ */
+BOOL wgi_read(wgi_motor *m, float *wheel, float *throttle, float *brake,
+              float *clutch, float *handbrake, UINT32 *buttons, INT32 *shifter_gear);
+
+/*
+ * Give the effect back but keep the motor handle, so a later wgi_load_effect can start again.
+ *
+ * Used when the bridge goes quiet: holding a loaded effect that nothing is driving is the
+ * state that leaves the wheel dead for every other application.
+ */
+void wgi_release_effect(wgi_motor *m);
+
 /* Stop, unload, reset, release. Resetting matters: a released motor can otherwise be left
  * accepting effects while producing no torque. */
 void wgi_close(wgi_motor *m);

@@ -48,7 +48,7 @@ except ImportError:
 
 import ffb_render as render
 import probe_log as log
-from motor_sink import RateLimiter, WgiMotorSink, clamp
+from motor_sink import IpcMotorSink, RateLimiter, WgiMotorSink, clamp
 
 try:
     import pyvjoy
@@ -108,18 +108,40 @@ class WheelReader(object):
     """
     Reads the real wheel, and reports honestly when it cannot.
 
-    Position reading through WGI is NOT foreground-gated -- verified 2026-08-23 over 18.6 s
-    of continuous background sampling -- so this works with a game in front. Do not add
-    foreground-grabbing here; it would steal focus from the game for no benefit.
+    POSITION READING IS FOREGROUND-GATED, exactly like force output. An earlier version of
+    this docstring said the opposite, on the strength of a background sample that could not
+    tell tracking from values gathered across focus transitions -- the same data showed 65%
+    of background samples at exactly 0.000 against 0% while foregrounded.
+
+    That matters more than it looks: if this returns zeros while a game is in front, vJoy's
+    axes never move, the game cannot bind steering, and a game that has not bound steering
+    never sends force feedback either. The whole bridge dies at the input end.
+
+    So when a `source` is given -- the IPC sink, fed by the shim inside the game -- readings
+    come from there instead, and WGI is only the fallback for running without a game.
     """
 
-    def __init__(self, wheel):
+    def __init__(self, wheel, source=None):
         self.wheel = wheel
+        self.source = source
         self.reads = 0
         self.failures = 0
         self.last = None
+        self.from_shim = 0
 
     def read(self):
+        if self.source is not None:
+            reading = self.source.read()
+            if reading is not None:
+                self.reads += 1
+                self.from_shim += 1
+                self.last = reading
+                return reading
+            # Fall through to WGI rather than returning None: before the game has loaded the
+            # shim there is nothing publishing, and our own window may still be in front.
+        if self.wheel is None:
+            self.failures += 1
+            return None
         try:
             reading = self.wheel.get_current_reading()
         except Exception:
@@ -132,6 +154,11 @@ class WheelReader(object):
     def capabilities(self):
         """What this wheel actually has, so unmapped axes can be skipped and reported."""
         caps = {}
+        if self.wheel is None:
+            # Readings come from the shim; we never saw the device ourselves. Unknown rather
+            # than False, so nothing gets skipped on the strength of a guess.
+            return {"clutch": None, "handbrake": None, "pattern_shifter": None,
+                    "max_wheel_angle": None}
         for attr, probe in (("clutch", "has_clutch"),
                             ("handbrake", "has_handbrake"),
                             ("pattern_shifter", "has_pattern_shifter")):
@@ -483,6 +510,11 @@ def parse_args():
                    help="read the wheel and report, but write nothing to vJoy")
     p.add_argument("--no-ffb", action="store_true",
                    help="input path only; never take the motor")
+    p.add_argument("--sink", choices=("ipc", "wgi"), default="ipc",
+                   help="where force goes. 'ipc' (default) publishes to the shim inside the "
+                        "game, which is the only thing that works with a game running. 'wgi' "
+                        "drives the motor from this process and only produces torque while "
+                        "OUR window is in front -- diagnostics only.")
     p.add_argument("--no-grab", action="store_true",
                    help="never take the foreground. Force output will be silent unless you "
                         "click the probe window yourself, but nothing steals your keyboard.")
@@ -556,12 +588,20 @@ def main():
             return 1
 
         motor, label, wheel, identity = report(raw, wheels)
-        if wheel is None:
+
+        # Create the IPC sink BEFORE the reader, because it is also the reader's source: the
+        # shim publishes wheel position through the same section it takes force from.
+        if args.sink == "ipc" and not args.no_ffb and not args.dry_run:
+            sink = IpcMotorSink(max_force=args.max_force, gain=args.gain).open()
+
+        if wheel is None and sink is None:
             rule("RESULT")
             print("  Found a device via %s but no RacingWheel to read position from." % label)
             return 1
+        if wheel is None:
+            print("  No RacingWheel enumerated here -- relying on the shim for readings.")
 
-        reader = WheelReader(wheel)
+        reader = WheelReader(wheel, source=sink)
         caps = reader.capabilities()
 
         rule("Real wheel")
@@ -587,10 +627,14 @@ def main():
             print("  DRY RUN -- nothing is being written to vJoy.")
 
         # --- force feedback: render what the game sends onto the real motor ---
-        if not args.no_ffb and motor is not None and not args.dry_run:
-            loop = asyncio.new_event_loop()
-            sink = WgiMotorSink(motor, loop, max_force=args.max_force, gain=args.gain)
-            sink.open()
+        if not args.no_ffb and not args.dry_run and (motor is not None or sink is not None):
+            loop = None
+            if sink is None:
+                # 'wgi' sink: drive the motor from this process. Only produces torque while
+                # OUR window is in front, so this is for diagnostics, not for playing.
+                loop = asyncio.new_event_loop()
+                sink = WgiMotorSink(motor, loop, max_force=args.max_force, gain=args.gain)
+                sink.open()
             decoder = EffectDecoder(render.EffectMixer())
             device = feeder.device if feeder.device is not None else pyvjoy.VJoyDevice(
                 args.device)
@@ -602,12 +646,20 @@ def main():
             print("  played on the real wheel. Everything is computed in software and")
             print("  summed into one command -- see ffb_render.EffectMixer.")
             print()
-            print("  !! WGI force output is foreground-gated, so while an effect is")
-            print("     PLAYING this process takes the foreground and your keystrokes")
-            print("     -- including Ctrl+C -- go to the probe window, not here. It")
-            print("     releases focus as soon as nothing is playing. Use --run-seconds")
-            print("     for a self-terminating run, or --no-grab to keep your keyboard.")
-            print("     That gate is the whole reason Track D exists; it is not a bug.")
+            if args.sink == "ipc":
+                print("  Force goes to the shim inside the game, which calls WGI from there.")
+                print("  This process never takes the foreground -- the game keeps it, which")
+                print("  is exactly what makes the motor reachable. Copy")
+                print("  shim\\build\\dinput8.dll next to the game exe if you have not yet;")
+                print("  until the shim reports 'driving' above, nothing reaches the wheel.")
+                print()
+            else:
+                print("  !! WGI force output is foreground-gated, so while an effect is")
+                print("     PLAYING this process takes the foreground and your keystrokes")
+                print("     -- including Ctrl+C -- go to the probe window, not here. It")
+                print("     releases focus as soon as nothing is playing. Use --run-seconds")
+                print("     for a self-terminating run, or --no-grab to keep your keyboard.")
+                print("     That gate is why the shim exists; use --sink ipc with a game.")
         elif args.no_ffb:
             print("  Force feedback disabled (--no-ffb).")
         elif args.dry_run:
@@ -639,14 +691,21 @@ def main():
                     force = decoder.mixer.force(now, state)
                     sink.set_force(force)
 
-                    # Take the foreground ONLY while an effect is actually playing.
+                    # Take the foreground ONLY while an effect is actually playing, and ONLY
+                    # when we are the ones driving the motor.
                     #
-                    # WGI gates force output on foreground, so the grab is necessary -- but
-                    # grabbing unconditionally makes the tool unusable: it steals every
-                    # keystroke, including the Ctrl+C meant to stop it, and it does so even
-                    # when sitting idle with nothing to output. Gating on running effects
-                    # means the console keeps focus whenever there is no force to lose.
-                    if (not args.no_grab and decoder.mixer.running_effects()
+                    # WGI gates force output on foreground, so with the 'wgi' sink the grab is
+                    # necessary -- but grabbing unconditionally makes the tool unusable: it
+                    # steals every keystroke, including the Ctrl+C meant to stop it. Gating on
+                    # running effects means the console keeps focus when there is no force to
+                    # lose.
+                    #
+                    # With the 'ipc' sink the grab is not merely unnecessary, it is ACTIVELY
+                    # WRONG: the shim inside the game is what talks to the motor, so stealing
+                    # focus would take it away from the game that needs it -- breaking the
+                    # very thing this sink exists to make work.
+                    if (args.sink != "ipc" and not args.no_grab
+                            and decoder.mixer.running_effects()
                             and now - last_foreground > 0.1):
                         pump.ensure_foreground()
                         last_foreground = now
