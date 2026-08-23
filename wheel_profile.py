@@ -37,6 +37,7 @@ from datetime import datetime, timedelta
 import winrt.windows.gaming.input.forcefeedback as ff
 from winrt.windows.foundation.numerics import Vector3
 
+import ffb_render as render
 import probe_log as log
 
 PROFILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wheel_profile.json")
@@ -45,9 +46,7 @@ PROFILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wheel_p
 # from it. Wheel readings are normalised to -1..1, so 0.05 is 2.5% of full travel.
 MOVE_EPSILON = 0.05
 
-# Exponential smoothing factor for the velocity estimate in the software condition loop.
-# 1.0 is no smoothing (raw and jittery); lower is smoother but lags behind the wheel.
-VELOCITY_SMOOTHING = 0.25
+# (The velocity smoothing factor moved to ffb_render.WheelState with the control laws.)
 
 PROFILE_VERSION = 2
 
@@ -644,14 +643,6 @@ CONDITION_GAINS = {
     "inertia": 0.10,    # per unit of acceleration
 }
 
-CONDITION_HELP = {
-    "spring": "pulls back to centre -- force grows with how far off-centre you are",
-    "damper": "resists SPEED -- turning fast is heavy, turning slowly is light",
-    "friction": "constant drag whenever the wheel moves, at any speed",
-    "inertia": "resists ACCELERATION -- heavy to start or stop turning, free once moving",
-}
-
-
 def run_software_condition(session, kind, profile, magnitude, duration, rate_hz=80.0):
     """
     A condition effect computed here rather than in the firmware.
@@ -684,7 +675,7 @@ def run_software_condition(session, kind, profile, magnitude, duration, rate_hz=
     effect.set_parameters(Vector3(0.0, 0.0, 0.0), timedelta(seconds=duration + 2.0))
 
     print()
-    print("  SOFTWARE %s -- %s" % (kind.upper(), CONDITION_HELP[kind]))
+    print("  SOFTWARE %s -- %s" % (kind.upper(), render.CONDITION_HELP[kind]))
     print("  computed here at %.0f Hz from the wheel's own position" % rate_hz)
     print("  strength %.2f, %.0fs. HOLD AND TURN -- it only reacts to movement."
           % (magnitude, duration))
@@ -714,8 +705,15 @@ def run_software_condition(session, kind, profile, magnitude, duration, rate_hz=
         # "Centre" is wherever the wheel is sitting when the effect starts, so a spring
         # pulls back to the position you began at rather than to an assumed zero.
         centre = session.read_wheel()
-        previous_position = centre
-        previous_velocity = 0.0
+
+        # The control law itself now lives in ffb_render, parameterised, so the bridge can
+        # drive it with a game's coefficients instead of these fitted ones. The numbers are
+        # unchanged: test_ffb_render.py compares the two implementations across the full
+        # input range and requires exact equality.
+        params = render.legacy_condition_params(kind, CONDITION_GAINS[kind], offset=centre)
+        state = render.WheelState()
+        state.update(centre, time.monotonic())
+
         previous_time = time.monotonic()
         end_time = previous_time + duration
         last_foreground = 0.0
@@ -731,32 +729,13 @@ def run_software_condition(session, kind, profile, magnitude, duration, rate_hz=
             if position is None:
                 continue
 
-            # Differentiating a quantised reading 80x a second is noisy, and the noise
-            # goes straight to the motor as chatter. Smooth velocity before differentiating
-            # it again for acceleration, or inertia is pure hash.
-            raw_velocity = (position - previous_position) / dt
-            velocity = previous_velocity + VELOCITY_SMOOTHING * (raw_velocity - previous_velocity)
-            acceleration = (velocity - previous_velocity) / dt
-
-            gain = CONDITION_GAINS[kind]
-            if kind == "spring":
-                # Force opposes displacement from where the wheel started.
-                command = -(position - centre) * gain
-            elif kind == "damper":
-                # Force opposes velocity, proportionally: fast turns heavy, slow turns light.
-                command = -velocity * gain
-            elif kind == "friction":
-                # Constant drag, direction only. The dead band stops it buzzing when still.
-                command = 0.0 if abs(velocity) < 0.05 else (-gain if velocity > 0 else gain)
-            else:  # inertia
-                command = -acceleration * gain
-
-            command = max(-1.0, min(1.0, command)) * magnitude
+            state.update(position, now)
+            command = render.condition_force(kind, params, state) * magnitude
             peak = max(peak, abs(command))
 
             log.event("cond.tick", kind=kind, dt=dt, position=position,
-                      displacement=position - centre, velocity=velocity,
-                      raw_velocity=raw_velocity, accel=acceleration,
+                      displacement=position - centre, velocity=state.velocity,
+                      raw_velocity=state.raw_velocity, accel=state.acceleration,
                       command=command, vector=command * k)
 
             # Throttled: re-asserting foreground 80x a second is pure overhead, and the
@@ -774,8 +753,6 @@ def run_software_condition(session, kind, profile, magnitude, duration, rate_hz=
                 print("  set_parameters failed mid-loop: %s" % exc)
                 break
 
-            previous_position = position
-            previous_velocity = velocity
             previous_time = now
 
         effect.stop()
