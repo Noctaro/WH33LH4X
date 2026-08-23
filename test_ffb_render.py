@@ -164,6 +164,72 @@ def test_periodics():
     return ok
 
 
+def test_direction_sign():
+    """
+    Opposite directions must produce opposite signs. THIS IS THE ONE THAT BIT US.
+
+    DiRT 4 sends a positive magnitude and points it with a polar angle, flipping 0 <-> 180
+    degrees for left and right. Both are zeros of sin, and the old degeneracy guard returned
+    +1.0 for each -- so every force came out in the same direction. The wheel could not centre
+    (a centring force must change sign across centre) and pulled permanently to one side.
+
+    It survived a whole session of play because rectification is INAUDIBLE on symmetric
+    effects: kerbs and gravel feel right either way. Only directional force reveals it, which
+    is why it needs a test rather than a drive.
+    """
+    print("\ndirection sign (rectification regression)")
+    north = R.direction_x(0)                     # 0 degrees
+    south = R.direction_x(16384)                 # 180 degrees
+    ok = check("0 and 180 degrees are opposite (%+.2f vs %+.2f)" % (north, south),
+               north * south < 0)
+    ok &= check("neither is zero -- a zero would silence a one-axis wheel",
+                abs(north) > 0.05 and abs(south) > 0.05)
+
+    # Cartesian senders land on 8191, where sin is 1.0 and the guard is never reached.
+    ok &= check("cartesian +X (8191) is undisturbed",
+                abs(R.direction_x(8191) - 1.0) < 0.01)
+
+    # Sign must stay continuous the whole way round, including either side of both zeros.
+    ok &= check("1 degree is positive", R.direction_x(91) > 0)
+    ok &= check("359 degrees is negative", R.direction_x(32677) < 0)
+    ok &= check("181 degrees is negative", R.direction_x(16475) < 0)
+    ok &= check("270 degrees is full negative (%+.2f)" % R.direction_x(24576),
+                abs(R.direction_x(24576) + 1.0) < 0.01)
+
+    # DiRT 4 measured: it flips between 90 deg (x11780) and 180 deg (x2990) to mean left and
+    # right, with unsigned magnitude. Both are non-negative under sin, so a polar reading
+    # rectifies this game however carefully the 0/180 boundary is handled.
+    try:
+        for mode in ("span", "sign"):
+            R.DIRECTION_MODE = mode
+            left, right = R.direction_x(8191), R.direction_x(16383)
+            ok &= check("%s: 90 and 180 deg are opposite (%+.2f vs %+.2f)"
+                        % (mode, left, right), left * right < 0)
+            ok &= check("%s: 90 deg is positive -- the polarity measured in the car" % mode,
+                        left > 0)
+            ok &= check("%s: neither end is zero" % mode,
+                        abs(left) > 0.5 and abs(right) > 0.5)
+            ok &= check("%s: outside the measured range is clamped, not wrapped" % mode,
+                        abs(R.direction_x(0)) <= 1.0 and abs(R.direction_x(32767)) <= 1.0)
+            rectified = all(R.direction_x(d) >= 0 for d in range(8191, 16384, 64))
+            ok &= check("%s is not rectified across 90-180 deg" % mode, not rectified)
+
+        R.DIRECTION_MODE = "span"
+        ok &= check("span interpolates: 135 deg is the neutral point (%+.3f)"
+                    % R.direction_x(12287), abs(R.direction_x(12287)) < 0.01)
+        R.DIRECTION_MODE = "sign"
+        ok &= check("sign does NOT null out at 135 deg (%+.2f)" % R.direction_x(12287),
+                    abs(R.direction_x(12287)) > 0.5)
+    finally:
+        # A module-level mode left set would silently change every later test.
+        R.DIRECTION_MODE = "sin"
+
+    still_rectified = all(R.direction_x(d) >= 0 for d in range(8191, 16384, 64))
+    ok &= check("sin mode over that same range IS rectified -- the bug, pinned down",
+                still_rectified)
+    return ok
+
+
 def test_envelope():
     """Attack ramps in, fade ramps out, and an infinite effect never fades."""
     print("\nenvelopes")
@@ -208,8 +274,8 @@ def test_wheel_state():
 def main():
     print("ffb_render control-law checks")
     results = [test_matches_legacy(), test_friction_is_a_step(), test_di_conversion(),
-               test_saturation_and_sign(), test_periodics(), test_envelope(),
-               test_wheel_state()]
+               test_saturation_and_sign(), test_periodics(), test_direction_sign(),
+               test_envelope(), test_wheel_state()]
     print()
     if all(results):
         print("ALL CHECKS PASSED")

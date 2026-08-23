@@ -22,15 +22,39 @@
 #   .\play.ps1                                  # bridge only, launch the game yourself
 #   .\play.ps1 -Game "Y:\...\DiRT 4\dirt4.exe"  # deploy, run the game, clean up after
 #   .\play.ps1 -Game ... -Gain 0.8 -MaxForce 0.9
+#   .\play.ps1 -Game ... -NoLaunch              # shim + bridge, you start it from Steam
+#   .\play.ps1 -Game ... -NoFfb                 # input only -- for binding controls
+#
+# TUNING happens in tune.json while the game runs -- strength, max_force, min_force and the
+# synthetic spring/damper are all re-read within half a second of a save. Nothing here needs
+# restarting to change how the wheel feels, except -Gain.
+#
 #   .\play.ps1 -Game ... -KeepDll               # leave the DLL in place after exiting
+#   .\play.ps1 -Game ... -StartTimeout 300      # slow Steam start / login prompt
 
 [CmdletBinding()]
 param(
     [string] $Game,
-    [double] $Gain = 0.5,
+    # The motor's master gain, LATCHED when the shim loads the effect -- the one value that
+    # cannot be changed while you drive. So it opens all the way and tune.json's max_force does
+    # the limiting instead, live. Turning this down only removes headroom you cannot get back
+    # without restarting the game.
+    [double] $Gain = 1.0,
     [double] $MaxForce = 0.6,
     [switch] $KeepDll,
-    [switch] $NoBridge
+    [switch] $NoBridge,
+    # Deploy the shim and start the bridge, but let you start the game yourself. What you want
+    # for a Steam title: the client launches it the way it always does, and we still clean the
+    # DLL out of the folder when you quit.
+    [switch] $NoLaunch,
+    # Feed the axes but never touch force feedback. FOR BINDING: a game re-initialising the
+    # vJoy device mid-binding has to take the force-feedback channel, and it cannot while the
+    # bridge holds it -- some games report that as the device being disconnected. Bind with
+    # this, then restart without it to play.
+    [switch] $NoFfb,
+    # How long to wait for the game process to show up. Steam can take a while when it has to
+    # start the client, update, or prompt for a login.
+    [int] $StartTimeout = 120
 )
 
 $ErrorActionPreference = 'Stop'
@@ -43,6 +67,7 @@ if (-not (Test-Path $python)) { Write-Error "No venv python at $python" }
 
 $deployed = $null
 $bridgeProc = $null
+$procName = $null
 
 try {
     if ($Game) {
@@ -51,21 +76,41 @@ try {
 
         $gameDir = Split-Path -Parent $Game
         $deployed = Join-Path $gameDir 'dinput8.dll'
-        # Refuse to clobber someone else's proxy -- ReShade and friends use this same filename,
-        # and silently replacing one would break their setup in a way nobody would connect
-        # back to this script.
-        if ((Test-Path $deployed) -and -not $KeepDll) {
-            $existing = (Get-Item $deployed).Length
-            $ours = (Get-Item $builtDll).Length
-            if ($existing -ne $ours) {
+        $alreadyOurs = $false
+
+        if (Test-Path $deployed) {
+            # Hashes, not sizes. Two builds of our own shim differ in content far more often
+            # than in length, and "same size" would call a stale build current.
+            $ours = (Get-FileHash $builtDll -Algorithm SHA256).Hash
+            $there = (Get-FileHash $deployed -Algorithm SHA256).Hash
+            if ($ours -eq $there) {
+                # Already the current shim. Usually means a game is running with it loaded,
+                # which is exactly when you want to restart the bridge alone -- so this is a
+                # normal state, not a conflict. Copying over it would fail anyway: Windows
+                # locks a mapped DLL, and that failure is what used to abort the launcher.
+                $alreadyOurs = $true
+                Write-Host "shim already in place: $deployed"
+            } elseif (-not $KeepDll) {
+                # Refuse to clobber someone else's proxy -- ReShade and friends use this same
+                # filename, and silently replacing one would break their setup in a way nobody
+                # would connect back to this script.
                 Write-Warning "A different dinput8.dll is already in $gameDir."
                 Write-Warning "Not touching it. Move it aside yourself, or pass -KeepDll to leave things alone."
                 $deployed = $null
             }
         }
-        if ($deployed) {
-            Copy-Item $builtDll $deployed -Force
-            Write-Host "shim deployed: $deployed"
+
+        if ($deployed -and -not $alreadyOurs) {
+            try {
+                Copy-Item $builtDll $deployed -Force
+                Write-Host "shim deployed: $deployed"
+            } catch {
+                # In use by a running game, almost certainly. Not fatal, and not a reason to
+                # refuse to start the bridge.
+                Write-Warning "Could not write $deployed -- $($_.Exception.Message)"
+                Write-Warning "Carrying on. If a game is already running it has the shim loaded."
+                $deployed = $null
+            }
         }
     }
 
@@ -73,8 +118,14 @@ try {
         # Not $args -- that is an automatic variable in PowerShell and assigning to it is a
         # quiet way to break argument handling later in the script.
         $bridgeArgs = @($bridge, '--gain', $Gain, '--max-force', $MaxForce)
+        if ($NoFfb) { $bridgeArgs += '--no-ffb' }
         $bridgeProc = Start-Process -FilePath $python -ArgumentList $bridgeArgs -PassThru
-        Write-Host "bridge started (pid $($bridgeProc.Id))  gain=$Gain maxforce=$MaxForce"
+        if ($NoFfb) {
+            Write-Host "bridge started (pid $($bridgeProc.Id))  INPUT ONLY -- no force feedback"
+            Write-Host "  Bind your controls now, then restart without -NoFfb to play."
+        } else {
+            Write-Host "bridge started (pid $($bridgeProc.Id))  gain=$Gain maxforce=$MaxForce"
+        }
         # The bridge no longer needs to start before the game -- readings come from the shim
         # once the game is up -- but giving it a moment means vJoy is already being fed when
         # the game enumerates devices, which makes binding an axis less fiddly.
@@ -82,10 +133,60 @@ try {
     }
 
     if ($Game) {
-        Write-Host "launching $Game"
-        $game = Start-Process -FilePath $Game -PassThru
-        Write-Host "waiting for the game to exit (Ctrl+C here is safe -- cleanup still runs)"
-        $game.WaitForExit()
+        $procName = [IO.Path]::GetFileNameWithoutExtension($Game)
+        # Waiting on a person takes longer than waiting on Steam, so -NoLaunch gets a bigger
+        # default -- but an explicit -StartTimeout always wins.
+        $wait = if ($NoLaunch -and -not $PSBoundParameters.ContainsKey('StartTimeout')) { 600 }
+                else { $StartTimeout }
+
+        if ($NoLaunch) {
+            # Steam titles are happier started the way they normally are -- from the library,
+            # so the client sets up its own environment, overlay and cloud sync exactly as it
+            # always does. We still do the two things that matter: the shim is in the folder
+            # before the game loads, and it comes out again when the game quits.
+            Write-Host ""
+            Write-Host "Shim and bridge are up. Start $procName yourself now -- Steam, a shortcut, however you like."
+            Write-Host "Cleanup runs by itself when the game exits, or press Ctrl+C here."
+            Write-Host ""
+        } else {
+            Write-Host "launching $Game"
+            # -WorkingDirectory matters: without it the game inherits this script's directory
+            # and looks for its own data files in the repo. No -PassThru: the handle is no use
+            # to us (see below), and capturing it in a $game variable would silently coerce the
+            # Process to a string, since variable names are case-insensitive and $Game is the
+            # [string] parameter above.
+            Start-Process -FilePath $Game -WorkingDirectory $gameDir
+            Write-Host "waiting for the game to exit (Ctrl+C here is safe -- cleanup still runs)"
+        }
+
+        # WHY WE WATCH A PROCESS NAME RATHER THAN A HANDLE
+        #
+        # A Steam game with no steam_appid.txt next to it re-execs itself through Steam:
+        # SteamAPI_RestartAppIfNecessary hands the app id to the client and the process we
+        # started exits within a second, then Steam launches a fresh one. Waiting on the handle
+        # we get back returns immediately, and the cleanup below then yanks the shim out of the
+        # game folder just as the real process is starting -- which looks exactly like "the
+        # game did not start". The replacement lives in the same folder, so the shim still
+        # loads; we just have to spot it by name. The same loop serves -NoLaunch, where there
+        # is no handle to wait on at all.
+        $running = $false
+        # Generous while we wait for it to appear -- Steam may still be starting up or asking
+        # someone to log in, and under -NoLaunch a person has to go and click the thing. Short
+        # once we have seen it, so a real quit cleans up promptly.
+        $deadline = (Get-Date).AddSeconds($wait)
+        while ((Get-Date) -lt $deadline) {
+            if (@(Get-Process -Name $procName -ErrorAction SilentlyContinue).Count -gt 0) {
+                if (-not $running) {
+                    $running = $true
+                    Write-Host "game is up ($procName)"
+                }
+                $deadline = (Get-Date).AddSeconds(10)
+            }
+            Start-Sleep -Seconds 2
+        }
+        if (-not $running) {
+            Write-Warning "Never saw a process named '$procName' within $wait s -- cleaning up."
+        }
     } else {
         Write-Host ""
         Write-Host "Bridge is running. Launch the game whenever you like."
@@ -106,7 +207,21 @@ finally {
             Remove-Item $deployed -Force
             Write-Host "shim removed: $deployed"
         } catch {
-            Write-Warning "Could not remove $deployed -- delete it yourself before playing online."
+            # Windows locks a DLL that is mapped into a live process, so the usual cause is a
+            # game still running -- which also means the file is still doing its job and is
+            # not a problem yet. Say which case this is rather than sounding an alarm that
+            # reads the same either way.
+            # $procName is set inside the try, so it can be unset if we failed before that.
+            $stillRunning = $false
+            if ($procName) {
+                $stillRunning = @(Get-Process -Name $procName -ErrorAction SilentlyContinue).Count -gt 0
+            }
+            if ($stillRunning) {
+                Write-Warning "$procName is still running, so $deployed stays for now."
+                Write-Warning "Run this script again once the game exits to clear it, or delete it yourself."
+            } else {
+                Write-Warning "Could not remove $deployed -- delete it yourself before playing online."
+            }
         }
     }
 }

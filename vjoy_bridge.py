@@ -37,6 +37,7 @@ Usage:
 
 import argparse
 import asyncio
+import os
 import queue
 import sys
 import time
@@ -48,6 +49,7 @@ except ImportError:
 
 import ffb_render as render
 import probe_log as log
+from live_tune import ButtonTuner, LiveTune
 from motor_sink import IpcMotorSink, RateLimiter, WgiMotorSink, clamp
 
 try:
@@ -272,8 +274,11 @@ class EffectDecoder(object):
       * gain arrives as a 0-255 BYTE, not 0..10000
       * duration arrives in MILLISECONDS, not microseconds, and 0 means infinite
       * magnitudes and condition coefficients arrive unchanged, +-10000 full scale
-      * direction becomes polar; the SIGN of a force travels in the magnitude, and the
-        direction vector is normalised to 8191 (90 degrees) either way
+      * direction becomes polar, and HOW A GAME SIGNS A FORCE DEPENDS ON THE GAME. A
+        cartesian sender is normalised to 8191 (90 degrees) either way and the sign has
+        nowhere to live but the magnitude. A polar sender -- DiRT 4 is one -- keeps the
+        magnitude positive and flips the angle 0 <-> 180 instead. Assuming the first was
+        universal is what rectified our entire output; see `ffb_render.direction_x`.
 
     Getting gain or duration wrong is a silent factor-of-40 error, not a crash.
     """
@@ -285,6 +290,18 @@ class EffectDecoder(object):
         self.received = 0
         self.dropped = 0
         self.unknown = 0
+
+        # Which convention is this game actually using? Cheap to record and it settles the
+        # question a whole session of driving could not. Directions are counted rather than
+        # logged per packet -- they arrive ~66x a second and only the DISTINCT values matter.
+        self.dir_counts = {}
+        self.mag_min = 0.0
+        self.mag_max = 0.0
+        # The most recent direction, for per-tick telemetry. Distinct values alone cannot show
+        # whether direction tracks STEERING, and that correlation is what identifies the
+        # encoding -- so the current value has to reach the tick line.
+        self.last_dir = 0
+        self.last_dir_x = 0.0
 
     # -- called on vJoy's thread -------------------------------------------
 
@@ -346,9 +363,25 @@ class EffectDecoder(object):
             effect.gain = f["Gain"] / 255.0                  # BYTE, not 0..10000
             effect.duration = f["Duration"] / 1000.0         # ms; 0 stays 0 = infinite
             effect.start_delay = f.get("StartDelay", 0) / 1000.0
-            effect.direction = render.direction_x(f["DirX"])
+            dir_raw = f["DirX"]
+            effect.direction = render.direction_x(dir_raw)
+            self.last_dir = dir_raw
+            self.last_dir_x = effect.direction
+            # First sighting of a direction value is worth a line; the next ten thousand are
+            # not. Two distinct values here means the game steers with the ANGLE.
+            if dir_raw not in self.dir_counts:
+                log.event("decode.direction", dirx=dir_raw,
+                          degrees=round(360.0 * (dir_raw % 32768) / 32768.0, 1),
+                          x=round(effect.direction, 3))
+                self.dir_counts[dir_raw] = 0
+            self.dir_counts[dir_raw] += 1
         elif reptype == PT_CONSTREP:
-            effect.magnitude = f["Magnitude"] / render.DI_FULL_SCALE
+            raw = f["Magnitude"]
+            # The extremes are the measurement: a magnitude that never goes negative means the
+            # sign is being carried somewhere else (or thrown away).
+            self.mag_min = min(self.mag_min, raw)
+            self.mag_max = max(self.mag_max, raw)
+            effect.magnitude = raw / render.DI_FULL_SCALE
         elif reptype == PT_RAMPREP:
             effect.ramp_start = f["Start"] / render.DI_FULL_SCALE
             effect.ramp_end = f["End"] / render.DI_FULL_SCALE
@@ -526,8 +559,14 @@ def parse_args():
                    help="motor master gain 0.0-1.0 (default 0.5). Latched when the effect "
                         "is loaded, so changing it needs a reload.")
     p.add_argument("--max-force", type=float, default=0.6,
-                   help="hard cap on commanded force 0.0-1.0 (default 0.6). Multiplies with "
-                        "--gain, so the default is about 30%% of what the wheel can do.")
+                   help="STARTING cap on commanded force 0.0-1.0 (default 0.6). Multiplies "
+                        "with --gain, so the default is about 30%% of what the wheel can do. "
+                        "Unlike --gain this one is live: it seeds tune.json's max_force, and "
+                        "the file wins from then on.")
+    p.add_argument("--tune", default=os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                  "tune.json"),
+                   help="live tuning file, re-read while running (default: tune.json next to "
+                        "this script). Edit it mid-corner; changes apply within half a second.")
     p.add_argument("--no-log", action="store_true")
     return p.parse_args()
 
@@ -580,7 +619,14 @@ def main():
     decoder = None
     loop = None
     try:
-        use_ipc = args.sink == "ipc" and not args.no_ffb and not args.dry_run
+        # NOT conditional on --no-ffb. On this path the sink is also the READER's source: the
+        # shim publishes wheel position through the same shared section it takes force from,
+        # and reading it is the only way to see the wheel while a game holds the foreground.
+        # Dropping the sink for --no-ffb silently took the input path down with it, which
+        # looks exactly like "the game sees no input". Force is withheld further down, by not
+        # registering the callback and never commanding anything -- which is all --no-ffb
+        # should ever have meant.
+        use_ipc = args.sink == "ipc" and not args.dry_run
 
         raw, wheels = wait_for_devices(args.wait, pump)
         motor = label = wheel = None
@@ -596,7 +642,12 @@ def main():
         # Create the IPC sink BEFORE the reader, because it is also the reader's source: the
         # shim publishes wheel position through the same section it takes force from.
         if use_ipc:
-            sink = IpcMotorSink(max_force=args.max_force, gain=args.gain).open()
+            # The sink's own limit is a HARD GUARD against a bug producing nonsense, not the
+            # user-facing ceiling -- `tune.json`'s max_force is that, and it has to be the only
+            # one, or raising it in the file would silently do nothing against a lower clamp
+            # further down. A knob that looks like it works and does not is the exact bug this
+            # whole session started with.
+            sink = IpcMotorSink(max_force=1.0, gain=args.gain).open()
 
         if wheel is None and sink is None:
             rule("RESULT")
@@ -643,7 +694,7 @@ def main():
                 # 'wgi' sink: drive the motor from this process. Only produces torque while
                 # OUR window is in front, so this is for diagnostics, not for playing.
                 loop = asyncio.new_event_loop()
-                sink = WgiMotorSink(motor, loop, max_force=args.max_force, gain=args.gain)
+                sink = WgiMotorSink(motor, loop, max_force=1.0, gain=args.gain)
                 sink.open()
             decoder = EffectDecoder(render.EffectMixer())
             device = feeder.device if feeder.device is not None else pyvjoy.VJoyDevice(
@@ -677,28 +728,82 @@ def main():
         elif motor is None:
             print("  No force-feedback motor found; input only.")
 
+        tune = LiveTune(args.tune)
+        tune.values["max_force"] = args.max_force
+        if tune.write_default():
+            print("  created %s" % args.tune)
+        tune.poll(0.0)
+
         rule("Running -- press Ctrl+C to stop")
         print("  Open joy.cpl and watch the vJoy device's axes track the real wheel.")
         print()
+        print("  Live tuning: %s -- edit it while driving, changes apply within %.1fs."
+              % (args.tune, tune.poll_seconds))
+        print("  %s" % tune.summary())
+        # Two multiplications sit between a full-scale effect and the motor, and only one of
+        # them can be changed without a restart. Stating the product avoids an afternoon spent
+        # tuning against a ceiling nobody remembered was there.
+        print("  Peak torque = max_force %.2f x --gain %.2f = %.2f of the motor%s"
+              % (tune["max_force"], args.gain, tune["max_force"] * args.gain,
+                 "   (--gain is latched at load; restart to change it)"))
+        print()
 
         limiter = RateLimiter(args.rate)
+        tuner = ButtonTuner(tune)
         state = render.WheelState()
+        raw_force = 0.0                 # stays 0 on the input-only path, which has no sink
+        last_buttons = 0
         next_print = 0.0
         last_foreground = 0.0
         stop_at = time.monotonic() + args.run_seconds if args.run_seconds > 0 else None
         while stop_at is None or time.monotonic() < stop_at:
             now = time.monotonic()
+            # BEFORE anything that can decide to skip this tick. The shim treats a lapsed
+            # heartbeat as the bridge having died and releases the motor -- and re-claiming it
+            # repeatedly leaves it silent while still reporting a running effect. Readings
+            # pause routinely, in menus and loading screens, so tying our liveness to them
+            # meant the wheel could go permanently dead just from pausing the game.
+            if sink is not None:
+                sink.keepalive()
             reading = reader.read()
             if reading is not None:
                 written = feeder.feed(reading, caps)
                 state.update(reading.wheel, now)
 
-                if sink is not None:
+                # Buttons only arrive over the IPC sink -- a WGI reading has no button set
+                # here -- so this is quietly inert on the other paths.
+                buttons = getattr(reading, "buttons", 0)
+                if buttons != last_buttons:
+                    # Printing every new bitfield IS the button-discovery tool: press one and
+                    # read off which bit moved. Without it, assigning btn_up means guessing.
+                    bits = [str(i + 1) for i in range(32) if buttons & (1 << i)]
+                    print("    buttons 0x%08X  bits %s"
+                          % (buttons, ",".join(bits) if bits else "-"), flush=True)
+                    log.event("wheel.buttons", raw=buttons, bits=",".join(bits))
+                    last_buttons = buttons
+                note = tuner.update(buttons)
+                if note:
+                    print("    tune: %s   [%s]" % (note, tune.summary()), flush=True)
+                    log.event("tune.button", change=note, **tune.values)
+
+                # `decoder`, not `sink`: with --no-ffb the sink exists so the wheel can still
+                # be READ, but nothing decodes effects and nothing may command force.
+                if decoder is not None:
                     # Apply the game's packets BEFORE computing, so a force command always
                     # reflects the most recent thing the game asked for rather than lagging
                     # it by a tick.
                     decoder.drain()
-                    force = decoder.mixer.force(now, state)
+                    raw_force = decoder.mixer.force(now, state)
+                    changed = tune.poll(now)
+                    # Direction is decoded per packet, and DiRT 4 re-sends it every tick, so
+                    # setting this makes a mode change audible in the wheel almost at once.
+                    render.DIRECTION_MODE = tune["dir_mode"]
+                    if changed:
+                        # Worth a line each time: when someone reports how a change felt, this
+                        # is the record of what the change actually was.
+                        print("    tune: %s" % tune.summary(), flush=True)
+                        log.event("tune.changed", keys=",".join(changed), **tune.values)
+                    force = tune.apply(raw_force, state)
                     sink.set_force(force)
 
                     # Take the foreground ONLY while an effect is actually playing, and ONLY
@@ -723,10 +828,14 @@ def main():
                 if now >= next_print:
                     parts = " ".join("%s %+.2f" % (lbl, rawv) for lbl, rawv, _v in written)
                     extra = ""
-                    if sink is not None:
+                    if decoder is not None:
                         running = decoder.mixer.running_effects()
-                        extra = ("  force %+.2f  fx=%d  pkt=%d"
-                                 % (sink._last or 0.0, len(running), decoder.received))
+                        # Both numbers, always: "game asked for X, wheel got Y" is the whole
+                        # diagnostic. One number alone cannot tell a game sending nothing from
+                        # a tuning value eating everything.
+                        extra = ("  game %+.2f -> out %+.2f  fx=%d  pkt=%d"
+                                 % (raw_force, sink._last or 0.0, len(running),
+                                    decoder.received))
                         if decoder.dropped:
                             extra += " DROPPED=%d" % decoder.dropped
                     # Write/failure counts belong on the live line, not only in the exit
@@ -735,9 +844,17 @@ def main():
                     print("    %-52s %5.1f Hz w=%d f=%d%s"
                           % (parts, limiter.achieved_hz, feeder.writes, feeder.failures,
                              extra), flush=True)
+                    # `game` and `pos` are what make a session log analysable after the fact:
+                    # the sign relationship between wheel position and the game's force IS
+                    # self-aligning torque, and it is the only objective test of whether
+                    # centring works. See tune_report.py.
                     log.event("bridge.tick", hz=round(limiter.achieved_hz, 1),
                               writes=feeder.writes, failures=feeder.failures,
                               force=(sink._last or 0.0) if sink else 0.0,
+                              game=raw_force if sink else 0.0,
+                              pos=state.position, vel=state.velocity,
+                              dirx=decoder.last_dir if decoder else 0,
+                              dirmul=decoder.last_dir_x if decoder else 0.0,
                               effects=len(decoder.mixer.running_effects()) if decoder else 0,
                               **{lbl: rawv for lbl, rawv, _v in written})
                     next_print = now + 0.5
@@ -753,15 +870,41 @@ def main():
         # Order matters: silence the motor before anything else is torn down, so an error
         # on the way out cannot leave the wheel holding a force.
         if sink is not None:
-            try:
-                sink.set_force(0.0)
-            except Exception:
-                pass
+            # Only when force was actually being commanded. With --no-ffb the sink is open
+            # purely to read the wheel, and a single zero write would still stamp the
+            # heartbeat -- making the shim load the effect and take the motor for half a
+            # second on the way out, which is the one thing --no-ffb promises not to do.
+            if decoder is not None:
+                try:
+                    sink.set_force(0.0)
+                except Exception:
+                    pass
             sink.close()
             print("  motor released -- %d writes, %d failures" % (sink.writes, sink.failures))
         if decoder is not None:
             print("  ffb packets %d received, %d dropped, %d unrecognised"
                   % (decoder.received, decoder.dropped, decoder.unknown))
+            # THE MEASUREMENT. Which convention did this game actually use to point a force?
+            # Two or more directions means it steers with the angle and the magnitude stays
+            # positive; one direction plus a magnitude that goes negative means the sign rides
+            # in the magnitude. Printed at exit because it is a property of the whole session.
+            if decoder.dir_counts:
+                shown = sorted(decoder.dir_counts.items(), key=lambda kv: -kv[1])[:6]
+                print("  directions seen: %s"
+                      % ", ".join("%d (%.0f deg) x%d"
+                                  % (d, 360.0 * (d % 32768) / 32768.0, n) for d, n in shown))
+                print("  raw magnitude range: %+d .. %+d"
+                      % (decoder.mag_min, decoder.mag_max))
+                if len(decoder.dir_counts) > 1:
+                    print("  -> the game POINTS forces with the angle. The sign fix in "
+                          "ffb_render.direction_x is the one that matters.")
+                elif decoder.mag_min < 0:
+                    print("  -> the game SIGNS forces in the magnitude, single direction.")
+                else:
+                    print("  -> one direction and a never-negative magnitude: this game sent "
+                          "no directional force at all during this run.")
+                log.event("decode.summary", directions=len(decoder.dir_counts),
+                          mag_min=decoder.mag_min, mag_max=decoder.mag_max)
         if feeder is not None:
             print("  vJoy writes %d, failures %d" % (feeder.writes, feeder.failures))
             feeder.close()

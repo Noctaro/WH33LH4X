@@ -123,6 +123,35 @@ device and logs what comes back out of vJoy's force-feedback callback, so it ver
 whole path without a game or a control-panel tab. It never touches the real wheel. Run it
 first — if it does not report `PASS`, nothing built on top of vJoy will work.
 
+## Tuning force feedback while you drive
+
+Force feedback is judged by feel, and feel cannot be judged across a restart — by the time the
+game is loaded and you are back at the corner that felt wrong, you are comparing against a
+memory. So the bridge re-reads `tune.json` while it runs; a saved change reaches the wheel
+within half a second, mid-corner.
+
+| Key | What it does |
+|---|---|
+| `strength` | Multiplies the game's force. This, not the WGI gain, is the working volume knob — WGI latches gain when the effect loads, so writing it mid-session does nothing |
+| `invert` | Flips the game's force direction. Games disagree about whether a force's sign lives in its magnitude or its direction angle |
+| `max_force` | Ceiling on commanded force. Live, unlike `--gain` |
+| `min_force` | Floor on non-zero output, so small forces still overcome the motor's own stiction instead of vanishing |
+| `spring`, `damper` | Synthetic centring and damping computed from real wheel position. For games that send none — DiRT 4 sends a single constant force and nothing else. `0` = off |
+| `btn_down`, `btn_up`, `btn_next` | Wheel buttons that adjust tuning mid-corner, as 1-based bit numbers. A game owns the foreground and the keyboard with it, so the wheel is the only device that can still reach the bridge. Run it and press buttons — each new bitfield is printed |
+
+After a session, `tune_report.py` says what the force feedback actually did:
+
+```powershell
+.\.venv\Scripts\python.exe tune_report.py        # newest bridge log
+```
+
+It reports which effects the game sent, whether output ever went negative, and the correlation
+between steering angle and force. That last number is the objective test for centring: force
+must **oppose** steering angle, and a wheel whose output never changes sign cannot centre no
+matter how it is tuned. A rectified output survived a full session described as "bumps and
+gravel feel ok", because rectification is inaudible on symmetric effects — only arithmetic on a
+log caught it.
+
 ## Logging
 
 Every run writes `logs/wgi_probe_<timestamp>.log` — console output with elapsed timestamps,
@@ -137,6 +166,8 @@ Pass `--no-log` to disable it.
 | `wgi_probe.py` | The tool: detection, message pump, effect menu, sweeps, cleanup |
 | `wheel_profile.py` | Calibration, `wheel_profile.json` persistence, software condition effects |
 | `vjoy_ffb_spike.py` | Verifies the vJoy force-feedback path the game bridge is being built on |
+| `live_tune.py` | `tune.json` reloading and the wheel-button tuning controls |
+| `tune_report.py` | Reads a session log and reports what the force feedback actually did |
 | `probe_log.py` | Session logging to `logs/` |
 | `hid_probe.py` | Reads raw HID report descriptors — shows why DirectInput/GameInput can't reach this wheel |
 | `probe.py` + `gameinput_abi.py` | GameInput diagnostic (negative result, kept as evidence) |

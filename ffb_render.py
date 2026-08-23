@@ -264,6 +264,23 @@ def periodic_force(shape, magnitude, offset, phase_deg, period_s, elapsed_s):
     return clamp(offset + magnitude * WAVEFORMS[shape](phase))
 
 
+# How to read a game's direction field. Set live from tune.json; see direction_x().
+#   "sin"  -- treat it as a true polar angle and take the X component. Correct for a game
+#             that points forces around a full circle.
+#   "span" -- treat it as a steering axis across the 90-180 degree quarter circle, which is
+#             where DiRT 4 puts left and right. Interpolates between them.
+#   "sign"  -- the same two directions with no interpolation, so nothing nulls out halfway.
+DIRECTION_MODE = "sin"
+
+# The measured span: dirx 8191 (90 deg) to 16383 (180 deg), so the centre is halfway between
+# and half-width is a quarter of that. Named rather than inlined because these came off a log
+# and someone will want to know where they came from before changing them.
+SPAN_LOW = 8191.0
+SPAN_HIGH = 16383.0
+SPAN_CENTRE = (SPAN_LOW + SPAN_HIGH) / 2.0        # 12287
+SPAN_HALF = (SPAN_HIGH - SPAN_LOW) / 2.0          # 4096
+
+
 def direction_x(dir_raw):
     """
     X-axis component of a HID PID direction field, as a multiplier in -1.0 .. +1.0.
@@ -271,21 +288,64 @@ def direction_x(dir_raw):
     MEASURED, not assumed. Sending cartesian +X through DirectInput to vJoy arrives as
     `DirX=8191`, which is a quarter of 32768 -- so the field is a full circle in 32768 steps
     and +X sits at 90 degrees. Sending -X arrives as 8191 as well: DirectInput normalises a
-    single-axis cartesian vector, and the sign cannot survive that. **The sign of a force
-    travels in the MAGNITUDE**, which was confirmed separately (+3000 / -3000 round-tripped
-    exactly).
+    single-axis cartesian vector, and the sign cannot survive that. For a CARTESIAN sender,
+    then, the sign of a force travels in the magnitude (+3000 / -3000 round-tripped exactly).
 
-    So for the wheel this is nearly always 1.0 and the magnitude does the work. It is still
-    computed rather than hard-coded, because a game is free to send a genuine polar angle and
-    then this is the only thing that knows which way the force points.
+    THAT IS NOT THE ONLY CONVENTION, AND ASSUMING IT WAS COST US THE WHOLE OUTPUT SIGN.
 
-    The guard matters: an angle with no X component would multiply every force by zero and
-    silence the wheel completely. On a one-axis device that is never what a game means, so
-    it degrades to "full strength, direction from the magnitude" instead of to silence.
+    A game is equally free to send a positive magnitude and point it with a POLAR angle,
+    flipping 0 <-> 180 degrees to mean left and right. DiRT 4 does exactly that. Both of those
+    angles are zeros of sin, so the old degeneracy guard below returned +1.0 for each of them
+    and every leftward force came out rightward. The wheel could then only ever pull one way:
+    no centring (a centring force must change sign as the wheel crosses centre), and a
+    permanent tug towards one side that felt like being dragged into whatever you scraped.
+    Symmetric effects -- kerbs, gravel, engine rumble -- feel perfectly normal rectified,
+    which is what made it survive so long: only directional forces reveal it.
+
+    So the guard still refuses to return 0 -- an angle with no X component would multiply every
+    force by zero and silence a one-axis device, which is never what a game means -- but it now
+    resolves the two zeros by WHICH HALF OF THE CIRCLE the angle is in. That keeps the sign
+    continuous the whole way round: 1 degree and 359 degrees have X components of +0.017 and
+    -0.017, and now return +1.0 and -1.0 rather than both returning +1.0.
+
+    THAT WAS STILL NOT ENOUGH, AND THE LOG SAID WHY.
+
+    DiRT 4 flips direction to mean left and right exactly as described above -- but between
+    90 and 180 degrees, not 0 and 180. Measured over one session:
+
+        8191  (90 deg)  x11780      <- one direction
+        16383 (180 deg) x2990       <- the other
+        12287 (135 deg) x29, then a long tail of ones and twos
+
+    Those two values are ~99% of every packet; the 1253 others are transient sweeps between
+    them, which is why the field first looked like a continuous axis spanning a quarter
+    circle. Both dominant values are non-negative under sin -- sin(90) is +1 and sin(180) is
+    0, which the degeneracy guard then turns into +1 as well -- so a polar reading rectifies
+    this game no matter how carefully the boundary is handled. The quarter circle contains no
+    negative sine to find.
+
+    So the reading is a MODE, because both conventions are real and a wheel meets both. Mode
+    is read live from tune.json, and a game that re-sends its direction every tick -- DiRT 4
+    does -- switches over within milliseconds. That is deliberate: the alternative was a
+    relaunch per guess, and each guess costs a game load and a drive back to the corner.
     """
-    x = math.sin(2.0 * math.pi * (dir_raw / 32768.0))
+    if DIRECTION_MODE == "span":
+        # Linear across the measured span, so the sweeps between the two dominant values pass
+        # through smoothly rather than snapping. Polarity is MEASURED, not chosen: with the
+        # other sign, force correlated +0.365 with steering angle -- pushing deeper into the
+        # turn instead of back out of it. Clamped because a game is not obliged to stay
+        # inside the range we measured.
+        return clamp((SPAN_CENTRE - dir_raw) / SPAN_HALF)
+    if DIRECTION_MODE == "sign":
+        # The same two directions, without interpolation. Worth having because linear
+        # interpolation puts a force NULL at 135 degrees: if a game dwells there under load,
+        # 'span' drops the force out entirely and 'sign' does not.
+        return -1.0 if dir_raw > SPAN_CENTRE else 1.0
+
+    turn = (dir_raw % 32768) / 32768.0          # 0.0 .. 1.0 of a full circle
+    x = math.sin(2.0 * math.pi * turn)
     if abs(x) < 0.05:
-        return 1.0
+        return -1.0 if turn >= 0.5 else 1.0
     return x
 
 

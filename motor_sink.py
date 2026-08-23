@@ -80,6 +80,22 @@ class MotorSink(object):
         """Command a force. Returns True if it reached the hardware."""
         raise NotImplementedError
 
+    def keepalive(self):
+        """
+        Say "still here" without commanding anything. Called every tick, unconditionally.
+
+        Only the IPC sink has anything to do here, and for it this is not optional. The shim
+        watches a heartbeat to decide whether we are alive, and it stamps that heartbeat in
+        `set_force` -- which the bridge only reaches when a wheel reading arrived. A menu, a
+        loading screen, or any pause in readings therefore looked like the bridge dying, and
+        the shim RELEASED THE MOTOR and re-claimed it on the next reading.
+
+        That churn is what makes the wheel go silent: claiming and releasing this motor
+        repeatedly leaves it accepting effects and producing no torque, with the effect still
+        reporting Running. Correct force, loaded effect, dead wheel -- and nothing in any log
+        looks wrong. See the WGI notes in .claude/memory.
+        """
+
     def close(self):
         """Release the motor. Must be safe to call twice."""
 
@@ -263,14 +279,18 @@ class _ShimReading(object):
     either without a special case.
     """
 
-    __slots__ = ("wheel", "throttle", "brake", "clutch", "handbrake")
+    __slots__ = ("wheel", "throttle", "brake", "clutch", "handbrake", "buttons")
 
-    def __init__(self, wheel, throttle, brake, clutch, handbrake):
+    def __init__(self, wheel, throttle, brake, clutch, handbrake, buttons=0):
         self.wheel = wheel
         self.throttle = throttle
         self.brake = brake
         self.clutch = clutch
         self.handbrake = handbrake
+        # Not part of RacingWheelReading's axis set, and deliberately not fed to vJoy -- the
+        # game already has its own path to these buttons. This copy exists so the bridge can be
+        # driven from the wheel while a game owns the foreground and every keystroke with it.
+        self.buttons = buttons
 
 
 class IpcMotorSink(MotorSink):
@@ -302,8 +322,11 @@ class IpcMotorSink(MotorSink):
     _VERSION = 2
     _STALE_MS = 500
 
-    _READING_OFF = 36           # has_reading, then wheel/throttle/brake/clutch/handbrake
-    _READING = struct.Struct("<Ifffff")
+    # has_reading, wheel/throttle/brake/clutch/handbrake, then the button bitfield. The shim
+    # has always published buttons here; nothing unpacked them until tuning needed a control
+    # surface that works while a game holds the foreground and the keyboard.
+    _READING_OFF = 36
+    _READING = struct.Struct("<IfffffI")
 
     STATE_NONE, STATE_MOTOR, STATE_ACTIVE = 0, 1, 2
 
@@ -333,6 +356,14 @@ class IpcMotorSink(MotorSink):
 
     def _beat(self):
         struct.pack_into("<Q", self._mm, 16, self._kernel32.GetTickCount64())
+
+    def keepalive(self):
+        """Stamp the heartbeat alone. See MotorSink.keepalive for why this must never lapse."""
+        if self._mm is None:
+            return False
+        with self._lock:
+            self._beat()
+        return True
 
     def set_force(self, x):
         """
@@ -377,11 +408,11 @@ class IpcMotorSink(MotorSink):
         _state, alive = self.shim_state()
         if not alive:
             return None
-        have, wheel, throttle, brake, clutch, handbrake = \
+        have, wheel, throttle, brake, clutch, handbrake, buttons = \
             self._READING.unpack_from(self._mm, self._READING_OFF)
         if not have:
             return None
-        return _ShimReading(wheel, throttle, brake, clutch, handbrake)
+        return _ShimReading(wheel, throttle, brake, clutch, handbrake, buttons)
 
     def shim_state(self):
         """(state, alive) as last published by the shim -- for reporting, not control flow."""
