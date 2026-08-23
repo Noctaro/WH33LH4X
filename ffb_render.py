@@ -264,6 +264,31 @@ def periodic_force(shape, magnitude, offset, phase_deg, period_s, elapsed_s):
     return clamp(offset + magnitude * WAVEFORMS[shape](phase))
 
 
+def direction_x(dir_raw):
+    """
+    X-axis component of a HID PID direction field, as a multiplier in -1.0 .. +1.0.
+
+    MEASURED, not assumed. Sending cartesian +X through DirectInput to vJoy arrives as
+    `DirX=8191`, which is a quarter of 32768 -- so the field is a full circle in 32768 steps
+    and +X sits at 90 degrees. Sending -X arrives as 8191 as well: DirectInput normalises a
+    single-axis cartesian vector, and the sign cannot survive that. **The sign of a force
+    travels in the MAGNITUDE**, which was confirmed separately (+3000 / -3000 round-tripped
+    exactly).
+
+    So for the wheel this is nearly always 1.0 and the magnitude does the work. It is still
+    computed rather than hard-coded, because a game is free to send a genuine polar angle and
+    then this is the only thing that knows which way the force points.
+
+    The guard matters: an angle with no X component would multiply every force by zero and
+    silence the wheel completely. On a one-axis device that is never what a game means, so
+    it degrades to "full strength, direction from the magnitude" instead of to silence.
+    """
+    x = math.sin(2.0 * math.pi * (dir_raw / 32768.0))
+    if abs(x) < 0.05:
+        return 1.0
+    return x
+
+
 def envelope_scale(elapsed_s, duration_s, attack_level, attack_time_s,
                    fade_level, fade_time_s):
     """
@@ -283,3 +308,192 @@ def envelope_scale(elapsed_s, duration_s, attack_level, attack_time_s,
             progress = min(1.0, (elapsed_s - fade_start) / fade_time_s)
             scale = min(scale, 1.0 + (fade_level - 1.0) * progress)
     return scale
+
+
+# ---------------------------------------------------------------------------
+# The effect model: what a game asked for, and what it is worth right now
+# ---------------------------------------------------------------------------
+
+CONDITION_KINDS = ("spring", "damper", "inertia", "friction")
+PERIODIC_KINDS = tuple(WAVEFORMS)
+
+
+class Effect(object):
+    """
+    One effect a game created, as it currently stands.
+
+    A game builds an effect across SEVERAL packets -- a Set Effect report carrying duration
+    and gain, then a type-specific report carrying magnitude or coefficients, then an Effect
+    Operation report to start it -- and it may update any of them later without touching the
+    others. So this is a mutable record that packets patch in place, never a value rebuilt
+    per packet. Rebuilding is how you lose the gain a game set once at load time and never
+    resent.
+
+    Everything is in normalised units by the time it lands here; converting is the decoder's
+    job, not this one's.
+    """
+
+    def __init__(self, block):
+        self.block = block
+        self.kind = None                # 'constant' | 'ramp' | a periodic | a condition
+        self.gain = 1.0                 # 0..1, the effect's own gain
+        self.duration = 0.0             # seconds; 0 means infinite
+        self.start_delay = 0.0
+        self.direction = 1.0            # X multiplier, see direction_x()
+
+        self.magnitude = 0.0            # constant force, signed
+        self.ramp_start = 0.0
+        self.ramp_end = 0.0
+
+        self.periodic_magnitude = 0.0
+        self.periodic_offset = 0.0
+        self.periodic_phase_deg = 0.0
+        self.periodic_period = 0.0      # seconds
+
+        # DirectInput sends one condition block per axis. A wheel only has one, but a game
+        # written for a 2-axis stick may send two; the first is the one that steers.
+        self.conditions = {}            # axis index -> ConditionParams
+
+        self.attack_level = 1.0
+        self.attack_time = 0.0
+        self.fade_level = 1.0
+        self.fade_time = 0.0
+
+        self.running = False
+        self.started_at = 0.0
+        self.loop_count = 1
+
+    # -- state ------------------------------------------------------------
+
+    def start(self, now, loop_count=1):
+        self.running = True
+        self.started_at = now
+        self.loop_count = max(1, loop_count)
+
+    def stop(self):
+        self.running = False
+
+    def elapsed(self, now):
+        return max(0.0, now - self.started_at - self.start_delay)
+
+    def expired(self, now):
+        """
+        True once a finite effect has played out its duration and loops.
+
+        A game is not obliged to send a stop for an effect that simply ran out, so an
+        effect that never expires here is one that keeps commanding force forever -- felt as
+        a wheel that stays heavy after the game moved on.
+        """
+        if not self.running or self.duration <= 0.0:
+            return False
+        return now - self.started_at - self.start_delay > self.duration * self.loop_count
+
+    # -- output -----------------------------------------------------------
+
+    def force(self, now, state):
+        """This effect's contribution, -1.0 .. +1.0, before device gain."""
+        if not self.running or self.kind is None:
+            return 0.0
+        elapsed = self.elapsed(now)
+        if now - self.started_at < self.start_delay:
+            return 0.0
+
+        if self.kind == "constant":
+            value = self.magnitude
+        elif self.kind == "ramp":
+            # Ramps interpolate across the effect's duration. With no duration there is
+            # nothing to interpolate over, so it holds at its start value rather than
+            # dividing by zero or jumping to the end.
+            if self.duration > 0.0:
+                progress = min(1.0, elapsed / self.duration)
+            else:
+                progress = 0.0
+            value = self.ramp_start + (self.ramp_end - self.ramp_start) * progress
+        elif self.kind in PERIODIC_KINDS:
+            value = periodic_force(self.kind, self.periodic_magnitude,
+                                   self.periodic_offset, self.periodic_phase_deg,
+                                   self.periodic_period, elapsed)
+        elif self.kind in CONDITION_KINDS:
+            params = self.conditions.get(0)
+            if params is None:
+                return 0.0
+            # Conditions are not scaled by the envelope: an envelope shapes a played effect
+            # over time, while a condition is a continuous response to what the wheel is
+            # doing. Fading a spring would make the wheel go slack mid-corner.
+            return clamp(condition_force(self.kind, params, state)
+                         * self.gain * self.direction)
+        else:
+            return 0.0
+
+        envelope = envelope_scale(elapsed, self.duration, self.attack_level,
+                                  self.attack_time, self.fade_level, self.fade_time)
+        return clamp(value * envelope * self.gain * self.direction)
+
+    def describe(self):
+        return "blk%-3d %-12s gain %.2f %s" % (
+            self.block, self.kind or "(undefined)", self.gain,
+            "running" if self.running else "stopped")
+
+
+class EffectMixer(object):
+    """
+    Every effect the game has loaded, and their sum.
+
+    Concurrent effects are the normal case, not an edge case: a sim runs a centring spring, a
+    damper and a road-texture periodic at once and updates them independently. They are kept
+    apart by effect block index, which is why this project requires vJoy >= 2.2.0 -- older
+    builds report index 1 for everything and this dictionary would collapse to one entry.
+
+    All of them are rendered in SOFTWARE and summed into one command, even the conditions the
+    firmware could run natively. That is deliberate: the motor is driven through a single
+    held constant-force effect, and a firmware condition running alongside it would add an
+    unknown torque that nothing here can account for. One renderer, one number, one clamp.
+    """
+
+    def __init__(self):
+        self.effects = {}
+        self.device_gain = 1.0          # the game's device-wide gain, 0..1
+        self.paused = False
+        self.actuators_enabled = True
+
+    def get(self, block):
+        """The effect for this block, created on first mention."""
+        effect = self.effects.get(block)
+        if effect is None:
+            effect = Effect(block)
+            self.effects[block] = effect
+        return effect
+
+    def free(self, block):
+        self.effects.pop(block, None)
+
+    def reset(self):
+        """Device Reset: everything forgotten, actuators back on, not paused."""
+        self.effects.clear()
+        self.paused = False
+        self.actuators_enabled = True
+        self.device_gain = 1.0
+
+    def stop_all(self):
+        for effect in self.effects.values():
+            effect.stop()
+
+    def force(self, now, state):
+        """
+        Sum of every running effect, clamped once at the end.
+
+        Clamping per effect instead would quietly change the mix: three effects at 0.5 should
+        saturate to 1.0 together, not be flattened to 0.5 each and then summed to 1.5.
+        """
+        if self.paused or not self.actuators_enabled:
+            return 0.0
+        total = 0.0
+        for effect in list(self.effects.values()):
+            if effect.expired(now):
+                effect.stop()
+                continue
+            total += effect.force(now, state)
+        return clamp(total * self.device_gain)
+
+    def running_effects(self):
+        return [e for e in self.effects.values() if e.running]

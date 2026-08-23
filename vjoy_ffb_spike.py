@@ -78,6 +78,7 @@ from dinput_abi import (
     DirectInputError,
     GUID_ConstantForce,
     GUID_Damper,
+    GUID_Friction,
     GUID_RampForce,
     GUID_Sine,
     GUID_Spring,
@@ -138,6 +139,9 @@ class PacketSink(object):
         self.decode_failures = 0
         self.started = time.monotonic()
         self.quiet = False         # suppress console printing during the concurrency phase
+        # False in --send-only, where no callback is registered on purpose. Without this
+        # every phase reports "NO PACKETS", which is true and completely misleading.
+        self.listening = True
 
     def __call__(self, data, reptype):
         # A ctypes callback that raises prints a traceback and returns garbage to the
@@ -223,7 +227,7 @@ class PacketSink(object):
 # Preflight
 # ---------------------------------------------------------------------------
 
-def preflight(rid):
+def preflight(rid, send_only=False):
     """Report everything that decides whether this can work, before touching anything."""
     rule("vJoy preflight")
 
@@ -267,8 +271,17 @@ def preflight(rid):
     status = sdk.GetVJDStatus(rid)
     print()
     print("  device %d status         : %s" % (rid, STATUS_NAMES.get(status, status)))
-    if status in (VJD_STAT_MISS, VJD_STAT_BUSY):
+    if status == VJD_STAT_BUSY and send_only:
+        # Exactly what we want in send-only: something else owns the device, which is the
+        # bridge, which is the thing that will receive what we send. Treating BUSY as fatal
+        # here made the end-to-end test impossible -- the spike refused to start precisely
+        # because its counterpart was running.
+        print("    (owned by another process -- expected in --send-only; that is the")
+        print("     bridge, and it is who will receive these effects)")
+    elif status in (VJD_STAT_MISS, VJD_STAT_BUSY):
         print("    >>> Cannot use it. Configure or free device %d in vJoyConf first." % rid)
+        if status == VJD_STAT_BUSY:
+            print("        If the bridge is running, use --send-only.")
         return False
 
     print("  device %d FFB capable    : %s" % (rid, sdk.IsDeviceFfb(rid)))
@@ -354,9 +367,9 @@ class Sender(object):
         self.device.acquire()
         self.acquired = True
 
-    def _describe(self, duration, params):
-        axes = (c_uint32 * 1)(0)        # offset 0 == first axis of our data format
-        direction = (c_int32 * 1)(1)    # cartesian, +X
+    def _describe(self, duration, params, direction_value=1):
+        axes = (c_uint32 * 1)(0)                     # offset 0 == first axis of our format
+        direction = (c_int32 * 1)(direction_value)   # cartesian; sign selects left/right
 
         eff = DIEFFECT()
         eff.dwSize = ctypes.sizeof(DIEFFECT)
@@ -376,8 +389,9 @@ class Sender(object):
         eff._keepalive = (axes, direction, params)   # or the pointers dangle
         return eff
 
-    def create(self, guid, params, duration):
-        effect = self.device.create_effect(guid, self._describe(duration, params))
+    def create(self, guid, params, duration, direction=1):
+        effect = self.device.create_effect(
+            guid, self._describe(duration, params, direction))
         self.effects.append(effect)
         return effect
 
@@ -412,8 +426,21 @@ def periodic(mag, period_ms):
 
 
 def condition(strength, deadband=0.05):
+    """
+    A condition effect with POSITIVE coefficients, i.e. one that resists.
+
+    This used to send negative coefficients, copied from `dinput_probe.spring_params` whose
+    comment claims negative resists. That file never reached a working force-feedback device,
+    so the claim was never tested -- and it is the opposite of the convention Windows.Gaming.
+    Input was MEASURED to use here (the firmware spring centres on +1/+1). Sending negatives
+    made our own spring push outward, weakly, which read as "the spring does nothing".
+
+    The whole chain now agrees: positive coefficient -> resist -> a spring centres. If the
+    wheel is ever driven outward instead, the fix is the negation in
+    `ffb_render.condition_force`, not here.
+    """
     s = int(strength * DI_FFNOMINALMAX)
-    return DICONDITION(lOffset=0, lPositiveCoefficient=-s, lNegativeCoefficient=-s,
+    return DICONDITION(lOffset=0, lPositiveCoefficient=s, lNegativeCoefficient=s,
                        dwPositiveSaturation=s, dwNegativeSaturation=s,
                        lDeadBand=int(deadband * DI_FFNOMINALMAX))
 
@@ -430,6 +457,96 @@ SIMPLE_PHASES = [
     ("Sine  50%, 100 ms period", GUID_Sine, periodic(0.50, 100), 1.0),
     ("Spring  60%", GUID_Spring, condition(0.60), 1.0),
 ]
+
+# The same effects, paced for a HUMAN rather than for a packet log, and with the two that
+# only make sense while the wheel is moving. The fast set above answers "did the packet
+# arrive"; this one answers "is the bridge rendering it correctly", which needs long enough
+# to notice and an instruction telling you what to do while it plays.
+FEEL_PHASES = [
+    ("Constant force", GUID_ConstantForce, constant(0.45),
+     "HOLD STILL. A steady pull to one side, constant the whole time."),
+    ("Ramp", GUID_RampForce, ramp(-0.45, 0.45),
+     "HOLD STILL. Starts pulling one way, reverses, ends pulling the other."),
+    ("Sine", GUID_Sine, periodic(0.45, 250),
+     "HOLD STILL. A slow rocking back and forth, 4 times a second."),
+    ("Spring", GUID_Spring, condition(0.70),
+     "TURN THE WHEEL and hold it off-centre. It should pull BACK to centre,"
+     "\n     harder the further out you go. If it pushes you OUTWARD, let go."),
+    ("Damper", GUID_Damper, condition(0.70),
+     "TURN FAST, then TURN SLOWLY. Fast should feel heavy, slow should feel"
+     "\n     light. It resists SPEED, so holding still costs nothing."),
+    ("Friction", GUID_Friction, condition(0.55),
+     "TURN AT ANY SPEED. A constant drag whenever the wheel moves, the same"
+     "\n     whether you turn fast or slow."),
+    ("Spring + damper + sine", GUID_Spring, condition(0.55),
+     "TURN THE WHEEL. All three at once, summed -- this is what a game"
+     "\n     actually sends."),
+]
+
+
+def run_feel(sender, sink, hold, gap):
+    """
+    Play the effects slowly enough to judge, one at a time, with instructions.
+
+    A run that answers "did a packet arrive" and a run that answers "does this feel right"
+    want opposite pacing, and trying to serve both produced a 12-second blur in which the
+    user could tell only that *something* happened. Separated deliberately.
+    """
+    total = len(FEEL_PHASES) * (hold + gap + 0.3)
+    rule("FEEL TEST -- %0.0fs per effect, %0.0fs between, about %0.0fs total"
+         % (hold, gap, total))
+    print("  Keep a light hand on the wheel. Read the instruction for each one BEFORE")
+    print("  it starts -- half of these only do anything while the wheel is moving.")
+    print()
+    print("  Both the countdown and the time remaining are printed every second, so you")
+    print("  never have to guess whether an effect is still running.")
+
+    extras = {"Spring + damper + sine": [(GUID_Damper, condition(0.55)),
+                                         (GUID_Sine, periodic(0.30, 200))]}
+
+    for number, (label, guid, params, instruction) in enumerate(FEEL_PHASES, 1):
+        print()
+        rule()
+        print("  [%d/%d]  %s" % (number, len(FEEL_PHASES), label.upper()))
+        print("     %s" % instruction)
+        print()
+        for remaining in range(int(gap), 0, -1):
+            print("     ... starting in %d" % remaining, flush=True)
+            time.sleep(1.0)
+
+        sink.quiet = True
+        effects = []
+        try:
+            effects.append(sender.create(guid, params, hold))
+            for extra_guid, extra_params in extras.get(label, ()):
+                effects.append(sender.create(extra_guid, extra_params, hold))
+            for effect in effects:
+                effect.start(1, 0)
+            print("     >>>>>>>>>>  ON  <<<<<<<<<<", flush=True)
+            # Count DOWN during the effect too. Without it there is no way to tell a weak
+            # effect from one that already finished, which is exactly the ambiguity that
+            # made the first feel run inconclusive.
+            end = time.monotonic() + hold
+            while True:
+                left = end - time.monotonic()
+                if left <= 0:
+                    break
+                print("         %2ds left" % (int(left) + 1), flush=True)
+                time.sleep(min(1.0, left))
+            for effect in effects:
+                effect.stop()
+            print("     ----------  off  ----------", flush=True)
+        except DirectInputError as exc:
+            print("     FAILED: %s" % exc)
+        finally:
+            sink.quiet = False
+            time.sleep(0.3)
+
+    print()
+    rule()
+    print("  Done. What matters: spring pulled you back to centre (not outward),")
+    print("  damper was heavier when you turned faster, friction was the same at")
+    print("  any speed.")
 
 
 def run_simple(sender, sink):
@@ -450,7 +567,7 @@ def run_simple(sender, sink):
         effect.stop()
         time.sleep(0.2)
         got = len(sink.packets) - before
-        if got == 0:
+        if got == 0 and sink.listening:
             print("    >>> NO PACKETS. The effect was created but nothing reached us.")
 
 
@@ -481,8 +598,10 @@ def run_concurrent(sender, sink):
         time.sleep(0.35)                       # let the packets land before the next one
         new = sink.snapshot()[1] - before
         created.append((label, effect, new))
-        print("  %-8s started -> block index %s"
-              % (label, ", ".join(str(b) for b in sorted(new)) or "NONE SEEN"))
+        print("  %-8s started%s" % (label,
+                                    " -> block index %s"
+                                    % (", ".join(str(b) for b in sorted(new)) or "NONE SEEN")
+                                    if sink.listening else ""))
 
     time.sleep(1.0)
     for _label, effect, _new in created:
@@ -531,6 +650,105 @@ def _encoding_notes(sink, sent_gain_fraction):
     print("                DirectInput values (+-10000 full scale).")
     log.event("b0.encoding", gain_sent=sent_gain, gain_got=sorted(gains),
               durations=sorted(durations), directions=sorted(dirs))
+
+
+def run_directions(sender, sink):
+    """
+    Work out how a game's force DIRECTION survives the trip to vJoy.
+
+    B0 measured that DirectInput converts our cartesian +X into a polar `DirX=8191,
+    Polar=0x04` and deliberately stopped there rather than guessing the scale. The bridge
+    cannot guess either: direction is the difference between a force that pushes left and one
+    that pushes right, so an inverted decode produces an effect that fights the driver
+    instead of helping.
+
+    So: send known directions, print what arrives, and let the numbers say what the mapping
+    is. 8191 is suspiciously close to a quarter of 32768, which would make the field a full
+    circle in 32768 steps with +X at 90 degrees -- but that is a hypothesis until -X lands
+    where the hypothesis says it should.
+    """
+    rule("Direction encoding -- what arrives when we send a known direction")
+    log.note("phase: directions")
+    if not sink.listening:
+        print("  (skipped -- nothing is listening in send-only mode)")
+        return []
+
+    # Two channels could carry "which way", and they are not equivalent. A first pass here
+    # varied only the direction VECTOR and concluded direction was lost -- wrong question.
+    # With a single axis DirectInput normalises that vector, so its sign cannot survive; the
+    # signed quantity for a constant force is lMagnitude. Vary both, separately.
+    seen = []
+    for label, axis_value, magnitude in (
+            ("magnitude +30%, dir +X", 1, 0.30),
+            ("magnitude -30%, dir +X", 1, -0.30),
+            ("magnitude +30%, dir -X", -1, 0.30),
+            ("magnitude -30%, dir -X", -1, -0.30)):
+        before = len(sink.packets)
+        sink.quiet = True
+        try:
+            effect = sender.create(GUID_ConstantForce, constant(magnitude), 0.4,
+                                   direction=axis_value)
+            effect.start(1, 0)
+            time.sleep(0.35)
+            effect.stop()
+            time.sleep(0.15)
+        except DirectInputError as exc:
+            print("  %-22s CreateEffect FAILED: %s" % (label, exc))
+            continue
+        finally:
+            sink.quiet = False
+
+        with sink.lock:
+            fresh = [(rep, f) for _t, rep, _b, f in sink.packets[before:]]
+        effect_pkt = next((f for rep, f in fresh if rep == PT_EFFREP), None)
+        const_pkt = next((f for rep, f in fresh if rep == PT_CONSTREP), None)
+        if effect_pkt is None:
+            print("  %-22s no SetEffect packet arrived" % label)
+            continue
+
+        dir_x, dir_y = effect_pkt["DirX"], effect_pkt["DirY"]
+        got = const_pkt["Magnitude"] if const_pkt else None
+        degrees = dir_x * 360.0 / 32768.0
+        seen.append((label, axis_value, magnitude, dir_x, dir_y, got, degrees))
+        print("  %-24s -> DirX=%-6d DirY=%-4d Polar=0x%02X  Magnitude=%-7s  (%.1f deg if "
+              "full circle is 32768)" % (label, dir_x, dir_y, effect_pkt["Polar"],
+                                         got, degrees))
+        log.event("direction.sample", sent_dir=axis_value, sent_mag=magnitude,
+                  dir_x=dir_x, dir_y=dir_y, got_mag=got, degrees=round(degrees, 2))
+
+    print()
+    if len(seen) < 2:
+        print("  Not enough samples to conclude anything.")
+        return seen
+
+    by_mag_sign = {}
+    by_dir_sign = {}
+    for _lbl, axis_value, sent_mag, dir_x, _dy, got, _deg in seen:
+        by_mag_sign.setdefault(sent_mag > 0, set()).add(got)
+        by_dir_sign.setdefault(axis_value > 0, set()).add(dir_x)
+
+    mag_carries = (len(by_mag_sign) == 2
+                   and not (by_mag_sign[True] & by_mag_sign[False]))
+    dir_carries = (len(by_dir_sign) == 2
+                   and not (by_dir_sign[True] & by_dir_sign[False]))
+
+    if mag_carries:
+        print("  DIRECTION IS CARRIED IN THE MAGNITUDE SIGN: %s for a positive command,"
+              % sorted(by_mag_sign[True]))
+        print("  %s for a negative one. The bridge reads the sign from Magnitude."
+              % sorted(by_mag_sign[False]))
+    if dir_carries:
+        print("  The direction VECTOR also survives: DirX %s vs %s."
+              % (sorted(by_dir_sign[True]), sorted(by_dir_sign[False])))
+    elif len(by_dir_sign) == 2:
+        print("  The direction VECTOR does not survive -- DirX is %s either way, because"
+              % sorted(by_dir_sign[True] | by_dir_sign[False]))
+        print("  DirectInput normalises a single-axis cartesian vector and the sign is")
+        print("  lost in doing so. Expected; it is not the channel that matters here.")
+    if not mag_carries and not dir_carries:
+        print("  >>> Neither channel distinguishes left from right. The bridge could not")
+        print("      tell them apart, which would make every effect one-sided.")
+    return seen
 
 
 def verdict(sink, created, ran_sender, gain=0.0):
@@ -602,11 +820,29 @@ def parse_args():
     p.add_argument("--device", type=int, default=1, help="vJoy device id (default 1)")
     p.add_argument("--listen", action="store_true",
                    help="do not send anything; just log what arrives (drive it from a game)")
-    p.add_argument("--gain", type=float, default=0.5,
-                   help="DirectInput effect gain 0.0-1.0 (default 0.5). Only reaches the "
-                        "virtual device -- nothing is sent to the real wheel.")
+    p.add_argument("--feel", action="store_true",
+                   help="play the effects slowly, one at a time, with instructions, so a "
+                        "human can judge whether each is rendered correctly. The default "
+                        "run is paced for a packet log and is far too fast to feel.")
+    p.add_argument("--hold", type=float, default=9.0,
+                   help="seconds per effect in --feel mode (default 9)")
+    p.add_argument("--gap", type=float, default=5.0,
+                   help="seconds of countdown between effects in --feel mode (default 5)")
+    p.add_argument("--send-only", action="store_true",
+                   help="act purely as a DirectInput client: send effects to vJoy and do "
+                        "NOT acquire it or register a callback. This is how the bridge gets "
+                        "tested -- only one process can own a vJoy device, so the bridge "
+                        "holds it and this stands in for the game.")
+    p.add_argument("--gain", type=float, default=None,
+                   help="DirectInput effect gain 0.0-1.0. Defaults to 0.5 for the packet "
+                        "run and 1.0 for --feel: this gain arrives at the bridge as a byte "
+                        "and multiplies with the bridge's own limits, so 0.5 here is "
+                        "already halved before anything reaches the motor.")
     p.add_argument("--no-log", action="store_true", help="do not write a log file")
-    return p.parse_args()
+    args = p.parse_args()
+    if args.gain is None:
+        args.gain = 1.0 if args.feel else 0.5
+    return args
 
 
 def main():
@@ -618,7 +854,7 @@ def main():
 
     print(__doc__.strip().split("\n\n")[0])
 
-    if not preflight(args.device):
+    if not preflight(args.device, send_only=args.send_only):
         rule("B0 verdict")
         print("  >>> Preflight failed. Fix the above before the callback test means")
         print("      anything -- a silent callback would be explained by it.")
@@ -631,17 +867,26 @@ def main():
     created = []
 
     try:
-        rule("Registering the FFB callback")
-        device = pyvjoy.VJoyDevice(args.device)
-        print("  acquired vJoy device %d" % args.device)
-        device.ffb_register_callback(sink)
-        print("  callback registered")
+        if args.send_only:
+            rule("Send-only -- acting as the game, not the receiver")
+            print("  Not acquiring vJoy device %d and not registering a callback, so"
+                  % args.device)
+            print("  whatever owns it (the bridge) keeps receiving what we send.")
+            print("  Nothing will be printed about arriving packets -- watch the BRIDGE.")
+            sink.listening = False
+            sink.started = time.monotonic()
+        else:
+            rule("Registering the FFB callback")
+            device = pyvjoy.VJoyDevice(args.device)
+            print("  acquired vJoy device %d" % args.device)
+            device.ffb_register_callback(sink)
+            print("  callback registered")
 
-        # FfbStart is what actually opens the data flow on some driver builds. pyvjoy does
-        # not wrap it, so call it directly; harmless where it is not required.
-        started = sdk._vj.FfbStart(args.device)
-        print("  FfbStart(%d) -> %s" % (args.device, "ok" if started else "0 (ignored)"))
-        sink.started = time.monotonic()
+            # FfbStart is what actually opens the data flow on some driver builds. pyvjoy
+            # does not wrap it, so call it directly; harmless where not required.
+            started = sdk._vj.FfbStart(args.device)
+            print("  FfbStart(%d) -> %s" % (args.device, "ok" if started else "0 (ignored)"))
+            sink.started = time.monotonic()
 
         if args.listen:
             rule("Listening -- press Ctrl+C to stop")
@@ -666,7 +911,12 @@ def main():
         print("  acquired exclusively, gain %d/%d"
               % (int(args.gain * DI_FFNOMINALMAX), DI_FFNOMINALMAX))
 
+        if args.feel:
+            run_feel(sender, sink, args.hold, args.gap)
+            return 0
+
         run_simple(sender, sink)
+        run_directions(sender, sink)
         created = run_concurrent(sender, sink)
 
         # Tear down BEFORE judging. Releasing the effects emits a further STOP and
@@ -674,6 +924,11 @@ def main():
         # printed a dozen packets underneath the verdict and left them out of its counts.
         sender.close()
         time.sleep(0.3)
+        if args.send_only:
+            rule("Sent")
+            print("  Every effect above was delivered to vJoy. This process saw none of")
+            print("  them come back, by design -- the bridge owns the callback.")
+            return 0
         return 0 if verdict(sink, created, ran_sender=True, gain=args.gain) else 1
 
     except KeyboardInterrupt:

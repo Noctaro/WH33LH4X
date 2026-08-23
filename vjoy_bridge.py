@@ -36,6 +36,8 @@ Usage:
 """
 
 import argparse
+import asyncio
+import queue
 import sys
 import time
 
@@ -44,14 +46,19 @@ try:
 except ImportError:
     init_apartment = None
 
+import ffb_render as render
 import probe_log as log
-from motor_sink import RateLimiter, clamp
+from motor_sink import RateLimiter, WgiMotorSink, clamp
 
 try:
     import pyvjoy
     import pyvjoy._sdk as sdk
     from pyvjoy.constants import (
+        CTRL_DEVCONT, CTRL_DEVPAUSE, CTRL_DEVRST, CTRL_DISACT, CTRL_ENACT, CTRL_STOPALL,
+        EFF_STOP,
         HID_USAGE_RX, HID_USAGE_RY, HID_USAGE_X, HID_USAGE_Y, HID_USAGE_Z,
+        PT_BLKFRREP, PT_CONDREP, PT_CONSTREP, PT_CTRLREP, PT_EFFREP, PT_EFOPREP,
+        PT_ENVREP, PT_GAINREP, PT_NEWEFREP, PT_PRIDREP, PT_RAMPREP,
         VJD_STAT_BUSY, VJD_STAT_FREE, VJD_STAT_MISS, VJD_STAT_OWN,
     )
 except ImportError:
@@ -215,6 +222,181 @@ class VJoyFeeder(object):
             self.device.set_button(index + 1, 1 if mask & (1 << index) else 0)
 
 
+# vJoy effect-type byte -> the kind names ffb_render uses.
+EFFECT_KINDS = {
+    1: "constant", 2: "ramp", 3: "square", 4: "sine", 5: "triangle",
+    6: "sawtoothup", 7: "sawtoothdown",
+    8: "spring", 9: "damper", 10: "inertia", 11: "friction",
+}
+
+
+class EffectDecoder(object):
+    """
+    Turns vJoy's force-feedback packets into `ffb_render` effects.
+
+    THREADING. vJoy delivers packets on ITS OWN THREAD. Nothing here may touch WinRT, and
+    the render loop must not have effect state mutated underneath it mid-computation, so
+    packets are pushed onto a queue and applied by the bridge thread between ticks. That is
+    the one rule; everything else in this class is arithmetic.
+
+    UNITS. The wire format is NOT what DirectInput was handed, measured in B0 by
+    `vjoy_ffb_spike.py`, which re-measures it on every run:
+
+      * gain arrives as a 0-255 BYTE, not 0..10000
+      * duration arrives in MILLISECONDS, not microseconds, and 0 means infinite
+      * magnitudes and condition coefficients arrive unchanged, +-10000 full scale
+      * direction becomes polar; the SIGN of a force travels in the magnitude, and the
+        direction vector is normalised to 8191 (90 degrees) either way
+
+    Getting gain or duration wrong is a silent factor-of-40 error, not a crash.
+    """
+
+    def __init__(self, mixer, clock=time.monotonic):
+        self.mixer = mixer
+        self.clock = clock
+        self.queue = queue.Queue(maxsize=4096)
+        self.received = 0
+        self.dropped = 0
+        self.unknown = 0
+
+    # -- called on vJoy's thread -------------------------------------------
+
+    def on_packet(self, data, reptype):
+        """vJoy callback. Does the minimum possible and gets off this thread."""
+        try:
+            self.queue.put_nowait((self.clock(), reptype, _snapshot(data)))
+            self.received += 1
+        except queue.Full:
+            # Dropping is better than blocking vJoy's thread. Counted, because a bridge
+            # that silently sheds a game's effect updates would feel like random FFB.
+            self.dropped += 1
+
+    # -- called on the bridge thread ---------------------------------------
+
+    def drain(self):
+        """Apply every queued packet. Returns how many were applied."""
+        applied = 0
+        while True:
+            try:
+                stamp, reptype, fields = self.queue.get_nowait()
+            except queue.Empty:
+                return applied
+            try:
+                self._apply(stamp, reptype, fields)
+            except Exception as exc:                              # noqa: BLE001
+                log.event("decode.error", reptype=reptype, error=repr(exc))
+            applied += 1
+
+    def _apply(self, stamp, reptype, f):
+        mixer = self.mixer
+
+        if reptype == PT_CTRLREP:
+            self._control(f)
+            return
+        if reptype == PT_GAINREP:
+            # Device gain is the game's master volume for force feedback, 0-255.
+            mixer.device_gain = _byte_fraction(f)
+            log.event("decode.device_gain", gain=round(mixer.device_gain, 3))
+            return
+        if reptype == PT_NEWEFREP:
+            return                      # allocation only; the block index arrives later
+        if reptype == PT_BLKFRREP:
+            mixer.free(int(f))
+            return
+
+        block = f.get("EffectBlockIndex", 0) if isinstance(f, dict) else 0
+        if not block:
+            self.unknown += 1
+            return
+        effect = mixer.get(block)
+
+        if reptype == PT_EFFREP:
+            kind = EFFECT_KINDS.get(f["EffectType"])
+            if kind is None:
+                self.unknown += 1
+                return
+            effect.kind = kind
+            effect.gain = f["Gain"] / 255.0                  # BYTE, not 0..10000
+            effect.duration = f["Duration"] / 1000.0         # ms; 0 stays 0 = infinite
+            effect.start_delay = f.get("StartDelay", 0) / 1000.0
+            effect.direction = render.direction_x(f["DirX"])
+        elif reptype == PT_CONSTREP:
+            effect.magnitude = f["Magnitude"] / render.DI_FULL_SCALE
+        elif reptype == PT_RAMPREP:
+            effect.ramp_start = f["Start"] / render.DI_FULL_SCALE
+            effect.ramp_end = f["End"] / render.DI_FULL_SCALE
+        elif reptype == PT_PRIDREP:
+            effect.periodic_magnitude = f["Magnitude"] / render.DI_FULL_SCALE
+            effect.periodic_offset = f["Offset"] / render.DI_FULL_SCALE
+            # Phase is assumed to be DirectInput's hundredths of a degree. Only phase 0 has
+            # been observed, so this is the one conversion here that is NOT measured.
+            effect.periodic_phase_deg = f["Phase"] / 100.0
+            effect.periodic_period = f["Period"] / 1000.0
+        elif reptype == PT_CONDREP:
+            # POSITIVE COEFFICIENT RESISTS. That is the convention WGI was measured to use
+            # (the firmware spring centres on +1/+1), and ffb_render.condition_force negates
+            # the raw formula to match it. `dinput_probe.spring_params` asserts the opposite,
+            # but that file never reached a working force-feedback device, so its comment is
+            # an untested assumption rather than evidence. If a game's spring drives the
+            # wheel outward instead of centring it, this is the line to flip -- and the fix
+            # belongs here, at the decode boundary, not in the control law.
+            axis = 1 if f["isY"] else 0
+            effect.conditions[axis] = render.ConditionParams.from_di(
+                offset=f["CenterPointOffset"],
+                pos_coeff=f["PosCoeff"], neg_coeff=f["NegCoeff"],
+                pos_saturation=f["PosSatur"], neg_saturation=f["NegSatur"],
+                deadband=f["DeadBand"])
+        elif reptype == PT_ENVREP:
+            effect.attack_level = f["AttackLevel"] / render.DI_FULL_SCALE
+            effect.attack_time = f["AttackTime"] / 1000.0
+            effect.fade_level = f["FadeLevel"] / render.DI_FULL_SCALE
+            effect.fade_time = f["FadeTime"] / 1000.0
+        elif reptype == PT_EFOPREP:
+            op = f["EffectOp"]
+            if op == EFF_STOP:
+                effect.stop()
+            else:
+                effect.start(stamp, f.get("LoopCount", 1))
+            log.event("decode.effect_op", block=block, op=op, kind=effect.kind or "?")
+        else:
+            self.unknown += 1
+
+    def _control(self, value):
+        mixer = self.mixer
+        if value == CTRL_DEVRST:
+            mixer.reset()
+        elif value == CTRL_STOPALL:
+            mixer.stop_all()
+        elif value == CTRL_DEVPAUSE:
+            mixer.paused = True
+        elif value == CTRL_DEVCONT:
+            mixer.paused = False
+        elif value == CTRL_ENACT:
+            mixer.actuators_enabled = True
+        elif value == CTRL_DISACT:
+            mixer.actuators_enabled = False
+        log.event("decode.control", control=value)
+
+
+def _snapshot(data):
+    """
+    Copy a packet out of vJoy's structure before returning from the callback.
+
+    The decoded structs belong to the callback's stack frame; queuing one and reading it a
+    tick later would be reading whatever vJoy put there since.
+    """
+    if isinstance(data, sdk.PacketStruct):
+        return data.to_dict()
+    return data
+
+
+def _byte_fraction(value):
+    try:
+        return max(0.0, min(1.0, int(value) / 255.0))
+    except (TypeError, ValueError):
+        return 1.0
+
+
 SWEEP_CHOICES = [label for _a, _u, label, _c in AXIS_MAP] + ["buttons"]
 
 
@@ -299,6 +481,21 @@ def parse_args():
     p.add_argument("--wait", type=float, default=30.0, help="detection timeout")
     p.add_argument("--dry-run", action="store_true",
                    help="read the wheel and report, but write nothing to vJoy")
+    p.add_argument("--no-ffb", action="store_true",
+                   help="input path only; never take the motor")
+    p.add_argument("--no-grab", action="store_true",
+                   help="never take the foreground. Force output will be silent unless you "
+                        "click the probe window yourself, but nothing steals your keyboard.")
+    p.add_argument("--run-seconds", type=float, default=0.0,
+                   help="stop automatically after N seconds (default: run until Ctrl+C). "
+                        "Useful because an effect playing takes the foreground, which is "
+                        "also where your Ctrl+C would have gone.")
+    p.add_argument("--gain", type=float, default=0.5,
+                   help="motor master gain 0.0-1.0 (default 0.5). Latched when the effect "
+                        "is loaded, so changing it needs a reload.")
+    p.add_argument("--max-force", type=float, default=0.6,
+                   help="hard cap on commanded force 0.0-1.0 (default 0.6). Multiplies with "
+                        "--gain, so the default is about 30%% of what the wheel can do.")
     p.add_argument("--no-log", action="store_true")
     return p.parse_args()
 
@@ -347,6 +544,9 @@ def main():
     pump.ready.wait(timeout=5)
 
     feeder = None
+    sink = None
+    decoder = None
+    loop = None
     try:
         raw, wheels = wait_for_devices(args.wait, pump)
         if not has_motor(raw, wheels):
@@ -355,7 +555,7 @@ def main():
             print("  of its buttons while this runs.")
             return 1
 
-        _motor, label, wheel, identity = report(raw, wheels)
+        motor, label, wheel, identity = report(raw, wheels)
         if wheel is None:
             rule("RESULT")
             print("  Found a device via %s but no RacingWheel to read position from." % label)
@@ -386,27 +586,90 @@ def main():
         if args.dry_run:
             print("  DRY RUN -- nothing is being written to vJoy.")
 
-        rule("Feeding -- press Ctrl+C to stop")
+        # --- force feedback: render what the game sends onto the real motor ---
+        if not args.no_ffb and motor is not None and not args.dry_run:
+            loop = asyncio.new_event_loop()
+            sink = WgiMotorSink(motor, loop, max_force=args.max_force, gain=args.gain)
+            sink.open()
+            decoder = EffectDecoder(render.EffectMixer())
+            device = feeder.device if feeder.device is not None else pyvjoy.VJoyDevice(
+                args.device)
+            device.ffb_register_callback(decoder.on_packet)
+            sdk._vj.FfbStart(args.device)
+            rule("Force feedback ACTIVE")
+            print("  %s" % sink.describe())
+            print("  Effects a DirectInput client sends to vJoy are rendered here and")
+            print("  played on the real wheel. Everything is computed in software and")
+            print("  summed into one command -- see ffb_render.EffectMixer.")
+            print()
+            print("  !! WGI force output is foreground-gated, so while an effect is")
+            print("     PLAYING this process takes the foreground and your keystrokes")
+            print("     -- including Ctrl+C -- go to the probe window, not here. It")
+            print("     releases focus as soon as nothing is playing. Use --run-seconds")
+            print("     for a self-terminating run, or --no-grab to keep your keyboard.")
+            print("     That gate is the whole reason Track D exists; it is not a bug.")
+        elif args.no_ffb:
+            print("  Force feedback disabled (--no-ffb).")
+        elif args.dry_run:
+            print("  Force feedback off in dry-run mode.")
+        elif motor is None:
+            print("  No force-feedback motor found; input only.")
+
+        rule("Running -- press Ctrl+C to stop")
         print("  Open joy.cpl and watch the vJoy device's axes track the real wheel.")
         print()
 
         limiter = RateLimiter(args.rate)
+        state = render.WheelState()
         next_print = 0.0
-        while True:
+        last_foreground = 0.0
+        stop_at = time.monotonic() + args.run_seconds if args.run_seconds > 0 else None
+        while stop_at is None or time.monotonic() < stop_at:
+            now = time.monotonic()
             reading = reader.read()
             if reading is not None:
                 written = feeder.feed(reading, caps)
-                now = time.monotonic()
+                state.update(reading.wheel, now)
+
+                if sink is not None:
+                    # Apply the game's packets BEFORE computing, so a force command always
+                    # reflects the most recent thing the game asked for rather than lagging
+                    # it by a tick.
+                    decoder.drain()
+                    force = decoder.mixer.force(now, state)
+                    sink.set_force(force)
+
+                    # Take the foreground ONLY while an effect is actually playing.
+                    #
+                    # WGI gates force output on foreground, so the grab is necessary -- but
+                    # grabbing unconditionally makes the tool unusable: it steals every
+                    # keystroke, including the Ctrl+C meant to stop it, and it does so even
+                    # when sitting idle with nothing to output. Gating on running effects
+                    # means the console keeps focus whenever there is no force to lose.
+                    if (not args.no_grab and decoder.mixer.running_effects()
+                            and now - last_foreground > 0.1):
+                        pump.ensure_foreground()
+                        last_foreground = now
+
                 if now >= next_print:
                     parts = " ".join("%s %+.2f" % (lbl, rawv) for lbl, rawv, _v in written)
+                    extra = ""
+                    if sink is not None:
+                        running = decoder.mixer.running_effects()
+                        extra = ("  force %+.2f  fx=%d  pkt=%d"
+                                 % (sink._last or 0.0, len(running), decoder.received))
+                        if decoder.dropped:
+                            extra += " DROPPED=%d" % decoder.dropped
                     # Write/failure counts belong on the live line, not only in the exit
                     # summary: a vJoy axis that is not enabled fails per call and silently,
                     # and a Ctrl+C or a hard kill never reaches the summary.
-                    print("    %-58s %5.1f Hz  w=%d f=%d"
-                          % (parts, limiter.achieved_hz, feeder.writes, feeder.failures),
-                          flush=True)
+                    print("    %-52s %5.1f Hz w=%d f=%d%s"
+                          % (parts, limiter.achieved_hz, feeder.writes, feeder.failures,
+                             extra), flush=True)
                     log.event("bridge.tick", hz=round(limiter.achieved_hz, 1),
                               writes=feeder.writes, failures=feeder.failures,
+                              force=(sink._last or 0.0) if sink else 0.0,
+                              effects=len(decoder.mixer.running_effects()) if decoder else 0,
                               **{lbl: rawv for lbl, rawv, _v in written})
                     next_print = now + 0.5
             limiter.wait()
@@ -418,9 +681,23 @@ def main():
         print("\n  %s" % exc)
         return 1
     finally:
+        # Order matters: silence the motor before anything else is torn down, so an error
+        # on the way out cannot leave the wheel holding a force.
+        if sink is not None:
+            try:
+                sink.set_force(0.0)
+            except Exception:
+                pass
+            sink.close()
+            print("  motor released -- %d writes, %d failures" % (sink.writes, sink.failures))
+        if decoder is not None:
+            print("  ffb packets %d received, %d dropped, %d unrecognised"
+                  % (decoder.received, decoder.dropped, decoder.unknown))
         if feeder is not None:
             print("  vJoy writes %d, failures %d" % (feeder.writes, feeder.failures))
             feeder.close()
+        if loop is not None:
+            loop.close()
         pump.stop()
         if not args.no_log:
             log.stop()

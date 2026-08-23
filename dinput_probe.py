@@ -44,8 +44,6 @@ from dinput_abi import (
     DIEB_NOTRIGGER,
     DIEFF_CARTESIAN,
     DIEFF_OBJECTOFFSETS,
-    DIEFT_CONDITION,
-    DIEFT_CONSTANTFORCE,
     DIEFT_TYPE_NAMES,
     DIENUM_CONTINUE,
     DISCL_BACKGROUND,
@@ -359,7 +357,6 @@ def main():
             return 1
 
         chosen = None
-        chosen_caps = None
         for index, instance in enumerate(instances):
             dev, caps = report_device(dinput, instance, index, ff_guids)
             print()
@@ -368,7 +365,7 @@ def main():
             vid, _pid = vid_pid_from_product_guid(instance.guidProduct)
             wanted = (vid == args.vid) if args.vid is not None else (vid == HORI_VENDOR_ID)
             if chosen is None and wanted and caps.dwFlags & DIDC_FORCEFEEDBACK:
-                chosen, chosen_caps = dev, caps
+                chosen = dev
             else:
                 dev.release()
 

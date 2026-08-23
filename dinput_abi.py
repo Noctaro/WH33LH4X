@@ -606,22 +606,25 @@ class _WNDCLASSW(Structure):
 
 def ensure_hwnd():
     """
-    Return an HWND usable for SetCooperativeLevel, creating a hidden one if needed.
+    Return an HWND usable for SetCooperativeLevel, creating our own hidden one.
 
     DirectInput refuses exclusive access -- and therefore all force feedback -- without a
-    real top-level window. A console window normally supplies it, but there is not always
-    one: launched from a service, from a GUI host, or from any tool that captures output
-    rather than allocating a console, GetConsoleWindow() returns NULL and force feedback
-    becomes unavailable for a reason that has nothing to do with the hardware.
+    real top-level window.
 
-    The window is never shown. It only has to exist and be top-level; combined with
-    DISCL_BACKGROUND, DirectInput is satisfied and effects play regardless of focus.
+    WE DELIBERATELY DO NOT USE THE CONSOLE WINDOW, even when there is one. Under Windows
+    Terminal (and anything else built on ConPTY) `GetConsoleWindow()` returns a pseudo-console
+    handle that is a window in name only: SetCooperativeLevel accepts it and then Acquire
+    fails with 0x80070578, ERROR_INVALID_WINDOW_HANDLE. That is worse than having no console
+    at all, because the failure arrives late and blames the device. Measured: the same code
+    worked when launched with no console (NULL, so this fallback ran) and failed from a real
+    Windows Terminal tab.
+
+    Our own window is always valid, identical across every host, and never shown. It only has
+    to exist and be top-level; combined with DISCL_BACKGROUND, DirectInput is satisfied and
+    effects play regardless of focus.
     """
     global _hidden_window, _hidden_wndproc
 
-    hwnd = get_console_hwnd()
-    if hwnd:
-        return hwnd
     if _hidden_window:
         return _hidden_window
 
@@ -655,7 +658,6 @@ def ensure_hwnd():
 
     if not _hidden_window:
         raise DirectInputError(
-            "No console window, and creating a hidden one failed (error %d). DirectInput "
-            "cannot take exclusive access without a window, so force feedback is "
-            "unavailable." % ctypes.get_last_error())
+            "Could not create a window for DirectInput (error %d). Exclusive access needs "
+            "one, so force feedback is unavailable." % ctypes.get_last_error())
     return _hidden_window

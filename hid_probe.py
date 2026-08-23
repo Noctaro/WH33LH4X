@@ -27,8 +27,8 @@ Usage:
 import argparse
 import ctypes
 import sys
-from ctypes import POINTER, Structure, byref, c_uint16, c_uint32, c_void_p, c_wchar, sizeof
-from ctypes.wintypes import BOOL, DWORD, HANDLE, LPCWSTR, ULONG, USHORT, WCHAR
+from ctypes import POINTER, Structure, byref, c_uint16, c_uint32, c_void_p, sizeof
+from ctypes.wintypes import BOOL, DWORD, HANDLE, LPCWSTR, ULONG, USHORT
 
 setupapi = ctypes.WinDLL("setupapi", use_last_error=True)
 hid = ctypes.WinDLL("hid", use_last_error=True)
