@@ -1,0 +1,21 @@
+; Export surface of the WH33LH4X dinput8.dll proxy -- exactly the five entry points the real
+; system dinput8.dll exports, and nothing else.
+;
+; A .def file rather than __declspec(dllexport) for two reasons:
+;
+;   1. combaseapi.h already declares DllGetClassObject and DllCanUnloadNow without the export
+;      attribute. Adding it on a redeclaration is a clang warning (-Wdll-attribute-on-
+;      redeclaration) and the attribute is not reliably honoured, which would silently produce
+;      a DLL missing its COM entry points.
+;
+;   2. It names the exports exactly. A game resolves them by undecorated name; if a future
+;      32-bit build is ever needed, __stdcall would decorate them as _DirectInput8Create@20
+;      and the game would not find them. This file is the fix for that too.
+
+LIBRARY dinput8
+EXPORTS
+    DirectInput8Create
+    DllCanUnloadNow
+    DllGetClassObject
+    DllRegisterServer
+    DllUnregisterServer

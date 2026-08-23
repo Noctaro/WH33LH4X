@@ -487,9 +487,17 @@ class IDirectInputEffect(_Unknown):
         return status.value
 
 
-def create_direct_input():
-    """DirectInput8Create(hinst, 0x0800, IID_IDirectInput8W, &out, NULL)."""
-    dll = ctypes.WinDLL("dinput8.dll")
+def create_direct_input(dll_path="dinput8.dll"):
+    """
+    DirectInput8Create(hinst, 0x0800, IID_IDirectInput8W, &out, NULL).
+
+    `dll_path` exists so the shim proxy can be tested: pass an absolute path to
+    `shim/build/dinput8.dll` and everything downstream runs through the proxy instead of the
+    system DLL, which is the only way to prove the proxy is transparent without launching a
+    game. Pass an absolute path when you mean the proxy -- a bare name searches the
+    application directory first, and that is exactly the ambiguity being tested.
+    """
+    dll = ctypes.WinDLL(dll_path)
     fn = dll.DirectInput8Create
     fn.restype = c_int32
     fn.argtypes = [c_void_p, c_uint32, POINTER(GUID), POINTER(c_void_p), c_void_p]
