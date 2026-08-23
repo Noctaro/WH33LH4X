@@ -23,13 +23,13 @@ if (-not (Test-Path $zig)) {
 
 if (-not (Test-Path $outDir)) { New-Item -ItemType Directory -Path $outDir | Out-Null }
 
-$out = Join-Path $outDir 'dinput8.dll'
-$src = Join-Path $shimDir 'dinput8.c'
-$def = Join-Path $shimDir 'dinput8.def'
+$out     = Join-Path $outDir 'dinput8.dll'
+$sources = @('dinput8.c', 'gip.c') | ForEach-Object { Join-Path $shimDir $_ }
+$def     = Join-Path $shimDir 'dinput8.def'
 
-Write-Host "zig:    $((& $zig version))"
-Write-Host "source: $src"
-Write-Host "output: $out"
+Write-Host "zig:     $((& $zig version))"
+Write-Host "sources: $($sources -join ', ')"
+Write-Host "output:  $out"
 
 & $zig cc `
     -shared `
@@ -37,7 +37,7 @@ Write-Host "output: $out"
     -O2 `
     -Wall -Wextra `
     -o $out `
-    $src `
+    @sources `
     $def `
     -lkernel32
 

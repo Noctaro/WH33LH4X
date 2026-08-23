@@ -34,7 +34,11 @@
 #include <windows.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <string.h>
 #include <strsafe.h>
+
+#include "gip.h"
+#include "shim_log.h"
 
 /*
  * Exported signatures use `const void *` where the SDK says REFIID / REFCLSID. Those are
@@ -63,7 +67,7 @@ static INIT_ONCE g_once = INIT_ONCE_STATIC_INIT;
  * holding a handle, but this logs a handful of lines at startup and nothing in the hot path,
  * and it means an aborted process still leaves a readable file.
  */
-static void shim_log(const char *fmt, ...)
+void shim_log(const char *fmt, ...)
 {
     wchar_t path[MAX_PATH];
     DWORD   n = GetTempPathW(MAX_PATH, path);
@@ -149,6 +153,173 @@ static void ensure_real(void)
     InitOnceExecuteOnce(&g_once, init_real, NULL, NULL);
 }
 
+/* --------------------------------------------------------------------- config */
+
+/*
+ * %TEMP%\wh33lh4x.cfg, `key=value` per line. Two keys:
+ *
+ *   device=9735815b51cc0000   fallback device id, written by gip_trace.py
+ *   selftest=1                oscillate the motor so the gate can be tested by hand
+ *
+ * The self-test is OFF unless asked for, so a normal game launch is unaffected by the shim
+ * being present. The device id is only a fallback -- discovery is tried first, because
+ * hard-coding one machine's id is not something to build on.
+ */
+
+#define SELFTEST_MAGNITUDE 0.35f   /* felt clearly; nowhere near fighting the user */
+#define SELFTEST_HOLD_MS   1500
+#define SELFTEST_TICK_MS   62      /* ~16 Hz, the rate WGI re-sends at */
+
+static char  g_cfg_device[17];
+static BOOL  g_cfg_selftest;
+static volatile LONG g_stop;
+static HANDLE g_worker;
+
+static void read_config(void)
+{
+    wchar_t path[MAX_PATH];
+    char    buf[1024];
+    DWORD   got = 0;
+    HANDLE  f;
+    const char *p;
+
+    DWORD n = GetTempPathW(MAX_PATH, path);
+    if (n == 0 || n > MAX_PATH - 20)
+        return;
+    StringCchCatW(path, MAX_PATH, L"wh33lh4x.cfg");
+
+    f = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+                    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (f == INVALID_HANDLE_VALUE) {
+        shim_log("config: none at %ls -- self-test off, discovery only", path);
+        return;
+    }
+    if (ReadFile(f, buf, sizeof(buf) - 1, &got, NULL)) {
+        buf[got] = '\0';
+        p = strstr(buf, "device=");
+        if (p) {
+            size_t i;
+            p += 7;
+            for (i = 0; i < 16; i++) {
+                char c = p[i];
+                BOOL hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+                           (c >= 'A' && c <= 'F');
+                if (!hex)
+                    break;
+                g_cfg_device[i] = c;
+            }
+            if (i == 16)
+                g_cfg_device[16] = '\0';
+            else
+                g_cfg_device[0] = '\0';
+        }
+        p = strstr(buf, "selftest=");
+        if (p)
+            g_cfg_selftest = (p[9] == '1');
+    }
+    CloseHandle(f);
+    shim_log("config: device=%s selftest=%d",
+             g_cfg_device[0] ? g_cfg_device : "(none)", g_cfg_selftest ? 1 : 0);
+}
+
+/* --------------------------------------------------------------------- worker */
+
+static BOOL stopping(void)
+{
+    return InterlockedCompareExchange(&g_stop, 0, 0) != 0;
+}
+
+/*
+ * Alternate a steady push left and right so the result is unmistakable by hand.
+ *
+ * The force is re-sent at ~16 Hz rather than set once, because that is what WGI does -- a
+ * single write may well be treated as a stale command and dropped.
+ */
+static void selftest_loop(gip_device *dev)
+{
+    const float levels[2] = { SELFTEST_MAGNITUDE, -SELFTEST_MAGNITUDE };
+    int   phase = 0;
+    DWORD halves = 0;
+
+    shim_log("selftest: oscillating +/-%.2f every %d ms -- hands on the wheel",
+             (double)SELFTEST_MAGNITUDE, SELFTEST_HOLD_MS);
+
+    while (!stopping()) {
+        DWORD until = GetTickCount() + SELFTEST_HOLD_MS;
+        while (GetTickCount() < until && !stopping()) {
+            if (!gip_set_force(dev, levels[phase])) {
+                shim_log("selftest: write failed, err=%lu -- stopping", dev->last_error);
+                return;
+            }
+            Sleep(SELFTEST_TICK_MS);
+        }
+        phase ^= 1;
+        if (++halves % 4 == 0)
+            shim_log("selftest: %lu half-cycles, %lu writes, %lu error(s)",
+                     halves, dev->writes, dev->write_errors);
+    }
+}
+
+/*
+ * Everything here logs and returns rather than retrying: this thread lives inside somebody
+ * else's game, and a shim that spins or crashes is worse than a shim that does nothing.
+ */
+static DWORD WINAPI worker_main(LPVOID param)
+{
+    gip_device dev;
+    (void)param;
+
+    if (!gip_open(&dev))
+        return 0;
+
+    /* Discovery first. In-game we are foreground with a proper window, which is what the GIP
+     * driver wants before it delivers input reports -- so this is the case most likely to
+     * work, and trying it also tells us whether reads are usable from here at all. */
+    if (!gip_discover(&dev, 2000) && g_cfg_device[0])
+        gip_set_device_id_hex(&dev, g_cfg_device);
+
+    if (!dev.have_device_id) {
+        shim_log("gip: no device id (discovery failed, no config) -- nothing to drive");
+        gip_close(&dev);
+        return 0;
+    }
+
+    if (!gip_load_effect(&dev)) {
+        gip_close(&dev);
+        return 0;
+    }
+
+    if (g_cfg_selftest)
+        selftest_loop(&dev);
+    else
+        shim_log("gip: effect ready; self-test disabled, so idling");
+
+    gip_set_force(&dev, 0.0f);
+    gip_close(&dev);
+    shim_log("gip: worker done (%lu writes, %lu error(s))", dev.writes, dev.write_errors);
+    return 0;
+}
+
+static BOOL CALLBACK init_worker(PINIT_ONCE once, PVOID param, PVOID *ctx)
+{
+    (void)once;
+    (void)param;
+    (void)ctx;
+
+    read_config();
+    g_worker = CreateThread(NULL, 0, worker_main, NULL, 0, NULL);
+    if (!g_worker)
+        shim_log("gip: CreateThread failed, err=%lu", GetLastError());
+    return TRUE;
+}
+
+static INIT_ONCE g_worker_once = INIT_ONCE_STATIC_INIT;
+
+static void ensure_worker(void)
+{
+    InitOnceExecuteOnce(&g_worker_once, init_worker, NULL, NULL);
+}
+
 /* ----------------------------------------------------------------- forwarding */
 
 /*
@@ -172,6 +343,12 @@ HRESULT WINAPI DirectInput8Create(void *hinst, DWORD version, const void *riid, 
     }
     HRESULT hr = g_DirectInput8Create(hinst, version, riid, out, outer);
     shim_log("DirectInput8Create(version=0x%04lx) -> 0x%08lx", version, (unsigned long)hr);
+    /*
+     * Start the motor worker here, NOT in DllMain: creating a thread that immediately opens
+     * devices while the loader lock is held is the same class of hazard as LoadLibrary there.
+     * A game calls this early, and only once matters -- InitOnceExecuteOnce handles the rest.
+     */
+    ensure_worker();
     return hr;
 }
 
@@ -227,6 +404,13 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
             exe[0] = L'\0';
         shim_log("attach: %ls", exe);
         /* Deliberately NOT loading the real DLL here -- see trap 1 at the top of this file. */
+    } else if (reason == DLL_PROCESS_DETACH) {
+        /*
+         * Signal the worker and do NOT wait for it. Joining a thread from DllMain deadlocks:
+         * the loader lock is held here and the exiting thread needs it. The process is going
+         * away regardless, and the driver drops our force when the handle closes.
+         */
+        InterlockedExchange(&g_stop, 1);
     }
     return TRUE;
 }
