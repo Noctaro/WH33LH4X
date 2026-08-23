@@ -1,8 +1,8 @@
 {
-  "strength": 0.0,
-  "invert": false,
+  "strength": 0.2,
+  "invert": true,
   "dir_mode": "sin",
-  "max_force": 0.6,
+  "max_force": 0.45,
   "min_force": 0.0,
   "spring": 0.0,
   "damper": 0.0,

@@ -14,7 +14,7 @@ New entries are welcome — copy the [template](#template-for-a-new-game) at the
 
 | Game | Status | Needs setup? | Verified |
 |---|---|---|---|
-| [DiRT 4](#dirt-4) | 🟡 Playable, force feedback still being tuned | Yes — device registration | 2026-08-23 |
+| [DiRT 4](#dirt-4) | 🟡 Force feedback works; motor occasionally needs a game restart | Yes — device registration | 2026-08-24 |
 | [RaceRoom Racing Experience](#raceroom-racing-experience) | ⚪ Untested | Unknown | — |
 | [Automobilista 2](#automobilista-2) | ⚪ Untested | Unknown | — |
 
@@ -33,10 +33,11 @@ New entries are welcome — copy the [template](#template-for-a-new-game) at the
 
 ## DiRT 4
 
-**Status:** 🟡 Playable. Steering, pedals and force feedback all work. Centring is weak and
-under investigation — see [Known issues](#dirt-4-known-issues).
+**Status:** 🟡 Steering, pedals and force feedback all work — the wheel loads up in a corner
+and pulls back to centre. The one rough edge is that the motor can stop producing torque and
+need the game restarting; see [Known issues](#dirt-4-known-issues).
 
-**Verified:** 2026-08-23, Steam build, app id 421020.
+**Verified:** 2026-08-24, Steam build, app id 421020.
 
 ### Required setup
 
@@ -83,29 +84,53 @@ path entirely.
 In `tune.json`:
 
 ```json
-{ "strength": 0.6, "invert": true, "dir_mode": "sin", "max_force": 0.6 }
+{ "strength": 0.2, "invert": true, "dir_mode": "sin", "max_force": 0.45 }
 ```
 
-`invert: true` is **measured, not preference.** With our force output at zero and the wheel
-steered by hand, DiRT 4's force points the *same* way as steering, 55 of 60 samples,
-`corr(steering, force) = +0.777`. Applied unchanged that is positive feedback, and the wheel
-drives itself into an end stop.
+**`invert: true` is measured, not preference**, and confirmed by feel. With our force output
+at zero, the game's centring spring disabled and the car driving, DiRT 4's force points the
+*same* way as the steering angle:
 
-In game: set the input preset to the vJoy wheel device, and **turn the force feedback strength
-down** before the first drive. Once the device is registered correctly those sliders work for
-the first time, and a setting left at maximum from when it did nothing produces forces at
-±0.9 of full scale.
+```
+140 samples, mean |force| 0.596
+96% the same sign as steering
+wheel LEFT   mean angle -0.31 -> mean force -0.547
+wheel RIGHT  mean angle +0.31 -> mean force +0.554
+```
+
+Symmetric on both sides. Applied unchanged that is positive feedback: the wheel runs away into
+whatever corner you turn into, hardest under throttle. Inverted, it pulls back to centre
+through a corner, which is what it should do.
+
+The likely reason is our own plumbing rather than the game: this wheel's motor drives in the
+opposite direction to the sign of its own position reading, so one global flip corrects every
+effect at once.
+
+In game:
+
+- Set the input preset to the vJoy wheel device.
+- **Turn the in-game force feedback strength down** before the first drive. Once the device is
+  registered correctly those sliders work for the first time, and a setting left at maximum
+  from when it did nothing produces forces at ±1.0 of full scale.
+- **Leave the centring spring OFF.** Real self-aligning torque is strong (0.596 mean while
+  driving) and behaves far better in a loop with lag than the artificial spring, which tends
+  to hunt.
 
 <a name="dirt-4-known-issues"></a>
 ### Known issues
 
-- **Centring is weak.** The wheel tends to hold position rather than return to centre. The
-  game's centring force is proportional to steering angle, so it is weakest near centre, and
-  it appears to fall below the force needed to overcome the wheel's own friction. Measure your
-  own hardware with `stiction_test.py`; `min_force` in `tune.json` exists to compensate.
+- **The motor can go silent, and nothing looks wrong when it does.** If the shim's log
+  (`%TEMP%\wh33lh4x_shim.log`) shows `bridge went quiet -- releasing the motor`, the motor has
+  been released and re-claimed; doing that repeatedly leaves it accepting effects and
+  producing no torque while still reporting a running effect. Correct force is commanded, the
+  bridge log looks perfect, and the wheel is dead. **Restarting the game clears it** -- the
+  motor claim lives in the shim inside the game process, so a fresh game is a fresh motor. The
+  bridge does not need restarting.
 - **Oscillation at high gain.** Too much `strength` makes the wheel hunt and, at worst, sweep
   lock to lock on its own. The game's force reflects wheel position from some tens of
   milliseconds ago, and a laggy spring with too much gain is unstable. Lower `strength`.
+  Inverting a damping force does the same thing for a different reason, so get the sign right
+  before blaming gain.
 - **Only ever sends constant force.** No spring, damper or periodic effects, in either
   profile — everything is summed into one signed constant-force stream.
 
