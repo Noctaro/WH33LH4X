@@ -557,6 +557,12 @@ def parse_args():
                    help="skip the scripted constant/spring test, go straight to the menu")
     p.add_argument("--oem", default=None, metavar="VID:PID",
                    help="call EnableOemDeviceSupport for VID:PID before enumerating")
+    p.add_argument("--dll", default="GameInput.dll", metavar="NAME",
+                   help="which GameInput runtime to load. Default is the inbox v0 "
+                        "GameInput.dll. 'GameInputRedist.dll' is the newer v3 runtime, "
+                        "which exports GameInputCreate as well -- worth a try when v0 "
+                        "reports no force-feedback motors, but the v3 ABI is NOT the same "
+                        "and the struct layout check may (correctly) refuse it.")
     return p.parse_args()
 
 
@@ -569,9 +575,9 @@ def main():
 
     # --- Step 1: create the GameInput singleton -----------------------------
     try:
-        game_input, dll_path = abi.create_game_input()
+        game_input, dll_path = abi.create_game_input(args.dll)
     except OSError as exc:
-        print("\n  Could not load GameInput.dll: %s" % exc)
+        print("\n  Could not load %s: %s" % (args.dll, exc))
         return 2
     except GameInputError as exc:
         print("\n  %s" % exc)
