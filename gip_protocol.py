@@ -203,13 +203,13 @@ FFB_INIT_PARAMS = {
 }
 PARAM_BANK_SIZE = 0x0100
 
-# Type 0x0c "state" bodies, 9 bytes. 0x20 is written once during load and 0xf0 accompanies
-# every force update, which reads as "loaded" then "running" -- consistent with, but not
-# proof of, an effect state byte.
+# Type 0x0c "state" bodies, 9 bytes. 0x00 clears, 0xf0 runs; 0x20 appears only at teardown.
+STATE_CLEAR = b"\0" * 9
 STATE_LOADED = bytes.fromhex("20") + b"\0" * 8
 STATE_RUNNING = bytes.fromhex("f0") + b"\0" * 8
 
-# Type 0x0a "short cmd", 3 bytes, sent after every state change.
+# Type 0x0a "short cmd", 3 bytes. 0x00 resets, 0x06 starts/keeps alive.
+CMD_RESET = b"\0\0\0"
 SHORT_CMD = bytes.fromhex("060000")
 
 
@@ -221,22 +221,59 @@ def table_chunks(table=FFB_TABLE, chunk=FFB_TABLE_CHUNK):
             for offset in range(0, len(padded), chunk)]
 
 
-def init_param_blocks(params=None, bank=PARAM_BANK_SIZE):
-    """
-    The 0x0b bodies that write the whole parameter bank, ten slots at a time.
-
-    WGI sweeps every id from 0x0000 to 0x00ff rather than writing only the ones it cares
-    about, so this does the same. Whether the firmware needs the zeros is untested.
-    """
-    values = dict(FFB_INIT_PARAMS if params is None else params)
+def zero_param_blocks(bank=PARAM_BANK_SIZE):
+    """The 0x0b bodies that zero the whole bank, ten slots at a time -- 26 messages."""
     blocks = []
     for start in range(0, bank, PARAMS_PER_BLOCK):
-        pairs = [(pid, values.get(pid, 0)) for pid in
-                 range(start, min(start + PARAMS_PER_BLOCK, bank))]
+        pairs = [(pid, 0) for pid in range(start, min(start + PARAMS_PER_BLOCK, bank))]
         blocks.append(encode_params(pairs))
     return blocks
 
 
+def value_param_block(params=None):
+    """
+    The single 0x0b body carrying the effect's real values, ids 0x0000..0x0009.
+
+    ONE block, not the whole bank. WGI zeroes all 256 slots BEFORE uploading the table and
+    then writes only this one block after it -- see `load_sequence`.
+    """
+    values = dict(FFB_INIT_PARAMS if params is None else params)
+    return encode_params([(pid, values.get(pid, 0)) for pid in range(PARAMS_PER_BLOCK)])
+
+
+def load_sequence():
+    """
+    The exact ordered (message type, body) list WGI sends to arm this effect.
+
+    THIS ORDER IS LOAD-BEARING AND WAS GOT WRONG ONCE. The first implementation uploaded the
+    table, then wrote the whole 256-slot bank with values, then set state -- and the wheel
+    went slack without ever producing torque: the firmware handed over the motor and then had
+    no effect to run. Comparing the ordered byte streams (`gip_diff.py`) showed WGI actually:
+
+      1. RESETS first -- 0x0a 00 00 00, then a zeroed 0x0c
+      2. zeroes all 256 parameter slots (26 blocks)
+      3. clears state again
+      4. uploads the table
+      5. writes ONE value block, ids 0x0000..0x0009
+      6. sets state running, then starts
+
+    Steps 1-3 were missing entirely, and step 5 was being sent as 26 blocks instead of one.
+    """
+    out = [(0x0A, CMD_RESET), (0x0C, STATE_CLEAR)]
+    out += [(0x0B, body) for body in zero_param_blocks()]
+    out.append((0x0C, STATE_CLEAR))
+    out += [(0x0D, body) for body in table_chunks()]
+    out.append((0x0B, value_param_block()))
+    out.append((0x0C, STATE_RUNNING))
+    out.append((0x0A, SHORT_CMD))
+    return out
+
+
 def force_block(magnitude):
-    """The 0x0b body that sets X force. This is the one field that is fully verified."""
+    """
+    The 0x0b body that sets X force. This is the one field that is fully verified.
+
+    Sent ONCE per change, not repeatedly. What repeats at ~16 Hz is the 0x0c STATE_RUNNING
+    heartbeat -- WGI sent 273 of those against 6 force blocks across the same run.
+    """
     return encode_params([(PARAM_X_FORCE, float(magnitude))])

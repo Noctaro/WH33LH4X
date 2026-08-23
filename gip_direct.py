@@ -50,13 +50,12 @@ from gip_protocol import (
     HORI_PID,
     HORI_VID,
     SHORT_CMD,
-    STATE_LOADED,
     STATE_RUNNING,
     announce_ids,
     decode_gip,
     encode_gip,
     force_block,
-    init_param_blocks,
+    load_sequence,
     table_chunks,
 )
 
@@ -208,6 +207,10 @@ class GipDevice(object):
         self.read_empty = 0       # succeeded, zero bytes: accepted, nothing to give
         self.read_timeouts = 0    # still pending when we gave up
         self.read_ok = 0
+        # Every message sent, in order, when --dump is on. Order is the point: the tracer
+        # deduplicates, so "we send the same distinct payloads" was never evidence that we
+        # send them in the same sequence or the same number of times.
+        self.dump = None
 
     @classmethod
     def open(cls, path=GIP_PATH, verbose=True):
@@ -402,7 +405,10 @@ class GipDevice(object):
     def send(self, mtype, body):
         if self.device_id is None:
             raise RuntimeError("device id not learned yet -- call learn_device() first")
-        return self.write(encode_gip(self.device_id, mtype, body))
+        payload = encode_gip(self.device_id, mtype, body)
+        if self.dump is not None:
+            self.dump.append(payload)
+        return self.write(payload)
 
     # -- discovery ---------------------------------------------------------
 
@@ -472,26 +478,28 @@ class GipDevice(object):
     # -- the captured effect ----------------------------------------------
 
     def load_effect(self):
-        """
-        Replay the one-time load: table upload, full parameter bank, then state + command.
-
-        This is the part that is replayed rather than understood. If direct output works at
-        all but only after this, that is itself the finding -- it means the firmware needs the
-        table and the shim must carry these bytes.
-        """
-        for body in table_chunks():
-            self.send(0x0D, body)
-        for body in init_param_blocks():
-            self.send(0x0B, body)
-        self.send(0x0C, STATE_LOADED)
-        self.send(0x0C, STATE_RUNNING)
-        self.send(0x0A, SHORT_CMD)
+        """Replay WGI's arming sequence exactly -- reset, zero, table, values, run."""
+        for mtype, body in load_sequence():
+            self.send(mtype, body)
 
     def set_force(self, magnitude):
-        """One force update: the three messages WGI repeats at ~16 Hz."""
-        self.send(0x0B, force_block(magnitude))
-        self.send(0x0C, STATE_RUNNING)
-        self.send(0x0A, SHORT_CMD)
+        """Set the force parameter. Once per change; `pump` keeps it alive."""
+        return self.send(0x0B, force_block(magnitude))
+
+    def pump(self):
+        """
+        The heartbeat that keeps the effect running.
+
+        WGI sends this 0x0c continuously at ~16 Hz and touches the force parameter only when
+        it changes -- 273 state messages against 6 force blocks in one captured run. Treating
+        all three messages as one repeating update, which the first version did, is not how
+        this protocol works.
+        """
+        return self.send(0x0C, STATE_RUNNING)
+
+    def keepalive(self):
+        """The 0x0a WGI interleaves roughly every 2 s among the state heartbeats."""
+        return self.send(0x0A, SHORT_CMD)
 
 
 # ---------------------------------------------------------------------------
@@ -585,14 +593,20 @@ def mode_force(dev, hold):
     print("  load: %d messages sent, %d error(s)" % (dev.sent, len(dev.write_errors)))
     time.sleep(0.3)
 
+    last_keepalive = time.time()
     for magnitude, label in SEQUENCE:
         print("    %-14s x = %+.2f" % (label, magnitude))
         log.event("gip.force", x=magnitude)
-        # WGI repeats the update at ~16 Hz rather than setting it once, so do the same --
-        # a single write may well be treated as a stale command and dropped.
+        # Set the parameter once, then hold the effect alive with the 0x0c heartbeat. That
+        # is what WGI does; re-sending the force block every tick is not.
+        dev.set_force(magnitude)
         deadline = time.time() + hold
         while time.time() < deadline:
-            dev.set_force(magnitude)
+            dev.pump()
+            now = time.time()
+            if now - last_keepalive > 2.0:
+                dev.keepalive()
+                last_keepalive = now
             time.sleep(1.0 / 16.0)
 
     dev.set_force(0.0)
@@ -634,9 +648,10 @@ def mode_background(dev, hold):
             time.sleep(1.0)
         print("    holding +0.50 for %.0f s ..." % hold)
         log.event("gip.background.phase", phase=name)
+        dev.set_force(0.50)
         deadline = time.time() + hold
         while time.time() < deadline:
-            dev.set_force(0.50)
+            dev.pump()
             time.sleep(1.0 / 16.0)
         dev.set_force(0.0)
         felt.append(name)
@@ -668,6 +683,8 @@ def parse_args():
     ap.add_argument("--listen", type=float, default=4.0,
                     help="seconds to listen in the default mode (default 4)")
     ap.add_argument("--no-log", action="store_true", help="do not write a log file")
+    ap.add_argument("--dump", metavar="FILE",
+                    help="write every message sent, in order, for comparison with gip_trace")
     return ap.parse_args()
 
 
@@ -697,6 +714,8 @@ def main():
         # data -- then the announce arrived 41 ms after adding this call. It is the whole
         # difference, and it needs neither elevation nor a window.
         dev.reenumerate()
+        if args.dump:
+            dev.dump = []
 
         # Diagnostics run before anything needs a device id -- when reads produce nothing,
         # learning the id is precisely what cannot happen, so gating this on it would put the
@@ -714,8 +733,8 @@ def main():
             print("  That asks the API why, instead of guessing at buffer sizes.")
             return 1
 
-        print("  table %d bytes, %d chunk(s); parameter bank %d block(s)"
-              % (len(FFB_TABLE), len(table_chunks()), len(init_param_blocks())))
+        print("  table %d bytes, %d chunk(s); arming sequence %d message(s)"
+              % (len(FFB_TABLE), len(table_chunks()), len(load_sequence())))
 
         if args.background:
             mode_background(dev, args.hold)
@@ -729,6 +748,11 @@ def main():
                 dev.set_force(0.0)
         except Exception:
             pass
+        if args.dump and dev.dump is not None:
+            with open(args.dump, "w", encoding="ascii") as fh:
+                for payload in dev.dump:
+                    fh.write(payload.hex() + "\n")
+            print("\n  wrote %d message(s) to %s" % (len(dev.dump), args.dump))
         dev.close()
         if not args.no_log:
             log.stop()

@@ -71,9 +71,11 @@ static const BYTE FFB_TABLE[186] = {
     0x09, 0x22, 0x21, 0xa0, 0x21, 0x53,
 };
 
-/* The 9-byte type 0x0c "state" bodies: 0x20 once at load, 0xf0 with every force update. */
-static const BYTE STATE_LOADED[9]  = { 0x20, 0, 0, 0, 0, 0, 0, 0, 0 };
+/* The 9-byte type 0x0c "state" bodies: 0x00 clears, 0xf0 runs. */
+static const BYTE STATE_CLEAR[9]   = { 0x00, 0, 0, 0, 0, 0, 0, 0, 0 };
 static const BYTE STATE_RUNNING[9] = { 0xf0, 0, 0, 0, 0, 0, 0, 0, 0 };
+/* Type 0x0a: 0x00 resets, 0x06 starts and keeps alive. */
+static const BYTE CMD_RESET[3]     = { 0x00, 0x00, 0x00 };
 static const BYTE SHORT_CMD[3]     = { 0x06, 0x00, 0x00 };
 
 /* ------------------------------------------------------------------ encoding */
@@ -144,12 +146,44 @@ static BOOL gip_write(gip_device *dev, const BYTE *buf, DWORD len)
     return ok;
 }
 
+/*
+ * Append one message to the stream dump, hex per line, matching gip_direct.py --dump.
+ *
+ * This exists because "the C is a transcription of the verified Python" is an assumption, not
+ * evidence -- and hand transcription is exactly where errors hide. `gip_diff.py` can compare
+ * this against a WGI capture, which is the only way to know the bytes leaving the shim are the
+ * bytes we think they are.
+ */
+static void gip_dump(gip_device *dev, const BYTE *msg, DWORD n)
+{
+    char   line[3 * (GIP_HEADER_BYTES + 256) + 4];
+    DWORD  i, written = 0;
+    HANDLE f;
+
+    if (!dev->dump_path[0])
+        return;
+    f = CreateFileW(dev->dump_path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (f == INVALID_HANDLE_VALUE)
+        return;
+    for (i = 0; i < n && (i * 2 + 3) < sizeof(line); i++) {
+        static const char HEX[] = "0123456789abcdef";
+        line[i * 2]     = HEX[msg[i] >> 4];
+        line[i * 2 + 1] = HEX[msg[i] & 0x0F];
+    }
+    line[i * 2]     = '\r';
+    line[i * 2 + 1] = '\n';
+    WriteFile(f, line, i * 2 + 2, &written, NULL);
+    CloseHandle(f);
+}
+
 static BOOL gip_send(gip_device *dev, BYTE type, const BYTE *body, DWORD body_len)
 {
     BYTE  msg[GIP_HEADER_BYTES + 256];
     DWORD n = gip_frame(dev, type, body, body_len, msg, sizeof(msg));
     if (!n)
         return FALSE;
+    gip_dump(dev, msg, n);
     return gip_write(dev, msg, n);
 }
 
@@ -291,6 +325,18 @@ BOOL gip_set_device_id_hex(gip_device *dev, const char *hex)
 
 /* ------------------------------------------------------------------ the effect */
 
+/*
+ * Arm the effect, in WGI's exact order.
+ *
+ * THIS ORDER IS LOAD-BEARING AND WAS GOT WRONG ONCE. The first version uploaded the table,
+ * then wrote all 256 parameter slots with values, then set state -- and the wheel went slack
+ * without ever producing torque. The firmware took the motor and then had no effect to run,
+ * which also left it dead to Windows.Gaming.Input until the wheel was replugged.
+ *
+ * Diffing the ordered byte streams showed WGI resets FIRST, zeroes the whole bank, clears
+ * state, uploads the table, and only then writes ONE block of values. Steps 1-3 were missing
+ * entirely and step 5 was 26 blocks instead of one.
+ */
 BOOL gip_load_effect(gip_device *dev)
 {
     BYTE  body[PARAM_BLOCK_BYTES];
@@ -301,7 +347,35 @@ BOOL gip_load_effect(gip_device *dev)
     if (!dev->have_device_id)
         return FALSE;
 
-    /* Table upload: [u8 0][u16 total][u16 offset][48 bytes], zero-padded to a chunk. */
+    /* 1-3: reset, then zero every slot in the bank, then clear state again. */
+    if (!gip_send(dev, TYPE_SHORT_CMD, CMD_RESET, sizeof(CMD_RESET)) ||
+        !gip_send(dev, TYPE_STATE, STATE_CLEAR, sizeof(STATE_CLEAR))) {
+        shim_log("gip: reset failed, err=%lu", dev->last_error);
+        return FALSE;
+    }
+    for (start = 0; start < PARAM_BANK_SIZE; start += PARAM_SLOTS) {
+        WORD ids[PARAM_SLOTS];
+        BYTE values[PARAM_SLOTS][4];
+        int  i;
+        int  count = PARAM_BANK_SIZE - start;
+        if (count > PARAM_SLOTS)
+            count = PARAM_SLOTS;
+        for (i = 0; i < count; i++) {
+            ids[i] = (WORD)(start + i);
+            memset(values[i], 0, 4);
+        }
+        build_param_block(body, ids, values, count);
+        if (!gip_send(dev, TYPE_PARAM_BLOCK, body, PARAM_BLOCK_BYTES)) {
+            shim_log("gip: zeroing block at 0x%04x failed, err=%lu", start, dev->last_error);
+            return FALSE;
+        }
+    }
+    if (!gip_send(dev, TYPE_STATE, STATE_CLEAR, sizeof(STATE_CLEAR))) {
+        shim_log("gip: clear before table failed, err=%lu", dev->last_error);
+        return FALSE;
+    }
+
+    /* 4: table upload -- [u8 0][u16 total][u16 offset][48 bytes], zero-padded to a chunk. */
     for (offset = 0; offset < sizeof(FFB_TABLE); offset += TABLE_CHUNK) {
         DWORD remaining = (DWORD)sizeof(FFB_TABLE) - offset;
         DWORD take = remaining < TABLE_CHUNK ? remaining : TABLE_CHUNK;
@@ -317,45 +391,38 @@ BOOL gip_load_effect(gip_device *dev)
     }
 
     /*
-     * The parameter bank: every id from 0x0000 to 0x00ff, ten per message. All zero except
-     * six, which are replayed as captured rather than understood:
+     * 5: ONE block of real values, ids 0x0000..0x0009. Only six are non-zero, and they are
+     * replayed as captured rather than understood:
      *   0x0001 = 600000.0  (consistent with the commanded 60 s at 100 us/unit -- one sample)
      *   0x0002 = integer 1
      *   0x0003 = -1.0   0x0005 = +1.0   0x0006 = -1.0   0x0009 = +1.0
-     * WGI sweeps the whole bank rather than writing only what it cares about, so we do too.
      */
-    for (start = 0; start < PARAM_BANK_SIZE; start += PARAM_SLOTS) {
+    {
         WORD ids[PARAM_SLOTS];
         BYTE values[PARAM_SLOTS][4];
         int  i;
-        int  count = PARAM_BANK_SIZE - start;
-        if (count > PARAM_SLOTS)
-            count = PARAM_SLOTS;
-
-        for (i = 0; i < count; i++) {
-            int   id = start + i;
-            float f = 0.0f;
-            DWORD u = 0;
-            ids[i] = (WORD)id;
-            switch (id) {
-            case 0x0001: f = 600000.0f; memcpy(values[i], &f, 4); continue;
-            case 0x0002: u = 1;         put_u32(values[i], u);    continue;
-            case 0x0003: f = -1.0f;     memcpy(values[i], &f, 4); continue;
-            case 0x0005: f = 1.0f;      memcpy(values[i], &f, 4); continue;
-            case 0x0006: f = -1.0f;     memcpy(values[i], &f, 4); continue;
-            case 0x0009: f = 1.0f;      memcpy(values[i], &f, 4); continue;
-            default:     memset(values[i], 0, 4);                 continue;
+        for (i = 0; i < PARAM_SLOTS; i++) {
+            float f;
+            ids[i] = (WORD)i;
+            switch (i) {
+            case 0x0001: f = 600000.0f; memcpy(values[i], &f, 4); break;
+            case 0x0002: put_u32(values[i], 1);                   break;
+            case 0x0003: f = -1.0f;     memcpy(values[i], &f, 4); break;
+            case 0x0005: f = 1.0f;      memcpy(values[i], &f, 4); break;
+            case 0x0006: f = -1.0f;     memcpy(values[i], &f, 4); break;
+            case 0x0009: f = 1.0f;      memcpy(values[i], &f, 4); break;
+            default:     memset(values[i], 0, 4);                 break;
             }
         }
-        build_param_block(body, ids, values, count);
+        build_param_block(body, ids, values, PARAM_SLOTS);
         if (!gip_send(dev, TYPE_PARAM_BLOCK, body, PARAM_BLOCK_BYTES)) {
-            shim_log("gip: parameter block at 0x%04x failed, err=%lu", start, dev->last_error);
+            shim_log("gip: value block failed, err=%lu", dev->last_error);
             return FALSE;
         }
     }
 
-    if (!gip_send(dev, TYPE_STATE, STATE_LOADED, sizeof(STATE_LOADED)) ||
-        !gip_send(dev, TYPE_STATE, STATE_RUNNING, sizeof(STATE_RUNNING)) ||
+    /* 6: run, then start. */
+    if (!gip_send(dev, TYPE_STATE, STATE_RUNNING, sizeof(STATE_RUNNING)) ||
         !gip_send(dev, TYPE_SHORT_CMD, SHORT_CMD, sizeof(SHORT_CMD))) {
         shim_log("gip: effect start failed, err=%lu", dev->last_error);
         return FALSE;
@@ -382,11 +449,19 @@ BOOL gip_set_force(gip_device *dev, float magnitude)
     ids[0] = PARAM_X_FORCE;
     memcpy(values[0], &magnitude, 4);
     build_param_block(body, ids, values, 1);
+    return gip_send(dev, TYPE_PARAM_BLOCK, body, PARAM_BLOCK_BYTES);
+}
 
-    /* The three messages WGI repeats at ~16 Hz for every update. */
-    if (!gip_send(dev, TYPE_PARAM_BLOCK, body, PARAM_BLOCK_BYTES))
+BOOL gip_pump(gip_device *dev)
+{
+    if (!dev->loaded)
         return FALSE;
-    if (!gip_send(dev, TYPE_STATE, STATE_RUNNING, sizeof(STATE_RUNNING)))
+    return gip_send(dev, TYPE_STATE, STATE_RUNNING, sizeof(STATE_RUNNING));
+}
+
+BOOL gip_keepalive(gip_device *dev)
+{
+    if (!dev->loaded)
         return FALSE;
     return gip_send(dev, TYPE_SHORT_CMD, SHORT_CMD, sizeof(SHORT_CMD));
 }

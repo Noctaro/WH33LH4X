@@ -37,8 +37,8 @@
 #include <string.h>
 #include <strsafe.h>
 
-#include "gip.h"
 #include "shim_log.h"
+#include "wgi.h"
 
 /*
  * Exported signatures use `const void *` where the SDK says REFIID / REFCLSID. Those are
@@ -156,21 +156,26 @@ static void ensure_real(void)
 /* --------------------------------------------------------------------- config */
 
 /*
- * %TEMP%\wh33lh4x.cfg, `key=value` per line. Two keys:
+ * %TEMP%\wh33lh4x.cfg, `key=value` per line. One key:
  *
- *   device=9735815b51cc0000   fallback device id, written by gip_trace.py
- *   selftest=1                oscillate the motor so the gate can be tested by hand
+ *   selftest=1   load an effect and oscillate the motor, so the result can be felt by hand
  *
- * The self-test is OFF unless asked for, so a normal game launch is unaffected by the shim
- * being present. The device id is only a fallback -- discovery is tried first, because
- * hard-coding one machine's id is not something to build on.
+ * OFF unless asked for. With it off the shim still enumerates and logs what it found, which
+ * claims nothing; with it on the shim takes the motor, and a motor taken and released badly
+ * stays dead until the wheel is replugged.
  */
 
-#define SELFTEST_MAGNITUDE 0.35f   /* felt clearly; nowhere near fighting the user */
+/*
+ * The self-test sweeps both sides at two strengths rather than holding one level.
+ *
+ * 0.35 is already above the 0.30 the diagnostic menu has always been felt at, but a single
+ * fixed magnitude leaves "too weak to notice" and "no force at all" looking identical -- and
+ * those call for completely different next steps. Going to full torque on each side removes
+ * that ambiguity: if any force is reaching the motor, 1.00 cannot be missed.
+ */
 #define SELFTEST_HOLD_MS   1500
 #define SELFTEST_TICK_MS   62      /* ~16 Hz, the rate WGI re-sends at */
 
-static char  g_cfg_device[17];
 static BOOL  g_cfg_selftest;
 static volatile LONG g_stop;
 static HANDLE g_worker;
@@ -196,30 +201,12 @@ static void read_config(void)
     }
     if (ReadFile(f, buf, sizeof(buf) - 1, &got, NULL)) {
         buf[got] = '\0';
-        p = strstr(buf, "device=");
-        if (p) {
-            size_t i;
-            p += 7;
-            for (i = 0; i < 16; i++) {
-                char c = p[i];
-                BOOL hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
-                           (c >= 'A' && c <= 'F');
-                if (!hex)
-                    break;
-                g_cfg_device[i] = c;
-            }
-            if (i == 16)
-                g_cfg_device[16] = '\0';
-            else
-                g_cfg_device[0] = '\0';
-        }
         p = strstr(buf, "selftest=");
         if (p)
             g_cfg_selftest = (p[9] == '1');
     }
     CloseHandle(f);
-    shim_log("config: device=%s selftest=%d",
-             g_cfg_device[0] ? g_cfg_device : "(none)", g_cfg_selftest ? 1 : 0);
+    shim_log("config: selftest=%d", g_cfg_selftest ? 1 : 0);
 }
 
 /* --------------------------------------------------------------------- worker */
@@ -229,74 +216,70 @@ static BOOL stopping(void)
     return InterlockedCompareExchange(&g_stop, 0, 0) != 0;
 }
 
-/*
- * Alternate a steady push left and right so the result is unmistakable by hand.
- *
- * The force is re-sent at ~16 Hz rather than set once, because that is what WGI does -- a
- * single write may well be treated as a stale command and dropped.
- */
-static void selftest_loop(gip_device *dev)
+/* Alternate a steady push left and right so the result is unmistakable by hand. */
+static void selftest_loop(wgi_motor *m)
 {
-    const float levels[2] = { SELFTEST_MAGNITUDE, -SELFTEST_MAGNITUDE };
+    static const float LEVELS[] = { 0.35f, 1.00f, -0.35f, -1.00f };
+    static const char *NAMES[]  = { "right 35%", "right FULL", "left 35%", "left FULL" };
     int   phase = 0;
-    DWORD halves = 0;
+    DWORD steps = 0;
 
-    shim_log("selftest: oscillating +/-%.2f every %d ms -- hands on the wheel",
-             (double)SELFTEST_MAGNITUDE, SELFTEST_HOLD_MS);
+    shim_log("selftest: sweeping %s / %s / %s / %s, %d ms each -- hands on the wheel",
+             NAMES[0], NAMES[1], NAMES[2], NAMES[3], SELFTEST_HOLD_MS);
 
     while (!stopping()) {
         DWORD until = GetTickCount() + SELFTEST_HOLD_MS;
-        while (GetTickCount() < until && !stopping()) {
-            if (!gip_set_force(dev, levels[phase])) {
-                shim_log("selftest: write failed, err=%lu -- stopping", dev->last_error);
-                return;
-            }
-            Sleep(SELFTEST_TICK_MS);
+        shim_log("selftest: %-11s x = %+.2f", NAMES[phase], (double)LEVELS[phase]);
+        if (!wgi_set_force(m, LEVELS[phase])) {
+            shim_log("selftest: set_force failed -- stopping");
+            return;
         }
-        phase ^= 1;
-        if (++halves % 4 == 0)
-            shim_log("selftest: %lu half-cycles, %lu writes, %lu error(s)",
-                     halves, dev->writes, dev->write_errors);
+        /* SetParameters live-updates a running effect, so the magnitude just stays put --
+         * there is no heartbeat to send. Sleep in slices so stopping() stays responsive. */
+        while (GetTickCount() < until && !stopping())
+            Sleep(SELFTEST_TICK_MS);
+        phase = (phase + 1) % (int)(sizeof(LEVELS) / sizeof(LEVELS[0]));
+        steps++;
     }
+    shim_log("selftest: %lu step(s) completed", steps);
 }
 
 /*
  * Everything here logs and returns rather than retrying: this thread lives inside somebody
  * else's game, and a shim that spins or crashes is worse than a shim that does nothing.
+ *
+ * W1 (finding the wheel and its motor) is deliberately separable from W2 (commanding force):
+ * if enumeration works and force does not, the log says which, and those are different
+ * problems. `selftest=` gates only the force half.
  */
 static DWORD WINAPI worker_main(LPVOID param)
 {
-    gip_device dev;
+    wgi_motor *m;
     (void)param;
 
-    if (!gip_open(&dev))
-        return 0;
-
-    /* Discovery first. In-game we are foreground with a proper window, which is what the GIP
-     * driver wants before it delivers input reports -- so this is the case most likely to
-     * work, and trying it also tells us whether reads are usable from here at all. */
-    if (!gip_discover(&dev, 2000) && g_cfg_device[0])
-        gip_set_device_id_hex(&dev, g_cfg_device);
-
-    if (!dev.have_device_id) {
-        shim_log("gip: no device id (discovery failed, no config) -- nothing to drive");
-        gip_close(&dev);
+    m = wgi_open(10000);
+    if (!wgi_have_motor(m)) {
+        shim_log("wgi: no motor -- nothing to drive");
+        wgi_close(m);
         return 0;
     }
 
-    if (!gip_load_effect(&dev)) {
-        gip_close(&dev);
+    if (!g_cfg_selftest) {
+        shim_log("wgi: motor found; selftest off, so not loading an effect");
+        wgi_close(m);
         return 0;
     }
 
-    if (g_cfg_selftest)
-        selftest_loop(&dev);
-    else
-        shim_log("gip: effect ready; self-test disabled, so idling");
+    if (!wgi_load_effect(m, 1.0f)) {
+        wgi_close(m);
+        return 0;
+    }
 
-    gip_set_force(&dev, 0.0f);
-    gip_close(&dev);
-    shim_log("gip: worker done (%lu writes, %lu error(s))", dev.writes, dev.write_errors);
+    selftest_loop(m);
+
+    wgi_set_force(m, 0.0f);
+    wgi_close(m);
+    shim_log("wgi: worker done");
     return 0;
 }
 
@@ -307,6 +290,12 @@ static BOOL CALLBACK init_worker(PINIT_ONCE once, PVOID param, PVOID *ctx)
     (void)ctx;
 
     read_config();
+    /*
+     * The thread always starts, because ENUMERATING is harmless -- it claims nothing. Only
+     * loading an effect takes the motor, and that stays gated behind selftest=, because a
+     * claimed-then-released motor can be left accepting effects while producing no torque,
+     * which would break force feedback for every other application on the machine.
+     */
     g_worker = CreateThread(NULL, 0, worker_main, NULL, 0, NULL);
     if (!g_worker)
         shim_log("gip: CreateThread failed, err=%lu", GetLastError());

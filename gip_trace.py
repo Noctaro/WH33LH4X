@@ -500,6 +500,26 @@ def command_sequence(motor, loop, tracer, hold, pump):
     return effect, (held / samples if samples else 0.0)
 
 
+def write_stream_dump(tracer, path):
+    """
+    Every write WGI made, in order, as hex -- one message per line.
+
+    The summary above deduplicates, which is right for reading but wrong for replaying: it
+    hides how many times a message was sent and in what sequence. `gip_diff.py` compares this
+    against the same dump from `gip_direct.py`, which is the only way to tell "we send the
+    same bytes" from "we send the same set of distinct bytes".
+    """
+    count = 0
+    with open(path, "w", encoding="ascii") as fh:
+        for _t, kind, _h, payload, _m in tracer.events:
+            if kind != "write" or not payload:
+                continue
+            fh.write(payload.hex() + "\n")
+            count += 1
+    print("  stream dump: %s  (%d message(s))" % (path, count))
+    return count
+
+
 def write_shim_config(tracer):
     """
     Hand the shim the device id, via %TEMP%\\wh33lh4x.cfg.
@@ -653,6 +673,8 @@ def parse_args():
     p.add_argument("--wait", type=float, default=8.0,
                    help="seconds to wait for the wheel to appear (default 8)")
     p.add_argument("--no-log", action="store_true", help="do not write a session log")
+    p.add_argument("--dump", metavar="FILE",
+                   help="write every captured write, in order, for comparison with gip_direct")
     return p.parse_args()
 
 
@@ -719,6 +741,8 @@ def main():
 
         summarise(tracer)
         write_shim_config(tracer)
+        if args.dump:
+            write_stream_dump(tracer, args.dump)
         if foreground < 0.95:
             rule("WARNING -- this run was not fully foregrounded")
             print("  Held foreground for only %d%% of the sequence. Force output is gated on"

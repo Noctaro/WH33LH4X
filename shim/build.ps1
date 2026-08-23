@@ -24,10 +24,24 @@ if (-not (Test-Path $zig)) {
 if (-not (Test-Path $outDir)) { New-Item -ItemType Directory -Path $outDir | Out-Null }
 
 $out     = Join-Path $outDir 'dinput8.dll'
-$sources = @('dinput8.c', 'gip.c') | ForEach-Object { Join-Path $shimDir $_ }
+$sources = @('dinput8.c', 'wgi.c') | ForEach-Object { Join-Path $shimDir $_ }
 $def     = Join-Path $shimDir 'dinput8.def'
 
+# The Windows SDK's MIDL-generated WinRT headers give us C vtable structs for
+# Windows.Gaming.Input, so the shim calls WGI as ordinary COM instead of hand-writing the ABI.
+# They compile under zig's clang, but they are written for MSVC, hence the two suppressions:
+# MSVC-only #pragma warning directives, and #include lines whose case does not match disk.
+$sdkRoot = 'C:\Program Files (x86)\Windows Kits\10\Include'
+$sdkVer  = Get-ChildItem $sdkRoot -Directory -ErrorAction SilentlyContinue |
+           Where-Object { Test-Path (Join-Path $_.FullName 'winrt\windows.gaming.input.forcefeedback.h') } |
+           Sort-Object Name -Descending | Select-Object -First 1
+if (-not $sdkVer) {
+    Write-Error "No Windows SDK with winrt\windows.gaming.input.forcefeedback.h under $sdkRoot -- the shim cannot reach the motor without it."
+}
+$winrtInc = Join-Path $sdkVer.FullName 'winrt'
+
 Write-Host "zig:     $((& $zig version))"
+Write-Host "sdk:     $($sdkVer.Name)"
 Write-Host "sources: $($sources -join ', ')"
 Write-Host "output:  $out"
 
@@ -36,10 +50,15 @@ Write-Host "output:  $out"
     -target x86_64-windows-gnu `
     -O2 `
     -Wall -Wextra `
+    -Wno-nonportable-include-path -Wno-unknown-pragmas `
+    -I $winrtInc `
+    -I $shimDir `
     -o $out `
     @sources `
     $def `
-    -lkernel32
+    -lkernel32 -lole32 `
+    -lapi-ms-win-core-winrt-l1-1-0 `
+    -lapi-ms-win-core-winrt-string-l1-1-0
 
 if ($LASTEXITCODE -ne 0) { Write-Error "zig cc failed with exit code $LASTEXITCODE" }
 
