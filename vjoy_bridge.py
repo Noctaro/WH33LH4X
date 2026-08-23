@@ -580,18 +580,22 @@ def main():
     decoder = None
     loop = None
     try:
+        use_ipc = args.sink == "ipc" and not args.no_ffb and not args.dry_run
+
         raw, wheels = wait_for_devices(args.wait, pump)
-        if not has_motor(raw, wheels):
+        motor = label = wheel = None
+        identity = {}
+        if has_motor(raw, wheels):
+            motor, label, wheel, identity = report(raw, wheels)
+        elif not use_ipc:
             rule("RESULT")
             print("  No wheel found. Put it in Xbox mode (long-press PROFILE) and press one")
             print("  of its buttons while this runs.")
             return 1
 
-        motor, label, wheel, identity = report(raw, wheels)
-
         # Create the IPC sink BEFORE the reader, because it is also the reader's source: the
         # shim publishes wheel position through the same section it takes force from.
-        if args.sink == "ipc" and not args.no_ffb and not args.dry_run:
+        if use_ipc:
             sink = IpcMotorSink(max_force=args.max_force, gain=args.gain).open()
 
         if wheel is None and sink is None:
@@ -599,7 +603,13 @@ def main():
             print("  Found a device via %s but no RacingWheel to read position from." % label)
             return 1
         if wheel is None:
-            print("  No RacingWheel enumerated here -- relying on the shim for readings.")
+            # NOT a failure with the IPC sink. Enumerating here needs OUR window in front, so
+            # a bridge started after the game never sees the wheel -- and does not need to,
+            # because the shim inside the game supplies both readings and force. Requiring it
+            # was what forced "start the bridge first", which is a bad thing to require of
+            # anyone launching a game from Steam.
+            print("  No wheel enumerated in this process -- readings will come from the shim.")
+            print("  (Normal when the game is already running; it owns the foreground.)")
 
         reader = WheelReader(wheel, source=sink)
         caps = reader.capabilities()
