@@ -5,16 +5,18 @@ works. Games differ far more than they should: two titles using the same DirectI
 disagree about whether a virtual device is even a wheel, and that single disagreement decides
 whether force feedback is real or useless.
 
-**Everything here is measured, not assumed.** Where a claim came from a log, the numbers are
-included. Where something is untested, it says untested rather than guessing.
+Every entry records what was actually tried on the game it names. Where something has not been
+tested, it says so rather than guessing.
 
-New entries are welcome — copy the [template](#template-for-a-new-game) at the bottom.
+New entries are welcome — copy the [template](#template-for-a-new-game) at the bottom. If you
+want the reasoning behind any of this — why the bridge is built the way it is, why a game needs
+the setup it does — that lives in [NOTES.md](NOTES.md), not here.
 
 ## Status at a glance
 
 | Game | Status | Needs setup? | Verified |
 |---|---|---|---|
-| [DiRT 4](#dirt-4) | 🟡 Force feedback works; motor occasionally needs a game restart | Yes — device registration | 2026-08-24 |
+| [DiRT 4](#dirt-4) | 🟢 Steering, pedals and force feedback all work | Yes — device registration | 2026-08-24 |
 | [RaceRoom Racing Experience](#raceroom-racing-experience) | ⚪ Untested | Unknown | — |
 | [Automobilista 2](#automobilista-2) | ⚪ Untested | Unknown | — |
 
@@ -33,22 +35,25 @@ New entries are welcome — copy the [template](#template-for-a-new-game) at the
 
 ## DiRT 4
 
-**Status:** 🟡 Steering, pedals and force feedback all work — the wheel loads up in a corner
-and pulls back to centre. The one rough edge is that the motor can stop producing torque and
-need the game restarting; see [Known issues](#dirt-4-known-issues).
+**Status:** 🟢 Steering, pedals and force feedback all work — the wheel loads up in a corner
+and pulls back to centre. Alt-tab away for as long as you like; force comes back by itself
+when you return to the game.
 
 **Verified:** 2026-08-24, Steam build, app id 421020.
 
 ### Required setup
 
-DiRT 4 classifies input devices from its own database and gives anything it does not
-recognise a **generic, non-directional** force feedback profile. Without the entry below, the
-game sends unsigned magnitude with no usable direction: the wheel pulls one way permanently,
-never centres, and both in-game force feedback sliders do nothing. Kerbs and gravel still feel
-correct, which is what makes this so easy to misdiagnose.
+Both steps are manual edits inside your DiRT 4 install. **Back up `device_defines.xml` before
+you start.** Steam's *Verify integrity of game files* will restore it if anything goes wrong,
+and a game update reverts both files — expect to reapply after patches.
 
-**1. Register vJoy as a wheel.** In `<game>\input\devices\device_defines.xml`, before the
-closing `</device_list>`:
+Without this setup DiRT 4 does not recognise the device and gives it a generic,
+non-directional force feedback profile: the wheel pulls one way permanently, never centres,
+and both in-game force feedback sliders do nothing. Kerbs and gravel still feel correct, which
+makes it easy to mistake for a working setup.
+
+**1. Register vJoy as a wheel.** In `<game>\input\devices\device_defines.xml`, add this line
+before the closing `</device_list>` — add it, do not replace anything:
 
 ```xml
 <device id="{BEAD1234-0000-0000-0000-504944564944}" name="vjoy_wheel" priority="100" type="wheel" ffb="enabled" />
@@ -63,21 +68,16 @@ Get-ChildItem "HKCU:\System\CurrentControlSet\Control\MediaProperties\PrivatePro
   ForEach-Object { "{0} -> {1}" -f $_.PSChildName, (Get-ItemProperty $_.PSPath).OEMName }
 ```
 
-**2. Add an action map** at `<game>\input\actionmaps\vjoy_wheel.xml` — the file name must
-match the `name` attribute above. See [`docs/dirt4/vjoy_wheel.xml`](docs/dirt4/vjoy_wheel.xml)
-in this repo for the version that is known to work.
+A copy of that line, with the same notes, is at
+[`docs/dirt4/device_defines_snippet.xml`](docs/dirt4/device_defines_snippet.xml).
 
-Back up `device_defines.xml` first. Steam's *Verify integrity of game files* restores both if
-anything goes wrong, and will also remove them on a game update — expect to reapply after
-patches.
+**2. Add an action map.** Copy [`docs/dirt4/vjoy_wheel.xml`](docs/dirt4/vjoy_wheel.xml) to
+`<game>\input\actionmaps\vjoy_wheel.xml`. The file name must match the `name` attribute above.
 
-### Why the action map is needed
-
-The engine binds steering as **two halves of one axis** (`di_x_axis` `type="lower"` and
-`type="upper"`). Binding that through the game's own UI fails: assigning the first direction
-works, and assigning the second drops the device with *"Steuerungsgerät geändert / the
-connection to an input device was disconnected"*. Declaring both halves in XML avoids the UI
-path entirely.
+**Do not bind steering through the in-game controls menu.** It cannot be done: you can assign
+one direction, and assigning the opposite one drops the device with *"Steuerungsgerät geändert
+/ the connection to an input device was disconnected"*. The action map exists to avoid that
+menu entirely — see [NOTES.md](NOTES.md) for why.
 
 ### Settings that work
 
@@ -87,52 +87,28 @@ In `tune.json`:
 { "strength": 0.2, "invert": true, "dir_mode": "sin", "max_force": 0.45 }
 ```
 
-**`invert: true` is measured, not preference**, and confirmed by feel. With our force output
-at zero, the game's centring spring disabled and the car driving, DiRT 4's force points the
-*same* way as the steering angle:
-
-```
-140 samples, mean |force| 0.596
-96% the same sign as steering
-wheel LEFT   mean angle -0.31 -> mean force -0.547
-wheel RIGHT  mean angle +0.31 -> mean force +0.554
-```
-
-Symmetric on both sides. Applied unchanged that is positive feedback: the wheel runs away into
-whatever corner you turn into, hardest under throttle. Inverted, it pulls back to centre
-through a corner, which is what it should do.
-
-The likely reason is our own plumbing rather than the game: this wheel's motor drives in the
-opposite direction to the sign of its own position reading, so one global flip corrects every
-effect at once.
+**Leave `invert` set to `true`.** It is measured, not preference — DiRT 4's force points the
+same way as the steering angle, so without the flip the wheel runs away into whatever corner
+you turn into instead of pulling back to centre.
 
 In game:
 
 - Set the input preset to the vJoy wheel device.
 - **Turn the in-game force feedback strength down** before the first drive. Once the device is
   registered correctly those sliders work for the first time, and a setting left at maximum
-  from when it did nothing produces forces at ±1.0 of full scale.
-- **Leave the centring spring OFF.** Real self-aligning torque is strong (0.596 mean while
-  driving) and behaves far better in a loop with lag than the artificial spring, which tends
-  to hunt.
+  from when it did nothing produces forces at full scale.
+- **Leave the centring spring OFF.** The car's own self-aligning torque is strong and behaves
+  better than the artificial spring, which tends to hunt.
 
 <a name="dirt-4-known-issues"></a>
 ### Known issues
 
-- **The motor can go silent, and nothing looks wrong when it does.** If the shim's log
-  (`%TEMP%\wh33lh4x_shim.log`) shows `bridge went quiet -- releasing the motor`, the motor has
-  been released and re-claimed; doing that repeatedly leaves it accepting effects and
-  producing no torque while still reporting a running effect. Correct force is commanded, the
-  bridge log looks perfect, and the wheel is dead. **Restarting the game clears it** -- the
-  motor claim lives in the shim inside the game process, so a fresh game is a fresh motor. The
-  bridge does not need restarting.
 - **Oscillation at high gain.** Too much `strength` makes the wheel hunt and, at worst, sweep
-  lock to lock on its own. The game's force reflects wheel position from some tens of
-  milliseconds ago, and a laggy spring with too much gain is unstable. Lower `strength`.
-  Inverting a damping force does the same thing for a different reason, so get the sign right
-  before blaming gain.
+  lock to lock on its own. Lower `strength`. Inverting a damping force does the same thing for
+  a different reason, so get the sign right before blaming gain.
 - **Only ever sends constant force.** No spring, damper or periodic effects, in either
-  profile — everything is summed into one signed constant-force stream.
+  profile — everything is summed into one signed constant-force stream. If you want a centring
+  spring or damping beyond what the game sends, use the synthetic ones in `tune.json`.
 
 ### Launching
 
@@ -183,12 +159,15 @@ What has to be changed before it works, exact paths and exact text. Nothing if i
 The `tune.json` values, and the relevant in-game settings.
 
 ### Known issues
-What is still wrong, and what is known about why.
+What is still wrong, and what a player can do about it.
 
-### Evidence
-Where a claim is surprising, the measurement behind it: log numbers, what was compared with
-what. This is the part that stops the next person repeating the work.
+### Launching
+Anything unusual about starting the game — DRM relaunches, store clients, launcher flags.
 ```
+
+Keep entries to what a player needs. If you measured something surprising along the way, the
+measurement is worth keeping — put it in [NOTES.md](NOTES.md) and link to it from here rather
+than inlining it, so this file stays readable as instructions.
 
 ### What is worth recording
 

@@ -173,6 +173,9 @@ Pass `--no-log` to disable it.
 | `probe.py` + `gameinput_abi.py` | GameInput diagnostic (negative result, kept as evidence) |
 | `dinput_probe.py` + `dinput_abi.py` | DirectInput 8 diagnostic (negative result on the wheel, kept as evidence). `dinput_abi.py` is also the DirectInput binding the bridge test uses |
 
+| `GAMES.md` | Per-game setup and status — start here if you want to play something |
+| `NOTES.md` | Why the bridge is built the way it is, and the measurements behind it |
+
 Why the other three APIs fail, the discovery process, and every gotcha found along the way
 are written up in `.claude/memory/` rather than here — see `hori-wheel-ffb-probe-goal.md`
 and `wgi-forcefeedback-api-gotchas.md` if you want the full story instead of just the

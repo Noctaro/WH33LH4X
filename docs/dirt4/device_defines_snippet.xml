@@ -1,0 +1,14 @@
+<!--
+  Paste this ONE LINE into <game>\input\devices\device_defines.xml, immediately before the
+  closing </device_list>. Do not replace the file: everything already in it is the game's own
+  device database, and removing entries un-binds every other controller.
+
+  Back up device_defines.xml first. Steam's "Verify integrity of game files" restores it, and
+  a game update will revert this line -- expect to reapply after patches.
+
+  The id is your device's PID and VID concatenated, then the constant 504944564944 (ASCII for
+  "PIDVID"). vJoy is VID_1234 PID_BEAD, so it becomes {BEAD1234-...}. type="wheel" is the part
+  that matters; without it the engine treats the device as unknown and sends a non-directional
+  force feedback profile.
+-->
+<device id="{BEAD1234-0000-0000-0000-504944564944}" name="vjoy_wheel" priority="100" type="wheel" ffb="enabled" />

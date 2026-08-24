@@ -181,6 +181,21 @@ static void ensure_real(void)
  * for nothing; slower would smear the detail the renderer works to produce. */
 #define BRIDGE_TICK_MS     10
 
+/*
+ * How long the game must have been out of the foreground before the effect is rebuilt on the
+ * way back.
+ *
+ * Windows.Gaming.Input gates force output on foreground, and losing it does not merely mute
+ * us: the firmware TAKES THE MOTOR BACK -- you can feel the wheel fall back to its own spring
+ * at the transition. The effect we are holding is dead by the time focus returns, still
+ * reporting Running and driving nothing, and it never recovers on its own.
+ *
+ * Rebuilding costs a reset and a load, each of which waits on an async call, so it is not
+ * free enough to do on every flicker of focus. A brief blip does not lose the motor; a real
+ * alt-tab does.
+ */
+#define FOCUS_REBUILD_MS   750
+
 static BOOL  g_cfg_selftest;
 static volatile LONG g_stop;
 static HANDLE g_worker;
@@ -269,12 +284,26 @@ static void selftest_loop(wgi_motor *m)
  * for -- the wheel goes limp and stays available. Nothing else in the game competes for this
  * motor anyway: DiRT reaches the wheel through vJoy, not Windows.Gaming.Input.
  */
+/* Is this process the one in the foreground? WGI only produces torque for that process. */
+static BOOL have_focus(void)
+{
+    DWORD pid = 0;
+    HWND  fg = GetForegroundWindow();
+
+    if (!fg)
+        return FALSE;
+    GetWindowThreadProcessId(fg, &pid);
+    return pid == GetCurrentProcessId();
+}
+
 static void bridge_loop(wgi_motor *m, wh_ipc *ipc)
 {
-    BOOL  loaded = FALSE;
-    BOOL  quiet = FALSE;        /* logged the transition, so it is not repeated per tick */
-    float gain = 1.0f;
-    DWORD reported = 0;
+    BOOL   loaded = FALSE;
+    BOOL   quiet = FALSE;       /* logged the transition, so it is not repeated per tick */
+    BOOL   focused = TRUE;
+    UINT64 lost_focus_at = 0;
+    float  gain = 1.0f;
+    DWORD  reported = 0;
 
     shim_log("ipc: waiting for the bridge");
 
@@ -291,6 +320,42 @@ static void bridge_loop(wgi_motor *m, wh_ipc *ipc)
          */
         have = wgi_read(m, &r.wheel, &r.throttle, &r.brake, &r.clutch, &r.handbrake,
                         &r.buttons, &r.shifter_gear);
+
+        /*
+         * THE MOTOR DOES NOT SURVIVE LOSING THE FOREGROUND.
+         *
+         * While another window is in front, WGI produces no torque and the firmware reclaims
+         * the motor -- the wheel visibly falls back to its own spring. What we are holding
+         * afterwards is a corpse: it still reports Running, it still accepts magnitudes, and
+         * the wheel never moves again. No amount of waiting brings it back.
+         *
+         * So rebuild it on the way in. This is the one place where releasing is right, and it
+         * is safe now that wgi_release_effect resets the motor as it goes.
+         */
+        if (!have_focus()) {
+            if (focused) {
+                focused = FALSE;
+                lost_focus_at = GetTickCount64();
+            }
+        } else if (!focused) {
+            UINT64 away = GetTickCount64() - lost_focus_at;
+            focused = TRUE;
+            if (loaded && away >= FOCUS_REBUILD_MS) {
+                shim_log("focus: back after %llu ms away -- rebuilding the effect "
+                         "(the firmware had the motor)", (unsigned long long)away);
+                wgi_release_effect(m);
+                loaded = FALSE;     /* reloaded below, on the next live-bridge tick */
+            } else {
+                /*
+                 * Logged even though nothing was done. The motor does not always die when
+                 * focus is lost -- short absences have been observed recovering on their own
+                 * -- so the threshold above is a guess, and these lines are what will tell us
+                 * where the real boundary sits. Focus changes are rare enough to log freely.
+                 */
+                shim_log("focus: back after %llu ms away -- kept the effect",
+                         (unsigned long long)away);
+            }
+        }
 
         if (wh_ipc_bridge_alive(ipc)) {
             if (!loaded) {
