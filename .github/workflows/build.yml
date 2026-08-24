@@ -14,8 +14,16 @@ name: build
 on:
   push:
     branches: [main, 'feature/**']
+    # Prose cannot change what gets built, so it should not cost a Windows build. Deliberately
+    # NOT applied to pull_request: a merge is validated in full, whatever it touched.
+    paths-ignore: ['**.md', 'docs/**', '.claude/**']
   pull_request:
   workflow_dispatch:
+
+# A run that has already been superseded is answering a question nobody is asking any more.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -23,7 +31,7 @@ permissions:
   # code signing certificate: they bind the built zip to the commit and workflow that produced
   # it, signed through Sigstore, and anyone can check it with
   #     gh attestation verify WH33LH4X-windows-x64.zip --repo Noctaro/WH33LH4X
-  # Free for public repositories on every GitHub plan.
+  # These two are inert while the attestation step below is skipped.
   id-token: write
   attestations: write
 
@@ -32,9 +40,9 @@ jobs:
     name: lint and control-law checks
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.11'
 
@@ -57,7 +65,7 @@ jobs:
     name: build dinput8.dll
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Pinned to a stable release. The author's machine builds with 0.17.0-dev, so this is the
       # first time the shim is compiled by a stable zig -- if it breaks, that is the finding.
@@ -77,7 +85,7 @@ jobs:
           Get-Item shim/build/dinput8.dll | Format-List Name, Length, LastWriteTime
           (Get-FileHash shim/build/dinput8.dll -Algorithm SHA256).Hash
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dinput8-dll
           path: shim/build/dinput8.dll
@@ -88,16 +96,32 @@ jobs:
     runs-on: windows-latest
     needs: [checks, shim]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.11'
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: dinput8-dll
           path: shim/build/
+
+      # build_bundle.ps1 caches the embeddable CPython zip in dist\.cache and skips the
+      # download when it is already there, so restoring that folder is all this needs. Keyed on
+      # the pinned Python version: a version bump misses the cache and re-downloads, which is
+      # the correct behaviour.
+      - name: Cache embeddable Python
+        uses: actions/cache@v6
+        with:
+          path: dist/.cache
+          key: embeddable-python-3.11.9
+
+      - uses: actions/cache@v6
+        with:
+          path: ~/AppData/Local/pip/Cache
+          key: pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: pip-
 
       - name: Build bundle
         shell: pwsh
@@ -121,11 +145,19 @@ jobs:
             Set-Content dist/SHA256SUMS.txt -Encoding ASCII
           Get-Content dist/SHA256SUMS.txt
 
+      # SKIPPED WHILE THIS REPO IS PRIVATE, ON PURPOSE. GitHub artifact attestations are a
+      # public-repository feature on Free, Pro and Team plans; on a user-owned private repo the
+      # API refuses with "Feature not available for user-owned private repositories" and fails
+      # the job -- which is exactly how run 32782325837 died. The step is gated rather than
+      # deleted so it starts working by itself the day the repo is published, with nothing to
+      # remember. If the context is ever missing the expression is falsy, so the failure mode
+      # is a skipped step rather than a red build.
       - uses: actions/attest-build-provenance@v2
+        if: ${{ !github.event.repository.private }}
         with:
           subject-path: dist/WH33LH4X-windows-x64.zip
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wh33lh4x-bundle
           path: |

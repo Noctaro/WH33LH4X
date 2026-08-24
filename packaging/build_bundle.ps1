@@ -58,7 +58,7 @@ $sourceFiles = @(
     'motor_sink.py', 'wgi_probe.py', 'wheel_profile.py',
     'vjoy_ffb_spike.py', 'dinput_abi.py', 'tune_report.py',
     'play.ps1', 'tune.json', 'requirements.txt',
-    'README.md', 'GAMES.md', 'LICENSE', 'THIRD-PARTY-NOTICES.md'
+    'README.md', 'GAMES.md', 'COMMANDS.md', 'LICENSE', 'THIRD-PARTY-NOTICES.md'
 )
 
 Write-Host "repo:    $repo"

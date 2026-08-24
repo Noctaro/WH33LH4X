@@ -114,15 +114,34 @@ for Windows 11. The driver and the interface DLL are not compatible across the 2
 boundary, so do not mix them.
 
 **Then configure one vJoy device.** Installing the driver is not enough — vJoy ships with no
-device configured, and the bridge has nothing to feed. In *Configure vJoy*:
+device configured, so the bridge has nothing to feed. Open **vJoyConf** (*Configure vJoy*),
+select device **1** on the tab strip, and set:
 
-- **Device 1**, which is what the bridge uses unless you pass `--device`
-- **Enable force feedback.** Without this the axes still work, so the wheel steers and the
-  pedals respond, and there is simply no force — which reads exactly like a broken wheel
-- **Axes X, Y, Z, Rx, Ry** for steering, throttle, brake, clutch and handbrake
+| Section | What to set |
+|---|---|
+| **Axes (max 8)** | Tick **X, Y, Z, Rx, Ry** — steering, throttle, brake, clutch, handbrake |
+| **Number of Buttons** | Enough for your wheel. Needed for the mid-corner tuning buttons below |
+| **Force Feedback** | Tick **Enable Effects**, and leave the individual effects ticked |
+| bottom of the window | **Enable vJoy** ticked, then **Apply** |
 
-The axis list is a maximum, not a requirement: the bridge asks vJoy which axes exist and feeds
-only those, so a device with fewer just means fewer controls rather than a failure.
+Device 1 is what the bridge uses unless you pass `--device`.
+
+**Two things in that dialog will mislead you.**
+
+The axis list also offers `Steering`, `Brake`, `Clutch` and `Throttle`, which look like exactly
+what a wheel wants. They are not what this bridge sends. It writes to **X, Y, Z, Rx and Ry**, so
+ticking the plausible-looking ones instead gives you a device that works and never moves.
+
+And vJoyConf says at the bottom that enabling force feedback on one device makes *all* vJoy
+devices report as force-feedback capable. So "Windows shows it as a force feedback device" is
+not evidence that device 1 is set up correctly — only `vjoy_ffb_spike.py` reporting `PASS` is.
+
+Missing **Enable Effects** is the quietest failure of the three: the axes still work, so the
+wheel steers and the pedals respond, and there is simply no force. That reads exactly like a
+broken wheel rather than a checkbox.
+
+The axis list is a maximum, not a requirement — the bridge asks vJoy which axes exist and feeds
+only those, so fewer axes means fewer controls rather than a failure.
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install pyvjoyffb
@@ -171,6 +190,10 @@ state) that isn't printed live. Flushed per line, so `Ctrl+C` still leaves a com
 Pass `--no-log` to disable it.
 
 ## Files
+
+Every script's flags and a one-line description of each live in
+[COMMANDS.md](COMMANDS.md). The table below is the short version.
+
 
 | File | Purpose |
 |---|---|
