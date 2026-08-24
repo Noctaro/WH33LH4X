@@ -11,6 +11,23 @@ assuming.
 **Not redistributed:** the vJoy kernel driver (`vJoy.sys`) is installed by the user from its
 own project. Zig and Ruff are build- and development-time only. Neither is shipped.
 
+## What the downloadable bundle actually contains
+
+Source alone carries no third-party binaries. The bundle built by
+`packaging/build_bundle.ps1` does, so this is the list that matters for redistribution:
+
+| Binary | Origin | Terms |
+|---|---|---|
+| `python\*` (embeddable CPython 3.11.9) | python.org | PSF; ships its own `LICENSE.txt` |
+| `lib\winrt\*.pyd`, `lib\winrt\msvcp140.dll` | inside the PyWinRT wheels | MIT for PyWinRT; `msvcp140.dll` is Microsoft's C++ runtime, redistributed as PyWinRT ships it |
+| `lib\pyvjoy\libdJoyInterface.dll` (and `x86`) | inside the `pyvjoyffb` wheel | MIT, (c) 2017 Shaul Eizikovich |
+| `shim\dinput8.dll` | built from `shim/*.c` in this repo | ours, MIT |
+
+`msvcp140.dll` is worth calling out because it contradicts a reasonable assumption: the **shim**
+needs no VC++ redistributable, since zig links it against OS API sets only. That remains true.
+The Python side is separate — PyWinRT bundles the C++ runtime beside its extension modules, and
+the bundle carries it because PyWinRT does.
+
 ---
 
 ## MIT-licensed components

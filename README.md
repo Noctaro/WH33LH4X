@@ -113,6 +113,17 @@ simultaneously. `njz3` added the block index in 2.2.0 and Brunner's 2.2.2.0 adds
 for Windows 11. The driver and the interface DLL are not compatible across the 2.1.9 → 2.2.0
 boundary, so do not mix them.
 
+**Then configure one vJoy device.** Installing the driver is not enough — vJoy ships with no
+device configured, and the bridge has nothing to feed. In *Configure vJoy*:
+
+- **Device 1**, which is what the bridge uses unless you pass `--device`
+- **Enable force feedback.** Without this the axes still work, so the wheel steers and the
+  pedals respond, and there is simply no force — which reads exactly like a broken wheel
+- **Axes X, Y, Z, Rx, Ry** for steering, throttle, brake, clutch and handbrake
+
+The axis list is a maximum, not a requirement: the bridge asks vJoy which axes exist and feeds
+only those, so a device with fewer just means fewer controls rather than a failure.
+
 ```powershell
 .\.venv\Scripts\python.exe -m pip install pyvjoyffb
 .\.venv\Scripts\python.exe vjoy_ffb_spike.py     # checks the vJoy foundation end to end

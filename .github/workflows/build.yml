@@ -19,6 +19,13 @@ on:
 
 permissions:
   contents: read
+  # Artifact attestations are how this project makes a verifiable claim without paying for a
+  # code signing certificate: they bind the built zip to the commit and workflow that produced
+  # it, signed through Sigstore, and anyone can check it with
+  #     gh attestation verify WH33LH4X-windows-x64.zip --repo Noctaro/WH33LH4X
+  # Free for public repositories on every GitHub plan.
+  id-token: write
+  attestations: write
 
 jobs:
   checks:
@@ -83,27 +90,45 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
       - uses: actions/download-artifact@v4
         with:
           name: dinput8-dll
-          path: staging/shim/
+          path: shim/build/
 
-      # Source plus the prebuilt shim -- not yet a distributable package. The embeddable
-      # Python runtime and the launcher land with the release work, after the GUI.
-      #
-      # The .pdb is deliberately left behind: 2.2 MB of debug info nobody downloading this
-      # needs, and shipping it would only make the bundle look more like a build directory.
-      - name: Stage files
+      - name: Build bundle
+        shell: pwsh
+        run: ./packaging/build_bundle.ps1
+
+      # THE test for this job. The embeddable distribution ignores site-packages, and winrt is
+      # a PEP 420 namespace package that seven separate wheels contribute into. If the ._pth
+      # rewrite or the single-pass vendoring were wrong, this is where it shows -- and it is
+      # much cheaper to learn here than from a user whose download will not start.
+      - name: Verify the bundled runtime imports
         shell: pwsh
         run: |
-          Copy-Item *.py, play.ps1, requirements.txt, ruff.toml staging/
-          Copy-Item README.md, GAMES.md, LICENSE, THIRD-PARTY-NOTICES.md staging/
-          New-Item -ItemType Directory -Force staging/shim/src | Out-Null
-          Copy-Item shim/*.c, shim/*.h, shim/*.def, shim/*.ps1, shim/*.py staging/shim/src/
-          Get-ChildItem -Recurse staging | Select-Object FullName, Length
+          ./dist/WH33LH4X/python/python.exe -c "import winrt.windows.gaming.input.forcefeedback, pyvjoy, typing_extensions; print('imports OK')"
+          if ($LASTEXITCODE -ne 0) { throw "bundled runtime cannot import its own dependencies" }
+
+      - name: Checksums
+        shell: pwsh
+        run: |
+          Get-FileHash dist/WH33LH4X-windows-x64.zip -Algorithm SHA256 |
+            ForEach-Object { "{0}  {1}" -f $_.Hash.ToLower(), (Split-Path $_.Path -Leaf) } |
+            Set-Content dist/SHA256SUMS.txt -Encoding ASCII
+          Get-Content dist/SHA256SUMS.txt
+
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/WH33LH4X-windows-x64.zip
 
       - uses: actions/upload-artifact@v4
         with:
           name: wh33lh4x-bundle
-          path: staging/
+          path: |
+            dist/WH33LH4X-windows-x64.zip
+            dist/SHA256SUMS.txt
           if-no-files-found: error
