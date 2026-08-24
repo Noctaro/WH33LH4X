@@ -106,6 +106,16 @@ void wh_ipc_close(wh_ipc *ipc);
 /* Has the bridge stamped its heartbeat recently enough to be considered alive? */
 BOOL wh_ipc_bridge_alive(const wh_ipc *ipc);
 
+/*
+ * How stale the bridge's heartbeat is, in milliseconds. For LOGGING, not for control flow.
+ *
+ * The bridge stamps this every tick, ~100x a second, and has been observed doing so with no
+ * gap over 0.65s across an entire session -- while this side still declared it quiet. Whether
+ * that gap is 501 ms or thirty seconds points at completely different causes, and without the
+ * number the two are indistinguishable. Returns 0 when the bridge has never stamped at all.
+ */
+UINT64 wh_ipc_bridge_staleness_ms(const wh_ipc *ipc);
+
 /* Stamp our heartbeat and publish what the shim knows. `r` may be NULL when there is no
  * reading to report, which is not the same as a reading of all zeros. */
 void wh_ipc_publish(wh_ipc *ipc, UINT32 state, const wh_reading *r);

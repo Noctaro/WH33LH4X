@@ -69,4 +69,13 @@ void wgi_close(wgi_motor *m);
 /* For the W1 spike: what did we find? Written into the shim log by wgi_open. */
 BOOL wgi_have_motor(const wgi_motor *m);
 
+/*
+ * The motor's own IsEnabled flag. For LOGGING a dead-motor diagnosis, not for control flow.
+ *
+ * A motor that has been left dead by an unload without a reset still reports its effects as
+ * Running, so nothing on the effect side reveals the state. This is the one flag that might,
+ * so it is worth recording whenever something looks wrong.
+ */
+BOOL wgi_motor_enabled(const wgi_motor *m);
+
 #endif /* WH33LH4X_WGI_H */

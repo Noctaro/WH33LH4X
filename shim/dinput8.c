@@ -260,13 +260,19 @@ static void selftest_loop(wgi_motor *m)
 /*
  * Follow the bridge: apply whatever force it publishes, for as long as it is alive.
  *
- * The effect is loaded when a bridge appears and released when it goes away, rather than held
- * for the life of the game. Holding the motor while nothing is driving it is precisely the
- * state that leaves the wheel dead for every other application.
+ * The effect is loaded once, when a bridge first appears, and HELD until the game exits. An
+ * earlier version released it whenever the bridge went quiet, so as not to hold a motor
+ * nothing was driving. That is what killed the wheel: unloading and reloading leaves this
+ * motor accepting effects and producing no torque, and the only cure is restarting the game.
+ *
+ * When the bridge goes quiet we command zero instead, which is what the release was really
+ * for -- the wheel goes limp and stays available. Nothing else in the game competes for this
+ * motor anyway: DiRT reaches the wheel through vJoy, not Windows.Gaming.Input.
  */
 static void bridge_loop(wgi_motor *m, wh_ipc *ipc)
 {
     BOOL  loaded = FALSE;
+    BOOL  quiet = FALSE;        /* logged the transition, so it is not repeated per tick */
     float gain = 1.0f;
     DWORD reported = 0;
 
@@ -298,15 +304,35 @@ static void bridge_loop(wgi_motor *m, wh_ipc *ipc)
                 loaded = TRUE;
                 shim_log("ipc: bridge is live, effect loaded (gain %.2f)", (double)gain);
             }
+            if (quiet) {
+                quiet = FALSE;
+                shim_log("ipc: bridge is back");
+            }
             wgi_set_force(m, ipc->block->force);
             wh_ipc_publish(ipc, WH_STATE_ACTIVE, have ? &r : NULL);
         } else if (loaded) {
-            /* The bridge stopped stamping. Zero the force and give the motor back rather
-             * than leaving the last commanded value pulling forever. */
-            shim_log("ipc: bridge went quiet -- releasing the motor");
+            /*
+             * The bridge stopped stamping. Command ZERO and KEEP THE MOTOR.
+             *
+             * This used to release the effect here, on the theory that holding a motor nothing
+             * is driving is antisocial. It is far worse than antisocial: unloading and later
+             * reloading leaves this motor accepting effects while producing no torque, so the
+             * wheel dies silently and only restarting the game revives it. That happened 46
+             * times in one evening of play, and every symptom pointed elsewhere -- the bridge
+             * was commanding correct force into a motor that had stopped listening.
+             *
+             * Zero force achieves what the release was for. A limp wheel is the right answer
+             * to a dead bridge; a permanently dead one is not. The effect is released properly,
+             * with a reset, when the game exits.
+             */
+            if (!quiet) {
+                quiet = TRUE;
+                shim_log("ipc: bridge went quiet (%llu ms stale, motor enabled=%d) "
+                         "-- holding the motor at zero",
+                         (unsigned long long)wh_ipc_bridge_staleness_ms(ipc),
+                         (int)wgi_motor_enabled(m));
+            }
             wgi_set_force(m, 0.0f);
-            wgi_release_effect(m);
-            loaded = FALSE;
             wh_ipc_publish(ipc, WH_STATE_MOTOR, have ? &r : NULL);
         } else {
             wh_ipc_publish(ipc, WH_STATE_MOTOR, have ? &r : NULL);
