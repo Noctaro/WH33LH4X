@@ -207,3 +207,8 @@ links it against nothing but OS libraries, so nobody needs a VC++ redistributabl
 **[Ruff](https://github.com/astral-sh/ruff)** round it out.
 
 No HORI code or assets are used anywhere in this project.
+
+## License
+
+MIT — see [LICENSE](LICENSE). What the project depends on, who holds copyright on it and
+under what terms is recorded in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).

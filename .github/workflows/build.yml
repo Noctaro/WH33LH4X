@@ -1,0 +1,109 @@
+# Build pipeline for WH33LH4X.
+#
+# Purpose: make every commit produce the same artifacts the same way, on a machine that is
+# not the author's. This repo's shim is built by a portable zig toolchain that lives outside
+# the tree (tools/zig is excluded), so until now a fresh clone could not build it at all and
+# the only dinput8.dll in existence was one person's local file. That is the gap this closes.
+#
+# It is deliberately NOT a release pipeline. Nothing here signs, tags or publishes. Signing
+# comes later and needs a prior public release to exist first -- SignPath Foundation, the free
+# option for open-source projects, will not accept a project with no release history.
+
+name: build
+
+on:
+  push:
+    branches: [main, 'feature/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: lint and control-law checks
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install pinned dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install ruff==0.15.6
+
+      - name: Ruff
+        run: ruff check .
+
+      # ffb_render.py holds control laws fitted against logged ticks from the real wheel, so a
+      # change in what they output is a bug rather than a tuning opportunity. This is the only
+      # check in the project that does not need the hardware present.
+      - name: Control-law checks
+        run: python test_ffb_render.py
+
+  shim:
+    name: build dinput8.dll
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pinned to a stable release. The author's machine builds with 0.17.0-dev, so this is the
+      # first time the shim is compiled by a stable zig -- if it breaks, that is the finding.
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      # build.ps1 finds zig on PATH when tools/zig is absent, which is the case here. It also
+      # needs a Windows SDK for the MIDL-generated WinRT headers; the runner image ships one.
+      - name: Build shim
+        shell: pwsh
+        run: ./shim/build.ps1
+
+      - name: Report what was built
+        shell: pwsh
+        run: |
+          Get-Item shim/build/dinput8.dll | Format-List Name, Length, LastWriteTime
+          (Get-FileHash shim/build/dinput8.dll -Algorithm SHA256).Hash
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dinput8-dll
+          path: shim/build/dinput8.dll
+          if-no-files-found: error
+
+  bundle:
+    name: assemble bundle
+    runs-on: windows-latest
+    needs: [checks, shim]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dinput8-dll
+          path: staging/shim/
+
+      # Source plus the prebuilt shim -- not yet a distributable package. The embeddable
+      # Python runtime and the launcher land with the release work, after the GUI.
+      #
+      # The .pdb is deliberately left behind: 2.2 MB of debug info nobody downloading this
+      # needs, and shipping it would only make the bundle look more like a build directory.
+      - name: Stage files
+        shell: pwsh
+        run: |
+          Copy-Item *.py, play.ps1, requirements.txt, ruff.toml staging/
+          Copy-Item README.md, GAMES.md, LICENSE, THIRD-PARTY-NOTICES.md staging/
+          New-Item -ItemType Directory -Force staging/shim/src | Out-Null
+          Copy-Item shim/*.c, shim/*.h, shim/*.def, shim/*.ps1, shim/*.py staging/shim/src/
+          Get-ChildItem -Recurse staging | Select-Object FullName, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wh33lh4x-bundle
+          path: staging/
+          if-no-files-found: error
