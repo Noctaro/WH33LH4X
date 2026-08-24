@@ -177,3 +177,33 @@ Why the other three APIs fail, the discovery process, and every gotcha found alo
 are written up in `.claude/memory/` rather than here — see `hori-wheel-ffb-probe-goal.md`
 and `wgi-forcefeedback-api-gotchas.md` if you want the full story instead of just the
 result.
+
+## Thanks ♥
+
+This sits on top of other people's work. Everything below is open source, and a few of them
+are the reason the project exists at all.
+
+**[vJoy](https://github.com/shauleiz/vJoy)** — Shaul Eizikovich, MIT. The virtual joystick
+driver the game bridge is built on. Upstream is abandoned, but the forks kept it alive:
+**[njz3](https://github.com/njz3/vJoy)** added the force-feedback effect block index in 2.2.0,
+without which concurrent effects can't be told apart and this bridge doesn't work, and
+**[BrunnerInnovation](https://github.com/BrunnerInnovation/vJoy)** carried that into a signed
+Windows 11 build.
+
+**[pyvjoyffb](https://github.com/Ultrawipf/pyvjoy)** — Yannick Richter, MIT, forked from
+**[tidzo/pyvjoy](https://github.com/tidzo/pyvjoy)**. Decodes force feedback through vJoy's own
+exports instead of reimplementing HID PID, and bundles the matching DLL. Saved us the whole
+usermode half of the problem.
+
+**[PyWinRT](https://github.com/pywinrt/pywinrt)** — MIT. This wheel's motor is reachable only
+through `Windows.Gaming.Input`, and PyWinRT makes that a `pip install` rather than a C++
+project.
+
+**[Zig](https://ziglang.org/)** — MIT. Builds the shim on a machine with no Visual Studio, and
+links it against nothing but OS libraries, so nobody needs a VC++ redistributable.
+
+**[CPython](https://www.python.org/)**,
+**[typing_extensions](https://github.com/python/typing_extensions)** and
+**[Ruff](https://github.com/astral-sh/ruff)** round it out.
+
+No HORI code or assets are used anywhere in this project.
