@@ -436,9 +436,15 @@ class IpcMotorSink(MotorSink):
             return
         try:
             struct.pack_into("<f", self._mm, 8, 0.0)
-            # Zero the heartbeat rather than letting it go stale: the shim then releases the
-            # motor immediately instead of holding it for the staleness window.
-            struct.pack_into("<Q", self._mm, 16, 0)
+            # DO NOT zero the heartbeat here. It used to, so the shim would notice instantly
+            # instead of waiting out the staleness window -- but the section is shared BY NAME,
+            # so this wiped the heartbeat of whatever bridge happened to be running, not just
+            # our own. Every short-lived process that opened a sink killed the live one on its
+            # way out: a --run-seconds diagnostic, a shim/run_shim.py session, a second bridge
+            # that found vJoy busy and gave up. The shim read a zeroed stamp as "the bridge
+            # died", released the motor, and the wheel went silent for the rest of the session.
+            #
+            # Letting it go stale costs 500 ms and cannot hurt anyone else's bridge.
         except Exception:
             pass
         self._mm.close()

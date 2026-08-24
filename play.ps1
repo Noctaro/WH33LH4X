@@ -79,10 +79,25 @@ try {
         $alreadyOurs = $false
 
         if (Test-Path $deployed) {
-            # Hashes, not sizes. Two builds of our own shim differ in content far more often
-            # than in length, and "same size" would call a stale build current.
+            # Two separate questions, and conflating them cost a whole test cycle: "is this the
+            # CURRENT build?" and "is this OURS AT ALL?". Comparing hashes answers the first.
+            # Answering the second with the same comparison means any older build of our own
+            # shim looks like a stranger's DLL and is refused -- so the game silently keeps
+            # running a stale shim while every rebuild appears to succeed.
+            #
+            # Ownership is a marker inside the binary instead: the shared-section name, which
+            # only this project's shim contains. It is a wide string, hence Unicode below.
             $ours = (Get-FileHash $builtDll -Algorithm SHA256).Hash
             $there = (Get-FileHash $deployed -Algorithm SHA256).Hash
+            $isOurs = $false
+            try {
+                $bytes = [IO.File]::ReadAllBytes($deployed)
+                $isOurs = [Text.Encoding]::Unicode.GetString($bytes).Contains('WH33LH4X_bridge_v2')
+            } catch {
+                # Locked by a running game. Only our own shim gets loaded by a game we launched,
+                # so treat a lock as evidence of ownership rather than refusing to proceed.
+                $isOurs = $true
+            }
             if ($ours -eq $there) {
                 # Already the current shim. Usually means a game is running with it loaded,
                 # which is exactly when you want to restart the bridge alone -- so this is a
@@ -90,6 +105,8 @@ try {
                 # locks a mapped DLL, and that failure is what used to abort the launcher.
                 $alreadyOurs = $true
                 Write-Host "shim already in place: $deployed"
+            } elseif ($isOurs) {
+                Write-Host "replacing an older WH33LH4X shim in $gameDir"
             } elseif (-not $KeepDll) {
                 # Refuse to clobber someone else's proxy -- ReShade and friends use this same
                 # filename, and silently replacing one would break their setup in a way nobody

@@ -84,6 +84,18 @@ BOOL wh_ipc_bridge_alive(const wh_ipc *ipc)
     return (now - stamp) < WH_IPC_STALE_MS;
 }
 
+UINT64 wh_ipc_bridge_staleness_ms(const wh_ipc *ipc)
+{
+    UINT64 stamp;
+
+    if (!ipc->block)
+        return 0;
+    stamp = ipc->block->bridge_tick_ms;
+    if (!stamp)
+        return 0;
+    return GetTickCount64() - stamp;
+}
+
 void wh_ipc_publish(wh_ipc *ipc, UINT32 state, const wh_reading *r)
 {
     if (!ipc->block)
