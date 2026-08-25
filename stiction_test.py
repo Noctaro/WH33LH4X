@@ -255,11 +255,28 @@ def main():
 
         rule("Measuring")
         results = {1: [], -1: []}
+        died = False
         for direction in (1, -1):
+            if died:
+                break
             name = "right" if direction > 0 else "left"
             for attempt in range(args.passes):
                 got = ramp_once(sink, wheel, direction, args.max, args.step, pump)
                 if got is None:
+                    # A pass that saw nothing is ambiguous in exactly the way the check before
+                    # the run exists to resolve -- except the motor can also die PART WAY
+                    # THROUGH, which it did on 2026-08-25 after two good passes. So re-prove
+                    # the motor here rather than trusting a check made minutes ago. Without
+                    # this the remaining passes report "never moved" and the summary presents
+                    # a dead motor as infinite stiction.
+                    again = moved_within(sink, wheel, ENGAGE_FORCE, ENGAGE_SECONDS, pump)
+                    if again is None or again <= MOVED:
+                        print("  %-5s pass %d: MOTOR STOPPED DRIVING -- abandoning the run"
+                              % (name, attempt + 1))
+                        log.event("stiction.motor_died", direction=name,
+                                  after_pass=attempt + 1)
+                        died = True
+                        break
                     print("  %-5s pass %d: NEVER MOVED up to %.2f" % (name, attempt + 1,
                                                                       args.max))
                     log.event("stiction.pass", direction=name, breakaway=-1.0)
@@ -273,6 +290,12 @@ def main():
                 time.sleep(0.4)
 
         rule("RESULT")
+        if died:
+            print("  RUN ABANDONED -- the motor stopped producing torque part way through.")
+            print("  Numbers below cover only the passes before that, and any direction")
+            print("  reported as 'never moved' after it is NOT a stiction measurement.")
+            print("  Power-cycle the wheel and run again for a figure worth trusting.")
+            print()
         for direction in (1, -1):
             name = "right" if direction > 0 else "left"
             got = results[direction]
