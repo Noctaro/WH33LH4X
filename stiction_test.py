@@ -116,7 +116,12 @@ def main():
     if not args.no_log:
         log.start(prefix="stiction_test")
     if init_apartment is not None:
-        init_apartment()
+        # winrt-runtime 3.x requires the apartment type; 2.x took no argument. Every other
+        # WGI entry point in this repo carries this fallback -- this one was missed.
+        try:
+            init_apartment()
+        except TypeError:
+            init_apartment(0)
 
     pump = PumpThread()
     pump.start()
