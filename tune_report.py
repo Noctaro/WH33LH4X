@@ -25,6 +25,15 @@ import os
 import re
 import sys
 
+# The force below which this wheel does not move at all, so anything under it is commanded and
+# then silently does nothing. MEASURED, not assumed: stiction_test.py on 2026-08-25 gave right
+# 0.022 (0.01-0.04 over 5 passes) and left 0.010. Taking the stiffer direction.
+#
+# This was 0.1 until then -- a placeholder that was never a measurement, and it made the same
+# session look like 75% of its output was wasted when the real figure is far smaller. If you
+# run this against a different wheel, re-measure rather than trusting this number.
+STICTION = 0.02
+
 LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
 
 # Structured log lines are `key=value` pairs; floats are written %+.3f by probe_log.event.
@@ -139,9 +148,9 @@ def main():
     nz = [abs(v) for v in out if abs(v) > 0.001]
     if nz:
         clipped = sum(1 for v in nz if v > 0.995 * max(nz))
-        tiny = sum(1 for v in nz if v < 0.1)
-        print("  non-zero samples %d; %.1f%% under 0.1 (stiction range), %.1f%% at the ceiling"
-              % (len(nz), 100.0 * tiny / len(nz), 100.0 * clipped / len(nz)))
+        tiny = sum(1 for v in nz if v < STICTION)
+        print("  non-zero samples %d; %.1f%% under %.2f (below breakaway), %.1f%% at the ceiling"
+              % (len(nz), 100.0 * tiny / len(nz), STICTION, 100.0 * clipped / len(nz)))
 
     # THE test, WITH ONE BIG CAVEAT.
     #

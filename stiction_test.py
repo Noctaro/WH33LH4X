@@ -98,6 +98,93 @@ def ramp_once(sink, wheel, direction, maximum, step, pump):
     return None
 
 
+# Force used to prove the motor is actually driving before any measurement is trusted. Well
+# above the breakaway seen in wgi_probe's magnitude sweep (the wheel moved at 0.10, its lowest
+# step), so "this did nothing" means the effect is not driving rather than that the wheel is
+# merely stiff.
+ENGAGE_FORCE = 0.30
+ENGAGE_SECONDS = 1.2
+
+
+def moved_within(sink, wheel, force, seconds, pump):
+    """Command a force briefly and report whether the wheel actually turned."""
+    sink.set_force(0.0)
+    time.sleep(0.5)
+    start = read_position(wheel)
+    if start is None:
+        return None
+    sink.set_force(force)
+    pump.ensure_foreground()
+    deadline = time.monotonic() + seconds
+    seen = 0.0
+    while time.monotonic() < deadline:
+        now = read_position(wheel)
+        if now is not None:
+            seen = max(seen, abs(now - start))
+            if seen > MOVED:
+                break
+        time.sleep(0.01)
+    sink.set_force(0.0)
+    time.sleep(0.3)
+    return seen
+
+
+def check_engagement(motor, loop, wheel, pump, gain, maximum):
+    """
+    Prove the motor is producing torque before measuring anything, and if it is not, work out
+    WHY rather than reporting infinite stiction.
+
+    THE FAILURE THIS EXISTS FOR: on 2026-08-25 this script reported "never moved up to 0.60"
+    three times running, with foreground held, reset and enable both returning True, 311
+    successful writes and zero failures -- while wgi_probe moved the same wheel at 0.10 a
+    minute later. A dead effect and a stiff wheel printed identically, which made a confident
+    RESULT block out of a measurement that never happened.
+
+    Two differences between the two paths could explain it, and this tells them apart:
+      A. this sink LOADS the effect at magnitude 0 and rewrites afterwards;
+         wgi_probe loads a fresh effect already carrying the magnitude it wants.
+      B. rewriting magnitude on a held effect may simply not drive outside the game process.
+
+    Returns (sink, note) with a sink that is known to produce torque, or (None, reason).
+    """
+    held = WgiMotorSink(motor, loop, max_force=maximum, gain=gain)
+    held.open()
+    seen = moved_within(held, wheel, ENGAGE_FORCE, ENGAGE_SECONDS, pump)
+    log.event("engage.held", force=ENGAGE_FORCE, moved=round(seen or -1.0, 4))
+    if seen is not None and seen > MOVED:
+        return held, "held effect drives normally"
+
+    print("  the held effect commanded %.2f and the wheel did not move." % ENGAGE_FORCE)
+    print("  retrying with the magnitude set BEFORE the effect is loaded...")
+    held.close()
+
+    preloaded = WgiMotorSink(motor, loop, max_force=maximum, gain=gain,
+                             initial_force=ENGAGE_FORCE)
+    preloaded.open()
+    pump.ensure_foreground()
+    start = read_position(wheel)
+    seen2 = 0.0
+    deadline = time.monotonic() + ENGAGE_SECONDS
+    while time.monotonic() < deadline and start is not None:
+        now = read_position(wheel)
+        if now is not None:
+            seen2 = max(seen2, abs(now - start))
+            if seen2 > MOVED:
+                break
+        time.sleep(0.01)
+    preloaded.set_force(0.0)
+    log.event("engage.preloaded", force=ENGAGE_FORCE, moved=round(seen2, 4))
+
+    if seen2 > MOVED:
+        print("  IT MOVED. So the magnitude must be present when the effect is LOADED --")
+        print("  rewriting it afterwards on an effect that started at zero drives nothing.")
+        return preloaded, "effect must be loaded carrying its magnitude"
+
+    preloaded.close()
+    return None, ("the motor accepted %.2f two different ways and never turned the wheel"
+                  % ENGAGE_FORCE)
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -146,8 +233,25 @@ def main():
             return 1
 
         loop = asyncio.new_event_loop()
-        sink = WgiMotorSink(motor, loop, max_force=args.max, gain=args.gain)
-        sink.open()
+
+        # Never measure through a motor that is not driving. A silent effect and an
+        # immovable wheel are indistinguishable from here, and reporting the second when it
+        # was the first is how this script produced three confident wrong answers.
+        rule("Checking the motor actually drives")
+        sink, note = check_engagement(motor, loop, wheel, pump, args.gain, args.max)
+        if sink is None:
+            rule("RESULT")
+            print("  NO MEASUREMENT. %s." % note)
+            print()
+            print("  This is NOT a stiction reading -- the motor never produced torque, so")
+            print("  there is nothing to measure. Check that wgi_probe.py can move the wheel")
+            print("  (press 1 for constant force). If it can and this cannot, the difference")
+            print("  is in this script, not the hardware. If it cannot either, power-cycle")
+            print("  the wheel; some motor states never recover by waiting.")
+            log.event("engage.failed", reason=note)
+            return 1
+        print("  OK -- %s." % note)
+        log.event("engage.ok", note=note)
 
         rule("Measuring")
         results = {1: [], -1: []}

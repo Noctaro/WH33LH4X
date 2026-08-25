@@ -152,12 +152,14 @@ class WgiMotorSink(MotorSink):
 
     name = "wgi"
 
-    def __init__(self, motor, loop, max_force=1.0, gain=1.0, hold_seconds=3600.0):
+    def __init__(self, motor, loop, max_force=1.0, gain=1.0, hold_seconds=3600.0,
+                 initial_force=0.0):
         super().__init__(max_force)
         self.motor = motor
         self.loop = loop
         self.gain = clamp(abs(gain))
         self.hold_seconds = hold_seconds
+        self.initial_force = initial_force
         self.effect = None
         self.foreground_hint = None
         self._vector3 = None
@@ -180,13 +182,45 @@ class WgiMotorSink(MotorSink):
         self._vector3 = Vector3
         self._ff = ff
 
+        # RESET AND ENABLE BEFORE LOADING, ALWAYS.
+        #
+        # A motor that was previously held and then released -- or that lost the foreground
+        # while holding an effect -- is left ACCEPTING EFFECTS WHILE PRODUCING NO TORQUE.
+        # Load returns Succeeded, state reads Running, writes succeed, and the wheel does not
+        # move. Waiting never fixes it. Loading onto that corpse is indistinguishable from
+        # hardware with enormous stiction, which is exactly how it was misread once.
+        #
+        # wgi_probe.py has always called try_enable_async at startup and wheel_profile.recover
+        # does the full sequence, which is why those two work on a motor this sink cannot
+        # drive. Doing it here means no caller has to remember -- the same reasoning that put
+        # the reset inside the shim's wgi_release_effect.
+        for name, call in (("reset", lambda: self.motor.try_reset_async()),
+                           ("enable", lambda: self.motor.try_enable_async())):
+            try:
+                log.event("sink.%s" % name, ok=self.loop.run_until_complete(call()))
+            except Exception as exc:
+                log.event("sink.%s_failed" % name, error=repr(exc))
+        try:
+            if self.motor.are_effects_paused:
+                self.motor.resume_all_effects()
+                log.event("sink.resumed")
+        except Exception as exc:
+            log.event("sink.resume_failed", error=repr(exc))
+
         try:
             self.motor.master_gain = self.gain
         except Exception as exc:
             log.event("sink.gain_failed", error=repr(exc))
 
+        # The magnitude the effect is LOADED with, which is not always 0. wgi_probe loads a
+        # fresh effect already carrying the force it wants and reliably produces torque; this
+        # sink loads at zero and rewrites afterwards, and on 2026-08-25 that path drove nothing
+        # at 0.60 while wgi_probe moved the same motor at 0.10 a minute later. Which of the two
+        # differences matters is not yet established, so this is a knob rather than a fix --
+        # see stiction_test.py, which uses it to tell the two apart.
+        first = clamp(self.initial_force, self.max_force)
         effect = ff.ConstantForceEffect()
-        effect.set_parameters(Vector3(0.0, 0.0, 0.0),
+        effect.set_parameters(Vector3(first, 0.0, 0.0),
                               timedelta(seconds=self.hold_seconds))
 
         result = self.loop.run_until_complete(self.motor.load_effect_async(effect))
@@ -198,7 +232,9 @@ class WgiMotorSink(MotorSink):
         self.effect = effect
         effect.start()
         self._started = True
-        log.event("sink.open", sink=self.name, gain=self.gain, max_force=self.max_force)
+        self._last = first
+        log.event("sink.open", sink=self.name, gain=self.gain, max_force=self.max_force,
+                  initial_force=first)
         return self
 
     def close(self):

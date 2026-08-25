@@ -96,12 +96,22 @@ wheel got  : -0.171 .. +0.191
 non-zero samples 200; 75.0% under 0.1 (stiction range), 0.5% at the ceiling
 ```
 
-Three quarters of the non-zero output lands below the wheel's own breakaway friction, so it is
-commanded honestly and then does nothing, while only 0.5% reaches the ceiling — there is a lot
-of unused headroom. Two knobs point the same way: `strength` well above `0.2` before
-`max_force` starts binding, and a `min_force` above `0.0` so small forces survive instead of
-vanishing. Measure the floor with `stiction_test.py` rather than guessing it; the numbers above
-say the current settings are safe, not that they are right.
+**Measured 2026-08-25.** This wheel's breakaway force -- the level below which the motor moves
+it not at all -- is **0.022 right, 0.010 left** (`stiction_test.py`, 5 passes each). Against the
+session above that leaves **23% of non-zero output below breakaway and 0.5% at the ceiling**: a
+little is lost at the bottom, and there is a lot of unused headroom at the top.
+
+Two changes follow, and they are independent:
+
+- **`min_force: 0.02`.** This is hardware compensation, not an effect: it lifts small non-zero
+  forces to something the motor can actually express, and recovers most of that 23% *without*
+  raising peak force -- so it adds no oscillation risk.
+- **`strength` above 0.2**, since only 0.5% of output is clipping. This one does raise peak
+  force, so move it in steps and read the [oscillation note](#dirt-4-known-issues) first.
+
+An earlier version of this section said 75% of output fell below stiction. That came from a
+hardcoded `0.1` in `tune_report.py` that had never been measured -- it was five times the real
+figure. The constant now carries the measured value.
 
 **`invert: true` is measured, not preference**, and confirmed by feel. With our force output
 at zero, the game's centring spring disabled and the car driving, DiRT 4's force points the
