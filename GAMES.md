@@ -14,7 +14,7 @@ New entries are welcome — copy the [template](#template-for-a-new-game) at the
 
 | Game | Status | Needs setup? | Verified |
 |---|---|---|---|
-| [DiRT 4](#dirt-4) | 🟡 Force feedback works; motor occasionally needs a game restart | Yes — device registration | 2026-08-24 |
+| [DiRT 4](#dirt-4) | 🟡 Force feedback works; motor occasionally needs a game restart | Yes — device registration | 2026-08-25 |
 | [RaceRoom Racing Experience](#raceroom-racing-experience) | ⚪ Untested | Unknown | — |
 | [Automobilista 2](#automobilista-2) | ⚪ Untested | Unknown | — |
 
@@ -37,7 +37,8 @@ New entries are welcome — copy the [template](#template-for-a-new-game) at the
 and pulls back to centre. The one rough edge is that the motor can stop producing torque and
 need the game restarting; see [Known issues](#dirt-4-known-issues).
 
-**Verified:** 2026-08-24, Steam build, app id 421020.
+**Verified:** 2026-08-25, Steam build, app id 421020. Re-confirmed from the packaged
+bundle (embeddable Python, prebuilt shim) rather than a source checkout.
 
 ### Required setup
 
@@ -87,6 +88,21 @@ In `tune.json`:
 { "strength": 0.2, "invert": true, "dir_mode": "sin", "max_force": 0.45 }
 ```
 
+**These are conservative, and measurably so.** A 2026-08-25 session at these values:
+
+```
+game asked : -0.953 .. +0.855
+wheel got  : -0.171 .. +0.191
+non-zero samples 200; 75.0% under 0.1 (stiction range), 0.5% at the ceiling
+```
+
+Three quarters of the non-zero output lands below the wheel's own breakaway friction, so it is
+commanded honestly and then does nothing, while only 0.5% reaches the ceiling — there is a lot
+of unused headroom. Two knobs point the same way: `strength` well above `0.2` before
+`max_force` starts binding, and a `min_force` above `0.0` so small forces survive instead of
+vanishing. Measure the floor with `stiction_test.py` rather than guessing it; the numbers above
+say the current settings are safe, not that they are right.
+
 **`invert: true` is measured, not preference**, and confirmed by feel. With our force output
 at zero, the game's centring spring disabled and the car driving, DiRT 4's force points the
 *same* way as the steering angle:
@@ -131,8 +147,13 @@ In game:
   milliseconds ago, and a laggy spring with too much gain is unstable. Lower `strength`.
   Inverting a damping force does the same thing for a different reason, so get the sign right
   before blaming gain.
-- **Only ever sends constant force.** No spring, damper or periodic effects, in either
-  profile — everything is summed into one signed constant-force stream.
+- **Sends friction as well as constant force.** An earlier session recorded constant force
+  only; a 2026-08-25 session recorded **friction at roughly the same rate as constant**
+  (13,970 friction operations against 13,950 constant, over 374 telemetry samples). No spring
+  or damper worth the name — 2 operations each — and no periodics. Unexplained: the two
+  sessions differ, and the likeliest cause is that the earlier one predates registering vJoy as
+  a wheel in `device_defines.xml`, since an unrecognised device gets a different force feedback
+  profile. **Untested either way** — it is recorded here as a measurement, not a conclusion.
 
 ### Launching
 

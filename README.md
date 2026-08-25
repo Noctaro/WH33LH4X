@@ -8,6 +8,12 @@ Hardware: HORI FFB Racing Wheel Series X (`VID 0x0F0D`). The wheel must be in **
 (`PID 0x015C`) — a long-press of the PROFILE button switches from PC mode, which has no
 force-feedback interface at all. `wgi_probe.py --list-only` will tell you which mode it's in.
 
+**You also want HORI Device Manager Vol.2**, which is the HORI app that works while the wheel
+is in Xbox mode. It holds a wheel-side force feedback strength setting that this project does
+not touch and cannot read — so if two machines feel different with identical `tune.json`
+values, that setting is the first place to look. Note what yours is set to before changing
+anything here.
+
 ## Quickstart — playing a game
 
 > **Temporary section.** There is no public release yet, so this is how to run it *today*, from
