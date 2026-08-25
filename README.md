@@ -8,7 +8,58 @@ Hardware: HORI FFB Racing Wheel Series X (`VID 0x0F0D`). The wheel must be in **
 (`PID 0x015C`) — a long-press of the PROFILE button switches from PC mode, which has no
 force-feedback interface at all. `wgi_probe.py --list-only` will tell you which mode it's in.
 
+## Quickstart — playing a game
+
+> **Temporary section.** There is no public release yet, so this is how to run it *today*, from
+> a source checkout. It gets replaced by a download link at v1. Verified working in DiRT 4 on
+> 2026-08-25.
+
+Everything below assumes the wheel is in Xbox mode.
+
+**1. Install [vJoy 2.2.2.0](https://github.com/BrunnerInnovation/vJoy)** and configure device 1
+— axes X, Y, Z, Rx, Ry, some buttons, and **Enable Effects** under Force Feedback. The version
+matters; see [the bridge section](#in-progress-a-bridge-into-real-games) for why.
+
+**2. Build the bundle.** This produces a self-contained folder with its own Python, so nothing
+below needs a venv:
+
+```powershell
+.\shimuild.ps1                    # needs zig; see COMMANDS.md
+.\packaginguild_bundle.ps1        # -> dist\WH33LH4X```
+
+**3. Check the foundation before involving a game:**
+
+```powershell
+cd dist\WH33LH4X
+.\python\python.exe vjoy_ffb_spike.py    # must report PASS
+.\python\python.exe wgi_probe.py --list-only
+```
+
+If the spike does not report `PASS`, stop — nothing built on vJoy will work, and a game will
+only make it harder to see that.
+
+**4. Do the per-game setup** from [GAMES.md](GAMES.md). For DiRT 4 this is two XML edits, and
+without them the game sends non-directional force that never centres.
+
+**5. Play:**
+
+```powershell
+.\WH33LH4X.cmd -Game "C:\...\DiRT 4\dirt4.exe" -NoLaunch
+```
+
+Then start the game from Steam. The shim is copied into the game folder before it loads and
+removed again when it exits. Tune the feel by editing `tune.json` while you drive — it is
+re-read within half a second, so you do not have to restart to try a value.
+
+**6. Afterwards**, `.\python\python.exe tune_report.py` says what the force actually did,
+which is more reliable than remembering how it felt.
+
+Run `WH33LH4X.cmd` with no arguments for the full list, or see [COMMANDS.md](COMMANDS.md).
+
 ## Setup
+
+The venv below is the **developer** path — for the probe tools and for working on the code. If
+you only want to drive, use the Quickstart above instead.
 
 No compiler, no admin rights — just a venv with the WinRT projections:
 
