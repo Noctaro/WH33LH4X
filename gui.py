@@ -61,6 +61,9 @@ BRIDGE_GRACE = 20.0
 # loop polls every 2 seconds and the bridge takes a moment to let go of vJoy, so this is that
 # with room to spare.
 STOP_GRACE = 8.0
+# How many games the Recent dropdown remembers. Small on purpose: it is a shortcut for the
+# handful somebody switches between, not a library.
+RECENT_MAX = 8
 
 # Strength scales the force the GAME sends. It is the volume knob, and the one people reach
 # for first, so it is the one slider that must be here.
@@ -456,12 +459,29 @@ class App(object):
         ttk.Entry(row, textvariable=self.game).pack(side="left", fill="x", expand=True)
         ttk.Button(row, text="Browse...", command=self._browse).pack(side="left", padx=(6, 0))
 
-        row2 = ttk.Frame(box)
-        row2.pack(fill="x", pady=(8, 0))
-        self.start_btn = ttk.Button(row2, text="Start", command=self._start)
+        # Picking from here only writes a path into the entry above, which stays the one
+        # thing _start reads. A combobox holding the path itself would have to show a
+        # readable name while the code needs a path, and keeping those two in step is where
+        # this would go wrong.
+        self.recent_row = ttk.Frame(box)
+        ttk.Label(self.recent_row, text="Recent:").pack(side="left")
+        self.recent_pick = tk.StringVar()
+        self.recent_box = ttk.Combobox(self.recent_row, textvariable=self.recent_pick,
+                                       state="readonly", width=40)
+        self.recent_box.pack(side="left", padx=(6, 0))
+        self.recent_box.bind("<<ComboboxSelected>>", self._pick_recent)
+
+        self.buttons_row = ttk.Frame(box)
+        self.buttons_row.pack(fill="x", pady=(8, 0))
+        self.start_btn = ttk.Button(self.buttons_row, text="Start", command=self._start)
         self.start_btn.pack(side="left")
-        self.stop_btn = ttk.Button(row2, text="Stop", command=self._stop, state="disabled")
+        self.stop_btn = ttk.Button(self.buttons_row, text="Stop", command=self._stop,
+                                   state="disabled")
         self.stop_btn.pack(side="left", padx=(6, 0))
+
+        # After the buttons exist, because showing the row again later has to put it back
+        # ABOVE them and `before=` needs something to be before.
+        self._refresh_recent()
 
     def _build_status(self, parent):
         box = ttk.LabelFrame(parent, text="Status", padding=8)
@@ -513,6 +533,53 @@ class App(object):
 
     # -- behaviour -----------------------------------------------------------
 
+    # -- the recent list -----------------------------------------------------
+
+    def _recent_label(self, path):
+        """What to call a remembered game. Its real name when games.json knows the exe."""
+        game = self.notes.find(path)
+        if game:
+            return game["name"]
+        return os.path.basename(path)
+
+    def _refresh_recent(self):
+        """
+        Rebuild the dropdown from the stored paths, and hide it when it has nothing to add.
+
+        A dropdown holding one item is a control that cannot do anything, so it only appears
+        once there is a second game to switch to.
+        """
+        paths = [p for p in self._load_setting("recent", []) if isinstance(p, str)]
+        labels = [self._recent_label(p) for p in paths]
+        # Two installs of the same game, or two unknown exes with the same filename, would
+        # otherwise be one label appearing twice with no way to tell which is which.
+        # Counted against a copy: renaming in place would drop the count for the entries not
+        # reached yet, so the third install of a game would keep the ambiguous label.
+        seen = list(labels)
+        for i, label in enumerate(labels):
+            if seen.count(label) > 1:
+                labels[i] = "%s  (%s)" % (label, os.path.basename(os.path.dirname(paths[i])))
+        self.recent_paths = dict(zip(labels, paths))
+        self.recent_box.configure(values=labels)
+        if len(labels) > 1:
+            self.recent_row.pack(fill="x", pady=(6, 0), before=self.buttons_row)
+        else:
+            self.recent_row.pack_forget()
+
+    def _pick_recent(self, _event=None):
+        path = self.recent_paths.get(self.recent_pick.get())
+        if path:
+            self.game.set(path)
+            self._save_setting("game", path)
+            self._refresh_notes()
+
+    def _remember(self, path):
+        """Move a game to the front of the recent list. Called when one is actually STARTED."""
+        paths = [p for p in self._load_setting("recent", []) if isinstance(p, str)]
+        paths = [p for p in paths if p.lower() != path.lower()]
+        self._save_setting("recent", ([path] + paths)[:RECENT_MAX])
+        self._refresh_recent()
+
     def _browse(self):
         path = filedialog.askopenfilename(title="Pick the game executable",
                                           filetypes=[("Game executable", "*.exe")])
@@ -530,8 +597,14 @@ class App(object):
 
     def _start(self):
         exe = self.game.get().strip()
-        if not exe or not os.path.isfile(exe):
+        if not exe:
             self._say("Pick a game executable first.")
+            return
+        if not os.path.isfile(exe):
+            # Remembered games go stale: uninstalled, moved, or on a drive that is not awake.
+            # The list keeps the entry, because dropping a game because an external disk was
+            # asleep would be worse than a message saying where it was.
+            self._say("That file is not there any more: %s" % exe)
             return
 
         game = self.notes.find(exe)
@@ -562,6 +635,10 @@ class App(object):
 
         self.start_btn.configure(state="disabled")
         self.stop_btn.configure(state="normal")
+        # Remembered here rather than in _browse, so browsing to the wrong exe never fills the
+        # list with things that were never played. RRRE64.exe against RRREWebBrowser.exe is
+        # exactly that mistake.
+        self._remember(exe)
 
         if not steam:
             self._say("Started. play.ps1 deploys the shim and launches the game.")

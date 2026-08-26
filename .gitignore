@@ -23,6 +23,9 @@ __pycache__/
 # wheel_profile.json is a calibration keyed to one wheel's VID:PID. Committing it would hand
 # the next person a measurement taken on hardware they do not have.
 wheel_profile.json
+# The window's own state: which game was picked, and the list of ones already run. Same
+# reasoning as above -- a list of where somebody keeps their games is theirs, not a clone's.
+gui_settings.json
 logs/
 # How the window asks play.ps1 to shut down. Both sides delete it, so one on disk means a run
 # ended badly rather than that anything is wrong now.
