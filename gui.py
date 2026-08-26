@@ -181,28 +181,130 @@ def is_steam_game(exe_path, game=None):
     return os.sep + "steamapps" + os.sep in exe_path.replace("/", os.sep).lower()
 
 
-def vjoy_status():
-    """(ok, text) for device 1, WITHOUT acquiring it -- acquiring would fight the bridge."""
+# vJoy device 1 is what the bridge feeds, and these are the axes GAMES.md tells people to
+# enable. HID usage codes, from the vJoy SDK.
+VJOY_DEVICE = 1
+VJOY_AXES = (("X", 0x30), ("Y", 0x31), ("Z", 0x32), ("Rx", 0x33), ("Ry", 0x34))
+
+# 2.2.0 is the floor. Below it, concurrent effects share force-feedback block index 1, so a
+# game sending spring plus damper plus texture has them collapse into one. That failure is
+# SILENT: it passes a one-effect-at-a-time test and only shows up in a real game, as bad feel.
+# See requirements.txt and the vJoy fork notes.
+VJOY_MIN_VERSION = 0x0220
+
+VJOY_DOWNLOAD = "https://github.com/BrunnerInnovation/vJoy"
+
+
+def _vjoy_dll():
+    """The raw SDK handle, with the return types we need declared. None if vJoy is absent."""
     try:
         import pyvjoy._sdk as sdk
-        from pyvjoy.constants import (
-            VJD_STAT_BUSY,
-            VJD_STAT_FREE,
-            VJD_STAT_MISS,
-            VJD_STAT_OWN,
-        )
     except Exception:
-        return (False, "pyvjoy not installed")
+        return None, None
+    dll = getattr(sdk, "_vj", None)
+    if dll is None:
+        return None, sdk
+    for name, restype in (("GetvJoyVersion", ctypes.c_short),
+                          ("vJoyEnabled", ctypes.c_bool),
+                          ("IsDeviceFfb", ctypes.c_bool),
+                          ("GetVJDAxisExist", ctypes.c_bool)):
+        fn = getattr(dll, name, None)
+        if fn is not None:
+            fn.restype = restype
+    return dll, sdk
+
+
+def vjoy_version_text(raw):
+    """0x0222 is version 2.2.2. Each nibble is one decimal digit, not a byte."""
+    return "%d.%d.%d" % ((raw >> 8) & 0xF, (raw >> 4) & 0xF, raw & 0xF)
+
+
+def vjoy_check():
+    """
+    (ok, badge, title, guidance) for vJoy device 1, WITHOUT acquiring it.
+
+    Acquiring would fight the bridge for the device, so every call here is a query. This is
+    the first-run failure everybody hits, so it reports WHAT TO DO rather than a status code.
+    Checks run worst-first and stop at the first real problem, because a missing driver makes
+    every later answer meaningless.
+    """
+    dll, sdk = _vjoy_dll()
+    if sdk is None:
+        return (False, "pyvjoy not installed", "vJoy driver not found",
+                "The Python side of vJoy is missing from this install, which\n"
+                "should not happen in the packaged bundle. Re-extract the download.")
+    if dll is None or not dll.vJoyEnabled():
+        return (False, "not installed", "vJoy is not installed",
+                "This bridge presents your wheel to games as a vJoy virtual\n"
+                "device, so vJoy has to be installed first.\n\n"
+                "Install vJoy 2.2.2.0 from:\n  %s\n\n"
+                "Then open 'Configure vJoy' and enable device 1." % VJOY_DOWNLOAD)
+
+    raw = dll.GetvJoyVersion()
+    if raw and raw < VJOY_MIN_VERSION:
+        return (False, "version %s is too old" % vjoy_version_text(raw),
+                "vJoy %s is too old" % vjoy_version_text(raw),
+                "Install 2.2.2.0 from:\n  %s\n\n"
+                "Below 2.2.0 every concurrent force-feedback effect shares block\n"
+                "index 1, so a game sending a spring, a damper and a road texture\n"
+                "has all three collapse into one.\n\n"
+                "That failure is silent. Nothing errors, one effect at a time still\n"
+                "tests fine, and the only symptom is that the wheel feels wrong in a\n"
+                "real game."
+                % VJOY_DOWNLOAD)
+
+    from pyvjoy.constants import (
+        VJD_STAT_BUSY,
+        VJD_STAT_FREE,
+        VJD_STAT_MISS,
+        VJD_STAT_OWN,
+    )
     try:
-        st = sdk.GetVJDStatus(1)
+        st = sdk.GetVJDStatus(VJOY_DEVICE)
     except Exception as exc:
-        return (False, "query failed: %s" % exc)
-    return {
-        VJD_STAT_FREE: (True, "device 1 free"),
-        VJD_STAT_OWN: (True, "device 1 ours"),
-        VJD_STAT_BUSY: (False, "device 1 busy -- another app has it"),
-        VJD_STAT_MISS: (False, "device 1 missing -- configure it in vJoyConf"),
-    }.get(st, (False, "unknown status %s" % st))
+        return (False, "query failed", "Could not ask vJoy about device 1", str(exc))
+
+    if st == VJD_STAT_MISS:
+        return (False, "device 1 missing",
+                "vJoy is installed but device 1 is not configured",
+                "Open 'Configure vJoy' from the Start menu, tick device 1, and give it:\n\n"
+                "  Axes:    X, Y, Z, Rx, Ry\n"
+                "  Buttons: a handful, 12 is plenty\n"
+                "  Force Feedback: tick 'Enable Effects'\n\n"
+                "Then press Apply. The bridge feeds device 1 specifically.")
+    if st == VJD_STAT_BUSY:
+        return (False, "device 1 busy",
+                "Another program already owns vJoy device 1",
+                "Something else is holding the device, often a bridge left running from an "
+                "earlier session, or another vJoy feeder.\n\n"
+                "Close it and press Stop here, then try again.")
+    if st not in (VJD_STAT_FREE, VJD_STAT_OWN):
+        return (False, "unknown status %s" % st, "vJoy returned a status we do not recognise",
+                "GetVJDStatus(%d) returned %r. Nothing here knows what that means, so treat "
+                "the device as unusable until it reads free or owned." % (VJOY_DEVICE, st))
+
+    # The device exists. Now the two configuration mistakes that still let it exist.
+    if not dll.IsDeviceFfb(VJOY_DEVICE):
+        return (False, "device 1 has no force feedback",
+                "Device 1 exists but force feedback is switched off",
+                "In 'Configure vJoy', select device 1 and tick 'Enable Effects' under Force "
+                "Feedback, then Apply.\n\n"
+                "Without it steering and pedals still work, so the game looks fine, and the "
+                "wheel simply never pushes back.")
+
+    missing = [name for name, usage in VJOY_AXES
+               if not dll.GetVJDAxisExist(VJOY_DEVICE, usage)]
+    if missing:
+        return (False, "device 1 missing %s" % ", ".join(missing),
+                "Device 1 is missing axes",
+                "In 'Configure vJoy', select device 1 and enable these axes: %s\n\n"
+                "Missing: %s\n\n"
+                "A game binds steering, throttle and brake to specific axes, so an absent one "
+                "cannot be bound at all." % (", ".join(n for n, _ in VJOY_AXES),
+                                             ", ".join(missing)))
+
+    where = "ours" if st == VJD_STAT_OWN else "free"
+    return (True, "OK -- device 1 %s, v%s" % (where, vjoy_version_text(raw)), None, None)
 
 
 # --------------------------------------------------------------------------- game notes
@@ -317,6 +419,12 @@ class App(object):
             var = tk.StringVar(value="—")
             ttk.Label(row, textvariable=var).pack(side="left")
             self.badges[key] = var
+            if key == "vjoy":
+                # Shown only when the check finds something. A permanent button beside a
+                # healthy badge is just noise.
+                self.vjoy_fix = ttk.Button(row, text="How do I fix this?", width=18,
+                                           command=self._vjoy_help)
+                self.vjoy_problem = None
 
     def _build_notes(self, parent):
         box = ttk.LabelFrame(parent, text="About this game", padding=8)
@@ -458,8 +566,13 @@ class App(object):
 
     def _poll(self):
         shim_alive, state, bridge_alive = self.view.read()
-        ok, text = vjoy_status()
-        self.badges["vjoy"].set(("OK -- " if ok else "") + text)
+        ok, text, title, guidance = vjoy_check()
+        self.badges["vjoy"].set(text)
+        self.vjoy_problem = None if ok else (title, guidance)
+        if ok:
+            self.vjoy_fix.pack_forget()
+        else:
+            self.vjoy_fix.pack(side="right")
         self.badges["bridge"].set("running" if bridge_alive else "not running")
         self.badges["shim"].set({
             IpcMotorSink.STATE_NONE: "no motor",
@@ -484,6 +597,12 @@ class App(object):
             self._say("The bridge has not come up after %d seconds -- the game will get no "
                       "wheel input. Check the newest log in logs\." % int(BRIDGE_GRACE))
         self.root.after(POLL_MS, self._poll)
+
+    def _vjoy_help(self):
+        if self.vjoy_problem is None:
+            return
+        title, guidance = self.vjoy_problem
+        self._info(title, guidance)
 
     # -- small helpers -------------------------------------------------------
 
