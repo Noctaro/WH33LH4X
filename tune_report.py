@@ -27,13 +27,14 @@ import sys
 
 # The force below which this wheel does not move at all, so anything under it is commanded and
 # then silently does nothing. MEASURED on a Hori Force Feedback Racing Wheel DLX (VID 0x0F0D,
-# Xbox mode) with stiction_test.py on 2026-08-25 -- ANOTHER WHEEL NEEDS ITS OWN RUN, this is not a
+# Xbox mode) with stiction_test.py on 2026-08-25 -- ANOTHER WHEEL NEEDS ITS OWN RUN. This is
+# not a
 # constant of the API or of racing wheels in general.
 #
 # Every pass broke away on the FIRST step tried, at --step 0.02 and again at 0.01, so each run
 # only ever reported its own increment. 0.01 is therefore an upper bound rather than a reading,
-# and this wheel has no meaningful stiction problem. Its real trouble is cogging: specific rotor
-# positions near centre that will not move at 0.30.
+# and this wheel has no meaningful stiction problem. Its real trouble is elsewhere: there are
+# positions near centre it will not leave at 0.30, cause not established.
 #
 # It has been wrong twice, in opposite directions, which is why the provenance is written down:
 #   * 0.1 was a placeholder that was never measured at all, and made a session look like 75%
@@ -160,7 +161,7 @@ def main():
     if nz:
         clipped = sum(1 for v in nz if v > 0.995 * max(nz))
         tiny = sum(1 for v in nz if v < STICTION)
-        print("  non-zero samples %d; %.1f%% under %.2f (below breakaway), %.1f%% at the ceiling"
+        print("  non-zero samples %d; %.1f%% under %.2f (below breakaway), %.1f%% clipping"
               % (len(nz), 100.0 * tiny / len(nz), STICTION, 100.0 * clipped / len(nz)))
 
     # THE test, WITH ONE BIG CAVEAT.
@@ -221,7 +222,7 @@ def main():
                 print("  -> the game's force OPPOSES steering: real self-aligning torque.")
                 print("     invert must be FALSE.")
             else:
-                print("  -> no clear relationship; steer through more corners with strength 0.")
+                print("  -> no clear relationship; drive more corners at strength 0.")
 
     # A game's force can depend on wheel MOVEMENT rather than wheel ANGLE, and the two need
     # opposite handling. DiRT 4 with its centring spring disabled sends pure damping: nothing

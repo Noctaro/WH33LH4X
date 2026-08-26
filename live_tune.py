@@ -16,7 +16,8 @@ from 0.65 -- the difference is real and no amount of reasoning will find it.
 WHAT IT DELIBERATELY DOES NOT DO
 --------------------------------
 It does not use the IPC gain field. The shim reads that exactly once, when it loads the WGI
-effect, because WGI latches gain at load time (see the note in motor_sink.WgiMotorSink). Writing
+effect, because WGI latches gain at load time (see the note in motor_sink.WgiMotorSink).
+Writing
 it mid-session looks like it works and changes nothing -- which is very likely why raising the
 in-game strength slider appeared to do nothing. Live strength therefore SCALES THE FORCE VALUE
 itself, before it is ever handed to a sink.
@@ -31,7 +32,7 @@ import os
 # Every tunable, with the value that means "unchanged from how the game sent it". Anything not
 # in here is ignored, so a stray key in the file is a typo rather than a silent new setting.
 DEFAULTS = {
-    "strength": 1.0,        # multiplies the game's force. 1.0 = exactly what the game asked for
+    "strength": 1.0,        # multiplies the game's force. 1.0 = what the game asked for
     "invert": False,        # flip the game's force direction (see the note in apply())
     # How to read the game's direction field: "sin" for a true polar angle, "span" for a
     # steering axis encoded linearly across part of the circle. DiRT 4 needs "span". Games
@@ -249,7 +250,7 @@ class ButtonTuner(object):
     physical feedback -- that is the entire point -- but which parameter is selected does not,
     so cycling is a blind mode change. Hence the order in STEPS: strength is first and is what
     a single up/down pair adjusts if `btn_next` is never assigned. Every change is printed and
-    logged, so what happened is recoverable afterwards even when it was not obvious at the time.
+    logged, so what happened is recoverable afterwards even when it was not obvious then.
     """
 
     def __init__(self, tune):

@@ -50,9 +50,10 @@ $pyMd5     = '6d9aa08531d48fcc261ba667e2df17c4'
 
 $staging = Join-Path $OutDir 'WH33LH4X'
 
-# Runtime modules, then the diagnostics a user actually needs. The probes and dead ends
-# (probe.py, gip_*.py, hid_probe.py, dinput_probe.py, wgi_background_test.py, stiction_test.py)
-# stay in the repo as evidence -- shipping them puts negative results in a user's folder.
+# Runtime modules, then the diagnostics a user actually needs. The dead ends now live in
+# evidence\ and stiction_test.py stays in the repo root -- shipping either would put negative
+# results and a hardware measurement tool in a user's folder. This is an ALLOWLIST: a new file
+# in the repo does not reach the bundle until it is named here.
 $sourceFiles = @(
     'vjoy_bridge.py', 'ffb_render.py', 'probe_log.py', 'live_tune.py',
     'motor_sink.py', 'wgi_probe.py', 'wheel_profile.py',

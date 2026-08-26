@@ -584,16 +584,20 @@ EFFECTS = [
                                             "smooth left-right rocking"), "wave", "silent"),
     ("Square wave", lambda m, d, f: _periodic(ff.PeriodicForceEffectKind.SQUARE_WAVE, m, d, f,
                                               "hard alternating jolts"), "wave", "silent"),
-    ("Triangle wave", lambda m, d, f: _periodic(ff.PeriodicForceEffectKind.TRIANGLE_WAVE, m, d, f,
-                                                "linear rise and fall"), "wave", "silent"),
-    ("Sawtooth up", lambda m, d, f: _periodic(ff.PeriodicForceEffectKind.SAWTOOTH_WAVE_UP, m, d, f,
-                                              "ramp up then snap back"), "wave", "silent"),
-    ("Sawtooth down", lambda m, d, f: _periodic(ff.PeriodicForceEffectKind.SAWTOOTH_WAVE_DOWN, m, d, f,
-                                                "snap up then ramp down"), "wave", "silent"),
+    ("Triangle wave", lambda m, d, f: _periodic(ff.PeriodicForceEffectKind.TRIANGLE_WAVE,
+                                                m, d, f, "linear rise and fall"),
+     "wave", "silent"),
+    ("Sawtooth up", lambda m, d, f: _periodic(ff.PeriodicForceEffectKind.SAWTOOTH_WAVE_UP,
+                                              m, d, f, "ramp up then snap back"),
+     "wave", "silent"),
+    ("Sawtooth down", lambda m, d, f: _periodic(ff.PeriodicForceEffectKind.SAWTOOTH_WAVE_DOWN,
+                                                m, d, f, "snap up then ramp down"),
+     "wave", "silent"),
     ("Spring", lambda m, d, f: _condition(ff.ConditionForceEffectKind.SPRING, m,
                                           "pulls back to centre"), "condition", "works"),
     ("Damper", lambda m, d, f: _condition(ff.ConditionForceEffectKind.DAMPER, m,
-                                          "resists speed -- turn fast vs slow"), "condition", "works"),
+                                          "resists speed -- turn fast vs slow"),
+     "condition", "works"),
     ("Inertia", lambda m, d, f: _condition(ff.ConditionForceEffectKind.INERTIA, m,
                                            "resists acceleration -- heavy to start turning"),
      "condition", "coarse"),
@@ -1403,7 +1407,7 @@ def parse_args():
     p.add_argument("--gain", type=float, default=1.0,
                    help="master gain 0.0-1.0, set before each load (default 1.0)")
     p.add_argument("--magnitude", type=float, default=0.30,
-                   help="effect magnitude 0.0-1.0 -- the real intensity control (default 0.30)")
+                   help="effect magnitude 0.0-1.0 -- the intensity control (default 0.30)")
     p.add_argument("--duration", type=float, default=6.0,
                    help="seconds per effect, 0 = hold until Enter (default 6)")
     p.add_argument("--wait", type=float, default=30.0, help="detection timeout (default 30)")

@@ -80,7 +80,7 @@ Ships in the downloadable bundle. Normally started for you by `play.ps1`. Run it
 | `--run-seconds` | `0.0` | stop automatically after N seconds (default: run until Ctrl+C). Useful because an effect playing takes the foreground, which is also where your Ctrl+C would have gone. |
 | `--gain` | `0.5` | motor master gain 0.0-1.0 (default 0.5). Latched when the effect is loaded, so changing it needs a reload. |
 | `--max-force` | `0.6` | STARTING cap on commanded force 0.0-1.0 (default 0.6). Multiplies with --gain, so the default is about 30%% of what the wheel can do. Unlike --gain this one is live: it seeds tune.json's max_force, and the file wins from then on. |
-| `--tune` | — | live tuning file, re-read while running (default: tune.json next to this script). Edit it mid-corner; changes apply within half a second. |
+| `--tune` | — | live tuning file, re-read while running (default: tune.json next to this script). Edit mid-corner; changes apply within half a second. |
 | `--no-log` | — | — |
 
 ### `tune_report.py` — say what the force feedback actually did
@@ -125,7 +125,7 @@ require.
 | Flag | Default | What it does |
 |---|---|---|
 | `--gain` | `1.0` | master gain 0.0-1.0, set before each load (default 1.0) |
-| `--magnitude` | `0.3` | effect magnitude 0.0-1.0 -- the real intensity control (default 0.30) |
+| `--magnitude` | `0.3` | effect magnitude 0.0-1.0 -- the intensity control (default 0.30) |
 | `--duration` | `6.0` | seconds per effect, 0 = hold until Enter (default 6) |
 | `--wait` | `30.0` | detection timeout (default 30) |
 | `--list-only` | — | report only, play nothing |
@@ -149,7 +149,7 @@ Repo only — not in the bundle. Hosts the shim outside a game so its WGI layer 
 | `--seconds` | `15.0` | how long to keep the host alive (default 15) |
 | `--keep-log` | — | do not clear the shim log first |
 | `--winrt-assist` | — | also subscribe from Python, to test whether the C needs to at all |
-| `--drive` | — | act as the bridge too: publish a force sweep over the shared section |
+| `--drive` | — | act as the bridge too: publish a force sweep over the section |
 
 ---
 
@@ -192,16 +192,26 @@ Imported by the scripts above; nothing to run.
 
 ## 6. Diagnostics, and the dead ends kept as evidence
 
-None of these ship in the bundle. Several record **negative** results — they are kept because
-the reason an approach cannot work is worth more than a deleted file, and re-deriving it costs
-days. See [README](README.md) for the full story.
+None of these ship in the bundle.
+
+Everything below marked with a path lives in [`evidence/`](evidence/README.md) and
+records an API that **does not work** on this wheel. Run those as modules, from the repo
+root -- they import from it, so a direct path will not resolve:
+
+```
+.\.venv\Scripts\python.exe -m evidence.hid_probe
+```
+
+Read [`evidence/README.md`](evidence/README.md) first: it answers each question in a
+sentence, which is usually all anyone needs. The code is there so the answers stay checkable
+against a newer runtime or a different wheel.
 
 ### `test_ffb_render.py` — the control laws still do what they used to
 
 Run before proposing a change to `ffb_render.py`. No test framework, no dependencies, no
 hardware: `.\.venv\Scripts\python.exe test_ffb_render.py`. Takes no flags.
 
-### `probe.py` — does GameInput expose force-feedback motors? (**no**)
+### `evidence/probe.py` — does GameInput expose force-feedback motors? (**no**)
 
 | Flag | Default | What it does |
 |---|---|---|
@@ -216,7 +226,7 @@ hardware: `.\.venv\Scripts\python.exe test_ffb_render.py`. Takes no flags.
 | `--oem` | — | call EnableOemDeviceSupport for VID:PID before enumerating |
 | `--dll` | `GameInput.dll` | which GameInput runtime to load. Default is the inbox v0 GameInput.dll. 'GameInputRedist.dll' is the newer v3 runtime, which exports GameInputCreate as well -- worth a try when v0 reports no force-feedback motors, but the v3 ABI is NOT the same and the struct layout check may (correctly) refuse it. |
 
-### `dinput_probe.py` — does DirectInput expose force feedback on this wheel? (**no**)
+### `evidence/dinput_probe.py` — does DirectInput expose force feedback on this wheel? (**no**)
 
 | Flag | Default | What it does |
 |---|---|---|
@@ -226,7 +236,7 @@ hardware: `.\.venv\Scripts\python.exe test_ffb_render.py`. Takes no flags.
 | `--vid` | — | select by vendor id |
 | `--list-only` | — | stage 1 only: report capabilities, create nothing |
 
-### `hid_probe.py` — does the device publish a USB PID force-feedback collection?
+### `evidence/hid_probe.py` — does the device publish a USB PID force-feedback collection?
 
 Reads raw HID report descriptors, and shows *why* the two answers above are no.
 
@@ -235,7 +245,7 @@ Reads raw HID report descriptors, and shows *why* the two answers above are no.
 | `--vid` | `3853` | vendor id to inspect (default 0x0F0D, HORI) |
 | `--all` | — | inspect every HID device |
 
-### `wgi_background_test.py` — does WGI still work when we are not in front? (**no**)
+### `evidence/wgi_background_test.py` — does WGI still work when we are not in front? (**no**)
 
 The measurement behind the whole shim design: force output and position reading are both gated
 on foreground, which is why the output stage has to live inside the game's process.
@@ -259,13 +269,17 @@ from.
 | Flag | Default | What it does |
 |---|---|---|
 | `--max` | `0.6` | highest force to try, 0.0-1.0 (default 0.60) |
-| `--step` | `0.02` | force increment per attempt (default 0.02) |
+| `--step` | `0.02` | force increment per attempt (default 0.02). MEASURED 2026-08-25: on a Hori Force Feedback Racing Wheel DLX, 0.02 completed 9 of 9 runs while 0.01 completed 1 to 2 of 4 before the motor stalled, and both report the first step tried -- a finer step buys risk, not detail. Other wheels may take a smaller step safely. |
 | `--passes` | `3` | measurements per direction (default 3); stiction scatters |
 | `--gain` | `1.0` | motor master gain (default 1.0 -- measure the hardware, not a gain) |
 | `--wait` | `20.0` | device wait timeout |
+| `--selftest` | `0` | skip measuring; probe for torque N times against one held effect and report how many worked. Use this to judge a reliability change. |
+| `--reopen` | — | with --selftest, close and reopen the motor for every probe. This REPRODUCES THE BUG (2/10 on 2026-08-25) and is kept for that. |
+| `--stall-floor` | `0.02` | smallest --step believed safe on THIS wheel (default 0.02, measured on a Hori Force Feedback Racing Wheel DLX). Below it, levels that cannot move the wheel silence the motor for the rest of the process. Raise or lower it for other hardware; it only warns. |
+| `--ramp-in-place` | — | do not free the wheel between levels; push again from the same rotor position. That is what silences the motor, and it is kept only so pre-2026-08-25 runs stay comparable. |
 | `--no-log` | — | — |
 
-### `gip_trace.py` — watch what WGI sends the wheel
+### `evidence/gip_trace.py` — watch what WGI sends the wheel
 
 | Flag | Default | What it does |
 |---|---|---|
@@ -275,7 +289,7 @@ from.
 | `--no-log` | — | do not write a session log |
 | `--dump` | — | write every captured write, in order, for comparison with gip_direct |
 
-### `gip_direct.py` — talk to the GIP driver with no WGI in the process (**dead end**)
+### `evidence/gip_direct.py` — talk to the GIP driver with no WGI in the process (**dead end**)
 
 The arming sequence was replayed byte-for-byte and still produced no torque. Do not retry this
 without new information.
@@ -290,7 +304,7 @@ without new information.
 | `--no-log` | — | do not write a log file |
 | `--dump` | — | write every message sent, in order, for comparison with gip_trace |
 
-### `gip_diff.py` — compare the two captures above
+### `evidence/gip_diff.py` — compare the two captures above
 
 | Flag | Default | What it does |
 |---|---|---|

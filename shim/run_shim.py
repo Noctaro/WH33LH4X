@@ -50,7 +50,7 @@ def main():
     ap.add_argument("--winrt-assist", action="store_true",
                     help="also subscribe from Python, to test whether the C needs to at all")
     ap.add_argument("--drive", action="store_true",
-                    help="act as the bridge too: publish a force sweep over the shared section")
+                    help="act as the bridge too: publish a force sweep over the section")
     args = ap.parse_args()
 
     if not os.path.exists(PROXY):

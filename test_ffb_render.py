@@ -249,7 +249,7 @@ def test_envelope():
 
 
 def test_wheel_state():
-    """Velocity and acceleration derive sensibly, and the first sample cannot divide by zero."""
+    """Velocity and acceleration derive sensibly; the first sample cannot divide by zero."""
     print("\nwheel state derivation")
     state = R.WheelState()
     state.update(0.0, 0.0)

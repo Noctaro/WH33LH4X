@@ -63,7 +63,7 @@ import winrt.windows.gaming.input.forcefeedback as ff  # noqa: F401
 from winrt.windows.foundation.numerics import Vector3
 
 import probe_log as log
-from gip_protocol import GIP_TYPES, decode_gip, describe_pairs
+from evidence.gip_protocol import GIP_TYPES, decode_gip, describe_pairs
 from wgi_probe import (
     PumpThread,
     describe_motor,

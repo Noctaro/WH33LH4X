@@ -566,7 +566,7 @@ def parse_args():
     p.add_argument("--tune", default=os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                                   "tune.json"),
                    help="live tuning file, re-read while running (default: tune.json next to "
-                        "this script). Edit it mid-corner; changes apply within half a second.")
+                        "this script). Edit mid-corner; changes apply within half a second.")
     p.add_argument("--no-log", action="store_true")
     return p.parse_args()
 

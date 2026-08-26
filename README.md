@@ -263,9 +263,9 @@ Every script's flags and a one-line description of each live in
 | `live_tune.py` | `tune.json` reloading and the wheel-button tuning controls |
 | `tune_report.py` | Reads a session log and reports what the force feedback actually did |
 | `probe_log.py` | Session logging to `logs/` |
-| `hid_probe.py` | Reads raw HID report descriptors — shows why DirectInput/GameInput can't reach this wheel |
-| `probe.py` + `gameinput_abi.py` | GameInput diagnostic (negative result, kept as evidence) |
-| `dinput_probe.py` + `dinput_abi.py` | DirectInput 8 diagnostic (negative result on the wheel, kept as evidence). `dinput_abi.py` is also the DirectInput binding the bridge test uses |
+| `stiction_test.py` | Measures the wheel's breakaway force — where `tune.json`'s `min_force` comes from |
+| `dinput_abi.py` | ctypes binding for DirectInput 8, used by `vjoy_ffb_spike.py` |
+| [`evidence/`](evidence/README.md) | Four APIs that **do not work** on this wheel, and the probes that prove it — GameInput, DirectInput, raw HID and raw GIP. Start with its README; the code is only there so the answers stay checkable |
 
 Why the other three APIs fail, the discovery process, and every gotcha found along the way
 are written up in `.claude/memory/` rather than here — see `hori-wheel-ffb-probe-goal.md`

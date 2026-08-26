@@ -102,32 +102,6 @@ class MotorSink(object):
     def describe(self):
         return "%s (max force %.2f)" % (self.name, self.max_force)
 
-    def stats(self):
-        return {"sink": self.name, "writes": self.writes, "failures": self.failures,
-                "healthy": self.healthy}
-
-
-class NullMotorSink(MotorSink):
-    """
-    Accepts forces and does nothing with them.
-
-    Not a placeholder -- it is how the rest of the bridge gets developed and tested without
-    the wheel attached, and how a run can be made provably harmless. It records the command
-    so tests and logs can assert on what WOULD have been sent.
-    """
-
-    name = "null"
-
-    def set_force(self, x):
-        with self._lock:
-            self._last = clamp(x, self.max_force)
-            self.writes += 1
-        return True
-
-    @property
-    def last_force(self):
-        return self._last
-
 
 class WgiMotorSink(MotorSink):
     """
@@ -142,8 +116,10 @@ class WgiMotorSink(MotorSink):
     Two traps encoded here, both of which fail silently:
 
       * `master_gain` is LATCHED WHEN THE EFFECT IS LOADED. Setting it under a running
-        effect does nothing. So gain is applied before `load_effect_async`, and changing it
-        later requires a reload -- `set_gain()` does exactly that.
+        effect does nothing, so gain is applied before `load_effect_async`. There is
+        deliberately NO set_gain here: changing gain means reloading the effect, and measured
+        2026-08-25, releasing and reloading silences this motor after about two cycles. Pick
+        the gain at open and use `tune.json` `strength` as the live control instead.
       * Force output is foreground-gated. This sink does NOT chase the foreground; that is
         the caller's business and, in the real bridge, impossible anyway. It exposes
         `foreground_hint` so the bridge can say WHY the wheel went quiet instead of leaving
@@ -285,23 +261,6 @@ class WgiMotorSink(MotorSink):
                     log.event("sink.unhealthy", failures=self.failures, error=repr(exc))
                 return False
 
-    def set_gain(self, gain):
-        """
-        Change master gain, which requires reloading because it is latched at load time.
-
-        Returns False if the reload failed, in which case the old effect is already gone --
-        the caller should treat the sink as closed.
-        """
-        self.gain = clamp(abs(gain))
-        self.close()
-        try:
-            self.open()
-            return True
-        except Exception as exc:
-            log.event("sink.regain_failed", error=repr(exc))
-            self.healthy = False
-            return False
-
     def describe(self):
         return ("wgi constant-force sink (max force %.2f, master gain %.2f)"
                 % (self.max_force, self.gain))
@@ -417,13 +376,6 @@ class IpcMotorSink(MotorSink):
             self._beat()
             self._last = value
             self.writes += 1
-        return True
-
-    def set_gain(self, gain):
-        """Gain is latched by the shim when it loads the effect, so this takes effect then."""
-        self.gain = clamp(abs(gain))
-        if self._mm is not None:
-            struct.pack_into("<f", self._mm, 12, float(self.gain))
         return True
 
     def read(self):

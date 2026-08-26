@@ -84,7 +84,6 @@ except ImportError:
     init_apartment = None
 
 import probe_log as log
-from motor_sink import WgiMotorSink
 from wgi_probe import (
     LOAD_RESULT_NAMES,
     STATE_NAMES,
@@ -238,8 +237,10 @@ class LocalMotor(object):
     all sit between the last foreground check and Start(), which is long enough for a
     notification or the console to take focus back.
 
-    That is what this class changes, and --motor sink still runs the old path so the two can
-    be compared with --selftest instead of argued about.
+    Measured 2026-08-25 with --selftest, ten opens per run: this sequence produced torque on
+    the first two opens where WgiMotorSink's produced none at all. Both then degraded, which is
+    a separate problem (see open_driving_sink), but the cold-open difference is why the settle
+    and the foreground assert are kept.
     """
 
     def __init__(self, motor, loop, pump, max_force=1.0, gain=1.0, hold_seconds=3600.0):
@@ -654,13 +655,6 @@ def check_engagement(sink, wheel, pump):
     return True
 
 
-def build_motor(motor, loop, pump, args):
-    """Create the motor holder named by --motor. `sink` exists only for A/B comparison."""
-    if args.motor == "sink":
-        return WgiMotorSink(motor, loop, max_force=args.max, gain=args.gain)
-    return LocalMotor(motor, loop, pump, max_force=args.max, gain=args.gain)
-
-
 def open_once(motor, loop, wheel, pump, args):
     """
     One open attempt, ending in a verdict rather than a guess.
@@ -674,20 +668,17 @@ def open_once(motor, loop, wheel, pump, args):
     Telling these apart is the whole point of the exercise. Every previous theory about this
     failure was inferred from "the wheel did not move", which is all four of these at once.
     """
-    sink = build_motor(motor, loop, pump, args)
-    # The two holders report load failure differently: LocalMotor returns False, while
-    # WgiMotorSink.open() returns self and RAISES. Both mean the same thing here.
+    sink = LocalMotor(motor, loop, pump, max_force=args.max, gain=args.gain)
     try:
         opened = sink.open()
     except Exception as exc:
-        log.event("open.raised", motor=args.motor, error=repr(exc))
+        log.event("open.raised", error=repr(exc))
         return (sink, "load")
     if opened is False:
         return (sink, "load")
 
-    # Only LocalMotor records this; the sink never checks whether its effect started.
-    state = getattr(sink, "started_state", None)
-    if state is not None and state != "Running":
+    state = sink.started_state
+    if state != "Running":
         log.event("open.not_running", state=state)
         return (sink, "load")
 
@@ -733,9 +724,9 @@ def open_driving_sink(motor, loop, wheel, pump, args):
     and what the one clean measurement run in the logs did.
     """
     sink, verdict = open_once(motor, loop, wheel, pump, args)
-    log.event("open.attempt", motor=args.motor, verdict=verdict)
+    log.event("open.attempt", verdict=verdict)
     if verdict == "torque":
-        log.event("open.engaged", motor=args.motor)
+        log.event("open.engaged")
         return (sink, True)
 
     print("  %s" % OPEN_VERDICTS[verdict])
@@ -762,7 +753,7 @@ def selftest(motor, loop, wheel, pump, args):
     theories each looked right once. A change that cannot move this fraction is not a fix.
     """
     mode = "reopening every time" if args.reopen else "one open, held"
-    rule("SELFTEST -- %d torque probes (%s, --motor %s)" % (args.selftest, mode, args.motor))
+    rule("SELFTEST -- %d torque probes (%s)" % (args.selftest, mode))
     print("  Counts how often the motor actually drives the wheel. LET GO OF THE WHEEL.")
     print()
 
@@ -775,7 +766,7 @@ def selftest(motor, loop, wheel, pump, args):
             print("  probe  1/%d: %-10s %s"
                   % (args.selftest, verdict,
                      describe_state(motor_state(motor, "probe 1"))))
-            log.event("selftest.probe", n=1, motor=args.motor, verdict=verdict, held=True)
+            log.event("selftest.probe", n=1, verdict=verdict, held=True)
             if verdict != "torque":
                 print("  The very first open produced nothing, so the rest measures nothing.")
 
@@ -802,8 +793,7 @@ def selftest(motor, loop, wheel, pump, args):
             print("  probe %2d/%d: %-10s %s"
                   % (n, args.selftest, verdict,
                      describe_state(motor_state(motor, "probe %d" % n))))
-            log.event("selftest.probe", n=n, motor=args.motor, verdict=verdict,
-                      held=not args.reopen)
+            log.event("selftest.probe", n=n, verdict=verdict, held=not args.reopen)
     finally:
         if sink is not None:
             sink.close()
@@ -811,12 +801,11 @@ def selftest(motor, loop, wheel, pump, args):
     done = sum(tally.values())
     good = tally.get("torque", 0)
     rule("SELFTEST RESULT")
-    print("  torque on %d/%d probes   (%s, --motor %s)" % (good, done, mode, args.motor))
+    print("  torque on %d/%d probes   (%s)" % (good, done, mode))
     for verdict, count in sorted(tally.items()):
         if verdict != "torque":
             print("  %-10s %d   -- %s" % (verdict, count, OPEN_VERDICTS[verdict]))
-    log.event("selftest.result", motor=args.motor, good=good, probes=done,
-              held=not args.reopen)
+    log.event("selftest.result", good=good, probes=done, held=not args.reopen)
     print()
     if not done:
         pass
@@ -854,20 +843,16 @@ def main():
     p.add_argument("--reopen", action="store_true",
                    help="with --selftest, close and reopen the motor for every probe. This "
                         "REPRODUCES THE BUG (2/10 on 2026-08-25) and is kept for that.")
-    p.add_argument("--motor", choices=("local", "sink"), default="local",
-                   help="which open sequence to use: 'local' (this script's own, modelled "
-                        "on the shim and wgi_probe) or 'sink' (motor_sink.WgiMotorSink, for "
-                        "A/B comparison only)")
     p.add_argument("--stall-floor", type=float, default=0.02,
                    help="smallest --step believed safe on THIS wheel (default 0.02, measured "
                         "on a Hori Force Feedback Racing Wheel DLX). Below it, levels that "
                         "cannot "
-                        "move the wheel stall the motor into its firmware cut-out. Raise or "
-                        "lower it for other hardware; it only controls a warning.")
+                        "move the wheel silence the motor for the rest of the process. "
+                        "Raise or lower it for other hardware; it only warns.")
     p.add_argument("--ramp-in-place", action="store_true",
                    help="do not free the wheel between levels; push again from the same "
-                        "rotor position. This is what trips the firmware stall cut-out, and "
-                        "is kept only so pre-2026-08-25 runs stay comparable.")
+                        "rotor position. That is what silences the motor, and it is kept "
+                        "only so pre-2026-08-25 runs stay comparable.")
     p.add_argument("--no-log", action="store_true")
     args = p.parse_args()
 
@@ -903,7 +888,7 @@ def main():
         if args.step < args.stall_floor:
             print("  NOTE: --step %.3f is below --stall-floor %.3f, measured on a Hori"
                   % (args.step, args.stall_floor))
-            print("        Force Feedback Racing Wheel DLX. Expect runs to stop early when the")
+            print("        Force Feedback Racing Wheel DLX. Expect runs to stop early if the")
             print("        motor stalls. On a different wheel this floor may not apply --")
             print("        it also buys no resolution, both steps report the first level.")
             print()
@@ -930,7 +915,7 @@ def main():
         rule("Checking the motor actually drives")
         sink, engaged = open_driving_sink(motor, loop, wheel, pump, args)
         if not engaged:
-            note = "the motor opened cleanly but produced no torque (--motor %s)" % args.motor
+            note = "the motor opened cleanly but produced no torque"
             rule("RESULT")
             print("  NO MEASUREMENT -- %s." % note)
             print()
@@ -1076,7 +1061,8 @@ def main():
                 print("  this measurement suggests -- hardware compensation, not an effect.")
             log.event("stiction.result", mean=round(mean, 4),
                       right=round(sum(results[1]) / len(results[1]), 4) if results[1] else -1,
-                      left=round(sum(results[-1]) / len(results[-1]), 4) if results[-1] else -1)
+                      left=round(sum(results[-1]) / len(results[-1]), 4)
+                      if results[-1] else -1)
         return 0
 
     except KeyboardInterrupt:
