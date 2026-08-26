@@ -4,21 +4,34 @@
 #     ruff check .
 #
 # Line length matches the house style already in the tree (~95 columns), which suits the
-# long explanatory comments this project leans on. E501 is not in the default rule set, so
-# this only matters if the `E` rules are switched on later -- it is recorded so that day
-# does not turn into a reformat of every file.
+# long explanatory comments this project leans on.
 line-length = 95
 target-version = "py311"
 
 [lint]
-# Ruff's defaults: pyflakes (F) plus the pycodestyle errors that catch real breakage (E4,
-# E7, E9). Deliberately not the full style suite -- this codebase is diagnostic tooling
-# whose value is in its comments and measured constants, not in uniform formatting.
-select = ["E4", "E7", "E9", "F"]
+# Pyflakes (F) plus the pycodestyle errors that catch real breakage (E4, E7, E9), and E501.
+#
+# E501 IS A RATCHET, NOT A CLEANUP. It is the only cosmetic rule here -- E4/E7/E9 catch code
+# that is wrong, E501 catches code that is merely wide -- and ruff cannot fix it
+# automatically, because breaking an arbitrary line needs judgement. Turning it on across the
+# whole tree meant 54 hand edits, which is a reformat nobody asked for.
+#
+# So it is enabled, and the files we are not going to touch are ignored below. New and edited
+# code is held to 95 columns and the count only goes down. Do not add to the ignore list.
+#
+# Deliberately NOT selected: the rest of the style suite, and `I` (import sorting). This
+# codebase groups constants by meaning -- all the PT_*, all the HID_USAGE_* -- and isort's
+# magic-trailing-comma rule explodes those groups to one name per line, which is worse to
+# read. Tried 2026-08-26 and reverted.
+select = ["E4", "E7", "E9", "E501", "F"]
 
 [lint.per-file-ignores]
 # The ABI modules exist to mirror Windows headers exactly. Constants and structs are
 # transcribed whether or not this repo happens to call them yet, because a partial
 # transcription is how struct layouts silently go wrong -- see the GameInput v0/v3 hazard.
-"gameinput_abi.py" = ["F401"]
+"evidence/gameinput_abi.py" = ["F401", "E501"]
 "dinput_abi.py" = ["F401"]
+
+# Frozen. These record APIs that DO NOT WORK on this hardware, kept so the answers stay
+# checkable -- see evidence/README.md. Not maintained, so not reformatted.
+"evidence/*.py" = ["E501"]

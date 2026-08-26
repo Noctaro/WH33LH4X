@@ -7,7 +7,8 @@
  * measured as one. The arming sequence was reproduced byte-for-byte, verified programmatically
  * against a capture, sent from inside a focused game with zero write errors, and the motor
  * never moved. Identical bytes, different result: the driver distinguishes clients by something
- * other than what they send. See .claude/memory/gip-force-packet-format.md. Do not retry it.
+ * other than what they send. See evidence/README.md, and evidence/gip_protocol.py for
+ * the decoded wire format. Do not retry it.
  *
  * WGI itself does drive this motor -- reliably, every time -- but only for a process that is in
  * the foreground. That is the entire reason this code lives in a dinput8.dll proxy: the game is

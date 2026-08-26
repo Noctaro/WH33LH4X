@@ -43,6 +43,9 @@ param(
     [double] $MaxForce = 0.6,
     [switch] $KeepDll,
     [switch] $NoBridge,
+    # Start the bridge and nothing else. This is what a bare run used to do; a bare run now
+    # prints usage instead, so the old behaviour needs asking for by name.
+    [switch] $BridgeOnly,
     # Deploy the shim and start the bridge, but let you start the game yourself. What you want
     # for a Steam title: the client launches it the way it always does, and we still clean the
     # DLL out of the folder when you quit.
@@ -54,25 +57,78 @@ param(
     [switch] $NoFfb,
     # How long to wait for the game process to show up. Steam can take a while when it has to
     # start the client, update, or prompt for a login.
-    [int] $StartTimeout = 120
+    [int] $StartTimeout = 120,
+    # Start the bridge without a console window. For the GUI, which reports bridge state in
+    # its own window and would otherwise put a second window on screen for every session.
+    # A bare run leaves the console visible: from a terminal, the bridge's output IS the UI.
+    [switch] $Quiet
 )
 
 $ErrorActionPreference = 'Stop'
 $repo = $PSScriptRoot
-$python = Join-Path $repo '.venv\Scripts\python.exe'
 $bridge = Join-Path $repo 'vjoy_bridge.py'
-$builtDll = Join-Path $repo 'shim\build\dinput8.dll'
 
-if (-not (Test-Path $python)) { Write-Error "No venv python at $python" }
+# Two layouts, one script. A developer's checkout has a .venv; a downloaded bundle has an
+# embeddable CPython in python\ and no venv at all. Same resolution pattern shim\build.ps1
+# uses for zig, so there is one habit to learn rather than two.
+$venvPython   = Join-Path $repo '.venv\Scripts\python.exe'
+$bundlePython = Join-Path $repo 'python\python.exe'
+if     (Test-Path $venvPython)   { $python = $venvPython }
+elseif (Test-Path $bundlePython) { $python = $bundlePython }
+else {
+    Write-Error "No Python found. Looked for $venvPython and $bundlePython."
+}
+
+# Likewise the shim: shim\build\ is where build.ps1 writes it, shim\ is where a bundle ships
+# it prebuilt.
+$builtDll = @((Join-Path $repo 'shim\build\dinput8.dll'),
+              (Join-Path $repo 'shim\dinput8.dll')) |
+            Where-Object { Test-Path $_ } | Select-Object -First 1
+
+if ($PSBoundParameters.Count -eq 0) {
+    # A downloaded bundle is double-clicked, and silently starting a background bridge reads
+    # as "nothing happened". Say what this is instead. -BridgeOnly is the old bare-run
+    # behaviour for anyone who wants it.
+    Write-Host @'
+WH33LH4X -- force feedback for the Hori Force Feedback Racing Wheel DLX in PC sims.
+
+The wheel only exposes force feedback through Windows.Gaming.Input, which no sim speaks. This
+presents a virtual vJoy wheel to the game and renders what the game sends on the real motor.
+
+  WH33LH4X.cmd -Game "C:\...\DiRT 4\dirt4.exe"   deploy the shim, run the game, clean up after
+  WH33LH4X.cmd -Game "..." -NoLaunch             same, but you start the game from Steam
+  WH33LH4X.cmd -Game "..." -NoFfb                input only -- use while binding controls
+  WH33LH4X.cmd -BridgeOnly                       bridge only, launch the game yourself
+
+In a source checkout the same switches work on .\play.ps1 directly.
+
+Before any of that works:
+  1. vJoy 2.2.2.0 installed, force feedback enabled on device 1
+  2. the wheel in Xbox mode -- long-press PROFILE
+  3. any per-game setup listed in GAMES.md
+
+  GAMES.md    what works in which game, and what each one needs first
+  tune.json   force feedback tuning, re-read within half a second of a save
+
+'@
+    exit 0
+}
 
 $deployed = $null
 $bridgeProc = $null
 $procName = $null
+# Set together when we move another tool's proxy aside; used only by the finally block. Kept
+# separate from $deployed, which gets nulled on failure paths -- an orphaned backup that never
+# came back would be the worst outcome here.
+$foreignBackup = $null
+$foreignOriginal = $null
 
 try {
     if ($Game) {
         if (-not (Test-Path $Game)) { Write-Error "Game exe not found: $Game" }
-        if (-not (Test-Path $builtDll)) { Write-Error "Shim not built. Run .\shim\build.ps1 first." }
+        if (-not $builtDll) {
+            Write-Error "No dinput8.dll found in shim\build\ or shim\. In a checkout, run .\shim\build.ps1 first."
+        }
 
         $gameDir = Split-Path -Parent $Game
         $deployed = Join-Path $gameDir 'dinput8.dll'
@@ -91,12 +147,30 @@ try {
                 $alreadyOurs = $true
                 Write-Host "shim already in place: $deployed"
             } elseif (-not $KeepDll) {
-                # Refuse to clobber someone else's proxy -- ReShade and friends use this same
-                # filename, and silently replacing one would break their setup in a way nobody
-                # would connect back to this script.
-                Write-Warning "A different dinput8.dll is already in $gameDir."
-                Write-Warning "Not touching it. Move it aside yourself, or pass -KeepDll to leave things alone."
-                $deployed = $null
+                # Someone else's proxy -- ReShade and friends use this same filename. Move it
+                # aside rather than refusing outright: refusing left force feedback silently
+                # dead with only a console warning to explain why. The finally block puts it
+                # back, so their setup returns exactly as it was.
+                $candidate = "$deployed.wh33lh4x-backup"
+                if (Test-Path $candidate) {
+                    # An earlier run died before restoring. THAT file is the real original --
+                    # overwriting it with whatever is here now would destroy it for good.
+                    Write-Warning "An earlier backup is still at $candidate."
+                    Write-Warning "Not touching anything. Restore it yourself, or delete it if you know it is stale."
+                    $deployed = $null
+                } else {
+                    try {
+                        Move-Item $deployed $candidate -Force
+                        $foreignOriginal = $deployed
+                        $foreignBackup   = $candidate
+                        Write-Host "moved an existing dinput8.dll aside: $candidate"
+                    } catch {
+                        # Locked, most likely by a game that is already running with it loaded.
+                        Write-Warning "Could not move $deployed aside -- $($_.Exception.Message)"
+                        Write-Warning "Leaving it alone. Force feedback will not work this session."
+                        $deployed = $null
+                    }
+                }
             }
         }
 
@@ -119,7 +193,14 @@ try {
         # quiet way to break argument handling later in the script.
         $bridgeArgs = @($bridge, '--gain', $Gain, '--max-force', $MaxForce)
         if ($NoFfb) { $bridgeArgs += '--no-ffb' }
-        $bridgeProc = Start-Process -FilePath $python -ArgumentList $bridgeArgs -PassThru
+        # -WindowStyle Hidden rather than -NoNewWindow: the bridge still gets a console, so
+        # its stdout handles stay valid and every print() keeps working. -NoNewWindow would
+        # hand it this script's console, and under the GUI there is not one.
+        $bridgeProc = if ($Quiet) {
+            Start-Process -FilePath $python -ArgumentList $bridgeArgs -PassThru -WindowStyle Hidden
+        } else {
+            Start-Process -FilePath $python -ArgumentList $bridgeArgs -PassThru
+        }
         if ($NoFfb) {
             Write-Host "bridge started (pid $($bridgeProc.Id))  INPUT ONLY -- no force feedback"
             Write-Host "  Bind your controls now, then restart without -NoFfb to play."
@@ -223,5 +304,23 @@ finally {
                 Write-Warning "Could not remove $deployed -- delete it yourself before playing online."
             }
         }
+    }
+
+    # Put another tool's proxy back exactly where it was. Only once ours is gone: restoring
+    # over a shim that is still present would silently discard their file, which is the one
+    # outcome worse than never having moved it.
+    if ($foreignBackup -and (Test-Path $foreignBackup) -and -not (Test-Path $foreignOriginal)) {
+        try {
+            Move-Item $foreignBackup $foreignOriginal -Force
+            Write-Host "restored the original dinput8.dll"
+        } catch {
+            Write-Warning "Could not restore $foreignBackup -- $($_.Exception.Message)"
+            Write-Warning "Your original is still on disk under that name. Rename it back to dinput8.dll."
+        }
+    } elseif ($foreignBackup -and (Test-Path $foreignBackup)) {
+        # Ours is still in place -- -KeepDll, or a game still holding it. Say so, because a
+        # stray .wh33lh4x-backup with no explanation looks like a bug.
+        Write-Warning "The original dinput8.dll is still parked at $foreignBackup."
+        Write-Warning "It goes back automatically once our shim is removed."
     }
 }

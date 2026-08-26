@@ -16,7 +16,8 @@ from 0.65 -- the difference is real and no amount of reasoning will find it.
 WHAT IT DELIBERATELY DOES NOT DO
 --------------------------------
 It does not use the IPC gain field. The shim reads that exactly once, when it loads the WGI
-effect, because WGI latches gain at load time (see the note in motor_sink.WgiMotorSink). Writing
+effect, because WGI latches gain at load time (see the note in motor_sink.WgiMotorSink).
+Writing
 it mid-session looks like it works and changes nothing -- which is very likely why raising the
 in-game strength slider appeared to do nothing. Live strength therefore SCALES THE FORCE VALUE
 itself, before it is ever handed to a sink.
@@ -28,10 +29,12 @@ Anything unparseable leaves the previous values in place and is reported once.
 import json
 import os
 
+import ffb_render as render
+
 # Every tunable, with the value that means "unchanged from how the game sent it". Anything not
 # in here is ignored, so a stray key in the file is a typo rather than a silent new setting.
 DEFAULTS = {
-    "strength": 1.0,        # multiplies the game's force. 1.0 = exactly what the game asked for
+    "strength": 1.0,        # multiplies the game's force. 1.0 = what the game asked for
     "invert": False,        # flip the game's force direction (see the note in apply())
     # How to read the game's direction field: "sin" for a true polar angle, "span" for a
     # steering axis encoded linearly across part of the circle. DiRT 4 needs "span". Games
@@ -41,6 +44,7 @@ DEFAULTS = {
     "min_force": 0.0,       # floor on non-zero output, to beat the motor's own stiction
     "spring": 0.0,          # synthetic centring, from real wheel position. 0 = off
     "damper": 0.0,          # synthetic damping, from real wheel velocity. 0 = off
+    "friction": 0.0,        # synthetic drag whenever the wheel moves at all. 0 = off
 
     # Wheel buttons that adjust tuning while driving, as 1-based bit numbers; 0 = unassigned.
     # A game holds the foreground and every keystroke with it, so the wheel is the only input
@@ -59,6 +63,7 @@ STEPS = [
     ("min_force", 0.01, 0.0, 0.30),
     ("spring", 0.05, 0.0, 2.0),
     ("damper", 0.05, 0.0, 2.0),
+    ("friction", 0.05, 0.0, 1.0),
 ]
 
 # Below this, a force is "nothing" and must stay nothing. Without it, min_force would turn the
@@ -224,10 +229,17 @@ class LiveTune(object):
         if state is not None:
             spring = self.values["spring"]
             damper = self.values["damper"]
+            friction = self.values["friction"]
             if spring:
                 out += -state.position * spring
             if damper:
                 out += -state.velocity * damper
+            if friction:
+                # Not -sign(velocity) * gain written out again. ffb_render already holds the
+                # law that was fitted to this wheel, DEAD BAND INCLUDED -- and the dead band
+                # is the whole difference between drag and a buzz against a wheel at rest.
+                out += render.condition_force(
+                    "friction", render.legacy_condition_params("friction", friction), state)
 
         out = clamp(out, max(0.0, self.values["max_force"]))
 
@@ -249,7 +261,7 @@ class ButtonTuner(object):
     physical feedback -- that is the entire point -- but which parameter is selected does not,
     so cycling is a blind mode change. Hence the order in STEPS: strength is first and is what
     a single up/down pair adjusts if `btn_next` is never assigned. Every change is printed and
-    logged, so what happened is recoverable afterwards even when it was not obvious at the time.
+    logged, so what happened is recoverable afterwards even when it was not obvious then.
     """
 
     def __init__(self, tune):

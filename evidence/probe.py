@@ -46,8 +46,8 @@ import sys
 import time
 from ctypes import c_void_p
 
-import gameinput_abi as abi
-from gameinput_abi import (
+import evidence.gameinput_abi as abi
+from evidence.gameinput_abi import (
     EFFECT_CATALOG,
     GameInputDeviceCallback,
     GameInputDeviceFamily,

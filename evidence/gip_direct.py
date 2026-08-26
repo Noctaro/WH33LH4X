@@ -44,7 +44,7 @@ from ctypes import POINTER, byref, c_void_p, c_wchar_p
 from ctypes.wintypes import BOOL, DWORD, HANDLE, LPVOID
 
 import probe_log as log
-from gip_protocol import (
+from evidence.gip_protocol import (
     FFB_TABLE,
     GIP_TYPES,
     HORI_PID,

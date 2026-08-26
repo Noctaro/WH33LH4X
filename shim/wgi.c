@@ -8,8 +8,7 @@
  *     ConstantForceEffect -> SetParameters -> LoadEffectAsync -> Start
  *     then rewrite magnitude with SetParameters for the life of the session
  *
- * THREE TRAPS ENCODED HERE, ALL OF WHICH FAIL SILENTLY (see
- * .claude/memory/wgi-forcefeedback-api-gotchas.md):
+ * THREE TRAPS ENCODED HERE, ALL OF WHICH FAIL SILENTLY:
  *
  *  1. master_gain is LATCHED AT LOAD. Setting it under a running effect does nothing, so it is
  *     applied before LoadEffectAsync.

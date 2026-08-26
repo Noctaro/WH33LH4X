@@ -1,179 +1,137 @@
 # WH33LH4X
 
-Drives a HORI FFB Racing Wheel's motor from Windows, outside any game engine, using
-`Windows.Gaming.Input`. Constant force and ramp work natively; spring/damper/friction/
-inertia are computed in software because the firmware's own versions push the wrong way.
+**Force feedback for the Hori Force Feedback Racing Wheel DLX in PC racing games.**
 
-Hardware: HORI FFB Racing Wheel Series X (`VID 0x0F0D`). The wheel must be in **Xbox mode**
-(`PID 0x015C`) — a long-press of the PROFILE button switches from PC mode, which has no
-force-feedback interface at all. `wgi_probe.py --list-only` will tell you which mode it's in.
+The wheel has two USB modes and both are dead ends for sims. In PC mode DirectInput sees the
+wheel, but its joystick collection is input only, so there is no force feedback for any driver
+to expose. In Xbox mode force feedback works, but only through `Windows.Gaming.Input`, and
+racing games drive wheels through DirectInput. The result is a force feedback wheel with no
+force feedback in any PC sim.
 
-## Setup
+This closes that gap. It presents the wheel to games as an ordinary DirectInput force feedback
+wheel, and drives the real motor itself.
 
-No compiler, no admin rights — just a venv with the WinRT projections:
+## Does this work for me?
 
-```powershell
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install winrt-Windows.Gaming.Input `
-    winrt-Windows.Gaming.Input.ForceFeedback winrt-Windows.Foundation `
-    winrt-Windows.Foundation.Collections winrt-Windows.Foundation.Numerics
-```
+- **The wheel** is a Hori Force Feedback Racing Wheel DLX (`VID 0x0F0D`), in **Xbox mode**
+  (`PID 0x015C`). A long press of the PROFILE button switches out of PC mode.
+- **The game** has to be one that works. [GAMES.md](GAMES.md) has the list and the per-game
+  setup. DiRT 4 is confirmed on hardware.
+- **Not a game with kernel anti-cheat** such as EasyAntiCheat or BattlEye. This tool puts a DLL
+  in the game folder, which is exactly the thing they exist to stop, and meaning well is not a
+  defence they accept.
 
-## Running it
+## Quickstart
 
-```powershell
-.\.venv\Scripts\python.exe wgi_probe.py            # detect, report, interactive menu
-.\.venv\Scripts\python.exe wgi_probe.py --list-only # detect and report only, play nothing
-```
+**1. Download** the latest `WH33LH4X-windows-x64.zip` from
+[Releases](../../releases) and extract it anywhere. It carries its own Python, so there is
+nothing else to install.
 
-**First run: press `k` to calibrate.** This measures which way the wheel's own position
-reading moves when force is applied, and saves it to `wheel_profile.json` keyed by the
-wheel's VID:PID. It only needs to run once per wheel; the software effects (`1s`–`4s`,
-`y`, `z`) refuse to run without it.
+**2. Install [vJoy 2.2.2.0](https://github.com/BrunnerInnovation/vJoy)** and configure device 1.
+The version matters, and so do a few checkboxes. You do not have to get it right from memory:
+the window checks all of it and tells you exactly what to change. Full walkthrough in
+[docs/vjoy.md](docs/vjoy.md).
 
-**Keep the probe window in front while an effect plays.** Force output — and, during
-calibration, position readings — both stop the instant the window loses foreground. The
-window re-grabs it automatically and prints `[foreground OK]` / `[!! NOT foreground !!]`
-each second so you can see the state instead of guessing.
+**3. Do the per-game setup** from [GAMES.md](GAMES.md). For DiRT 4 that is two XML edits, and
+without them the game sends force that never centres.
 
-**Releasing the wheel feels looser, not weaker.** At idle the firmware runs its own strong
-centering spring. The moment any effect takes the motor, that spring is suspended — so even
-a gentle effect feels looser than the resting wheel. Press `r` to give the motor back to the
-firmware and get stock centering again.
+**4. Run `WH33LH4X-GUI.cmd`.** Pick the game's `.exe`, press **Start**.
 
-## Menu reference
+The window handles the parts that are easy to get wrong. It launches Steam games the way Steam
+insists on, shows what is known to be quirky about the title you picked, and reports whether
+the bridge is really live rather than leaving you to guess.
 
-| Keys | What |
+**5. Drive.**
+
+Prefer a terminal? Everything the window does, `WH33LH4X.cmd` does too. See
+[COMMANDS.md](COMMANDS.md).
+
+## Tuning
+
+Force feedback is judged by feel, and feel cannot be judged across a restart. By the time the
+game has reloaded and you are back at the corner that felt wrong, you are comparing against a
+memory. So the sliders work **while you drive**: a change reaches the wheel within half a
+second, mid corner.
+
+| Slider | What it does |
 |---|---|
-| `1`–`11` | Firmware effects (constant, ramp, periodics, conditions) |
-| `1s` `2s` `3s` `4s` | Software conditions: spring, damper, friction, inertia |
-| `y` `z` | Software sine / square wave |
-| `k` | Calibrate (run this first) |
-| `i` | Motor info |
-| `w` `e` `x` | Gain sweep / magnitude sweep / direction test |
-| `g` `m` `d` `f` | Set gain / magnitude / duration / frequency |
-| `b` | Show the firmware effects that don't work (hidden by default; they still run if typed) |
-| `c` | Force one condition sign convention on all effects instead of the measured per-effect one |
-| `r` | Release the motor, restore firmware centering |
-| `s` | Stop all effects |
-| `q` | Quit |
+| **Strength** | How hard the game's own force is felt. `1.00` is exactly what the game asked for. Set this first |
+| **Spring** | Pulls back to centre. For games that send no centring force of their own, which includes DiRT 4 |
+| **Damper** | Resists how fast you turn. This is what stops the spring overshooting and hunting |
+| **Friction** | Constant drag whenever the wheel moves: weight, rather than centring |
 
-## Effect support on this firmware
+One thing worth knowing before you blame the software: **the wheel has a strength setting of
+its own**, in the *HORI FFB RWD-Devicemanager für Xbox Series X Series S* app from the
+Microsoft Store. It is a real gain stage above everything here, worth about 3.5x between its
+lowest and highest setting, and nothing in this project can read or change it. If two machines
+feel different with identical settings, look there first.
 
-| Effect | Result |
+Everything else, including the settings that have no slider, is in
+[docs/tuning.md](docs/tuning.md).
+
+## Why your antivirus may complain
+
+**This copies an unsigned `dinput8.dll` into your game's folder while you play, and removes it
+when the game exits.** That is the same mechanism malware uses to get code running inside
+another program, so a scanner objecting to it is not being stupid. Nothing here is code signed
+either. Both of those are worth saying plainly rather than hoping you do not notice.
+
+What you can check instead of trusting a signature:
+
+- **Build it yourself.** The DLL is compiled from `shim/*.c` in this repo by one script.
+- **Or verify what you downloaded.** Releases are built by GitHub Actions from public source,
+  and each one ships `SHA256SUMS.txt` plus a GitHub artifact attestation, so you can prove the
+  zip you have is the one CI built from a named commit.
+
+The reasoning, the verification commands, and how to report a false positive to Microsoft are
+in [SECURITY.md](SECURITY.md).
+
+## Where everything else is
+
+| Document | What is in it |
 |---|---|
-| Constant force | Works — direction and magnitude both honoured |
-| Ramp force | Works — must sweep through zero to be felt |
-| Sine / square / triangle / sawtooth | Silent on firmware — loads, runs, no torque. Sine and square are synthesised instead (`y` / `z`) |
-| Spring | Works — pulls back to centre, and does so on either sign convention |
-| Damper | Works — resistance scales with turning speed |
-| Friction | Works, but **only on a flipped sign**. On the documented convention it drives the wheel to full lock on its own |
-| Inertia | Produces force, but it feels like cogging rather than resistance to acceleration. Safe — it never runs away — but not usable as inertia |
+| [GAMES.md](GAMES.md) | Which games work, the per-game setup, and the quirks of each |
+| [docs/vjoy.md](docs/vjoy.md) | Installing and configuring vJoy, and the three ways it silently goes wrong |
+| [docs/tuning.md](docs/tuning.md) | Every `tune.json` key, and reading back what the force actually did |
+| [docs/hardware.md](docs/hardware.md) | What this wheel's firmware does and does not implement, measured |
+| [docs/development.md](docs/development.md) | Working on the code: venv, the probe tool, tests, building |
+| [COMMANDS.md](COMMANDS.md) | Every script and every flag |
+| [evidence/](evidence/README.md) | Four APIs that do **not** work on this wheel, and the probes that prove it |
 
-**The sign convention is not the same for every condition effect.** Damper needs the
-documented direction and friction needs it flipped, so no single global setting is correct
-for both. The tool applies a measured per-effect sign automatically; `c` forces one
-convention across all four, and exists only to re-run that sweep if the firmware changes.
+Anything load bearing is written next to the code it constrains rather than in a document that
+goes stale on its own.
 
-These verdicts come from logged position traces, not from how the wheel felt. The test:
-while an effect holds the motor the wheel parks wherever it is left, so once your hands come
-off, any sustained motion is the effect's doing — a passive effect ends at rest, an inverted
-one drives to the end stop and is still moving seconds later. Each condition run prints a
-`MOTION` summary and writes a downsampled trace to the log, so any verdict here can be
-re-checked without re-running the hardware.
+## Thanks ♥
 
-All four also exist as software effects (`1s`–`4s`), which are unaffected by any of this.
+This sits on top of other people's work, all of it open source, and some of it is the reason
+the project exists at all.
 
-The software effects hold one `ConstantForceEffect` open and rewrite its magnitude ~80×/sec
-from the wheel's own position reading — the same technique games use to drive hardware that
-only implements constant force. Because the force is computed from the motion it's meant to
-oppose, a sign error makes an effect inert rather than dangerous.
+**[vJoy](https://github.com/shauleiz/vJoy)**, Shaul Eizikovich, MIT. The virtual joystick
+driver the bridge is built on. Upstream is abandoned, but the forks kept it alive:
+**[njz3](https://github.com/njz3/vJoy)** added the force feedback effect block index in 2.2.0,
+without which concurrent effects cannot be told apart and this bridge does not work, and
+**[BrunnerInnovation](https://github.com/BrunnerInnovation/vJoy)** carried that into a signed
+Windows 11 build.
 
-One expected side effect: while a software effect holds the motor there's no centering, so a
-zero-mean waveform (sine/square) lets the wheel drift. A real game would run a spring effect
-underneath to counter that.
+**[pyvjoyffb](https://github.com/Ultrawipf/pyvjoy)**, Yannick Richter, MIT, forked from
+**[tidzo/pyvjoy](https://github.com/tidzo/pyvjoy)**. Decodes force feedback through vJoy's own
+exports instead of reimplementing HID PID, and bundles the matching DLL. That is the whole
+usermode half of the problem, solved by someone else.
 
-## In progress: a bridge into real games
+**[PyWinRT](https://github.com/pywinrt/pywinrt)**, MIT. This wheel's motor is reachable only
+through `Windows.Gaming.Input`, and PyWinRT makes that a `pip install` rather than a C++
+project.
 
-Both of the wheel's USB modes are dead ends for sims. In PC mode DirectInput sees the wheel
-but its joystick collection is input-only, so there is no force feedback for any driver to
-expose. In Xbox mode force feedback works, but only through `Windows.Gaming.Input`, and
-Assetto Corsa, rFactor, LFS and ETS2 all drive wheels through DirectInput. So this wheel
-currently has **no force feedback in any PC sim**.
+**[Zig](https://ziglang.org/)**, MIT. Builds the shim on a machine with no Visual Studio, and
+links it against nothing but OS libraries, so nobody needs a VC++ redistributable.
 
-The bridge presents a virtual force-feedback wheel to DirectInput and renders the effects
-games send it on the real motor via WGI. It is being built now; nothing below is finished.
+**[CPython](https://www.python.org/)**,
+**[typing_extensions](https://github.com/python/typing_extensions)** and
+**[Ruff](https://github.com/astral-sh/ruff)** round it out.
 
-**If you want to follow along, install [`BrunnerInnovation/vJoy`
-v2.2.2.0](https://github.com/BrunnerInnovation/vJoy).** The version matters more than it
-looks. vJoy 2.1.9.x has no force-feedback *effect block index*: every effect reports index
-`1`, so concurrent effects cannot be told apart. That is invisible while testing one effect
-at a time and fatal in a real game, which runs a centring spring, a damper and road texture
-simultaneously. `njz3` added the block index in 2.2.0 and Brunner's 2.2.2.0 adds EV signing
-for Windows 11. The driver and the interface DLL are not compatible across the 2.1.9 → 2.2.0
-boundary, so do not mix them.
+No HORI code or assets are used anywhere in this project.
 
-```powershell
-.\.venv\Scripts\python.exe -m pip install pyvjoyffb
-.\.venv\Scripts\python.exe vjoy_ffb_spike.py     # checks the vJoy foundation end to end
-```
+## License
 
-`vjoy_ffb_spike.py` is both halves of the test: it sends DirectInput effects to the virtual
-device and logs what comes back out of vJoy's force-feedback callback, so it verifies the
-whole path without a game or a control-panel tab. It never touches the real wheel. Run it
-first — if it does not report `PASS`, nothing built on top of vJoy will work.
-
-## Tuning force feedback while you drive
-
-Force feedback is judged by feel, and feel cannot be judged across a restart — by the time the
-game is loaded and you are back at the corner that felt wrong, you are comparing against a
-memory. So the bridge re-reads `tune.json` while it runs; a saved change reaches the wheel
-within half a second, mid-corner.
-
-| Key | What it does |
-|---|---|
-| `strength` | Multiplies the game's force. This, not the WGI gain, is the working volume knob — WGI latches gain when the effect loads, so writing it mid-session does nothing |
-| `invert` | Flips the game's force direction. Games disagree about whether a force's sign lives in its magnitude or its direction angle |
-| `max_force` | Ceiling on commanded force. Live, unlike `--gain` |
-| `min_force` | Floor on non-zero output, so small forces still overcome the motor's own stiction instead of vanishing |
-| `spring`, `damper` | Synthetic centring and damping computed from real wheel position. For games that send none — DiRT 4 sends a single constant force and nothing else. `0` = off |
-| `btn_down`, `btn_up`, `btn_next` | Wheel buttons that adjust tuning mid-corner, as 1-based bit numbers. A game owns the foreground and the keyboard with it, so the wheel is the only device that can still reach the bridge. Run it and press buttons — each new bitfield is printed |
-
-After a session, `tune_report.py` says what the force feedback actually did:
-
-```powershell
-.\.venv\Scripts\python.exe tune_report.py        # newest bridge log
-```
-
-It reports which effects the game sent, whether output ever went negative, and the correlation
-between steering angle and force. That last number is the objective test for centring: force
-must **oppose** steering angle, and a wheel whose output never changes sign cannot centre no
-matter how it is tuned. A rectified output survived a full session described as "bumps and
-gravel feel ok", because rectification is inaudible on symmetric effects — only arithmetic on a
-log caught it.
-
-## Logging
-
-Every run writes `logs/wgi_probe_<timestamp>.log` — console output with elapsed timestamps,
-plus dense per-tick data (position, velocity, commanded force, foreground state, effect
-state) that isn't printed live. Flushed per line, so `Ctrl+C` still leaves a complete log.
-Pass `--no-log` to disable it.
-
-## Files
-
-| File | Purpose |
-|---|---|
-| `wgi_probe.py` | The tool: detection, message pump, effect menu, sweeps, cleanup |
-| `wheel_profile.py` | Calibration, `wheel_profile.json` persistence, software condition effects |
-| `vjoy_ffb_spike.py` | Verifies the vJoy force-feedback path the game bridge is being built on |
-| `live_tune.py` | `tune.json` reloading and the wheel-button tuning controls |
-| `tune_report.py` | Reads a session log and reports what the force feedback actually did |
-| `probe_log.py` | Session logging to `logs/` |
-| `hid_probe.py` | Reads raw HID report descriptors — shows why DirectInput/GameInput can't reach this wheel |
-| `probe.py` + `gameinput_abi.py` | GameInput diagnostic (negative result, kept as evidence) |
-| `dinput_probe.py` + `dinput_abi.py` | DirectInput 8 diagnostic (negative result on the wheel, kept as evidence). `dinput_abi.py` is also the DirectInput binding the bridge test uses |
-
-Why the other three APIs fail, the discovery process, and every gotcha found along the way
-are written up in `.claude/memory/` rather than here — see `hori-wheel-ffb-probe-goal.md`
-and `wgi-forcefeedback-api-gotchas.md` if you want the full story instead of just the
-result.
+MIT, see [LICENSE](LICENSE). What the project depends on, who holds copyright on it and under
+what terms, is recorded in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).

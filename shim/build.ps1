@@ -1,8 +1,13 @@
 # Build the WH33LH4X dinput8.dll proxy.
 #
-# Uses the portable zig toolchain in tools/zig -- zig ships its own clang, MinGW headers and
-# import libraries, so this needs no Visual Studio and no Windows SDK. There is no cl.exe on
-# this machine, which is what ruled out MSVC in the first place.
+# Uses zig as the C toolchain -- it ships its own clang, MinGW headers and import libraries,
+# so this needs no Visual Studio. There is no cl.exe on this machine, which is what ruled out
+# MSVC in the first place. A Windows SDK is still required, but only for its WinRT headers
+# (see the note further down); zig supplies everything else.
+#
+# zig is looked up in three places, in order: the portable toolchain in tools/zig (how this
+# machine builds), $env:ZIG (an explicit override), then PATH (how CI builds, where the
+# toolchain is installed by an action rather than unpacked into the repo).
 #
 # 64-bit only, deliberately. Exporting DirectInput8Create from a 32-bit build needs a .def
 # file, because __stdcall exports get decorated as _DirectInput8Create@20 there and a game
@@ -14,11 +19,17 @@ $ErrorActionPreference = 'Stop'
 
 $shimDir = $PSScriptRoot
 $repo    = Split-Path -Parent $shimDir
-$zig     = Join-Path $repo 'tools\zig\zig.exe'
 $outDir  = Join-Path $shimDir 'build'
 
-if (-not (Test-Path $zig)) {
-    Write-Error "zig not found at $zig -- see the toolchain note in the plan (extract a portable zig into tools/zig)."
+$portableZig = Join-Path $repo 'tools\zig\zig.exe'
+if (Test-Path $portableZig) {
+    $zig = $portableZig
+} elseif ($env:ZIG -and (Test-Path $env:ZIG)) {
+    $zig = $env:ZIG
+} elseif (Get-Command zig -ErrorAction SilentlyContinue) {
+    $zig = (Get-Command zig).Source
+} else {
+    Write-Error "zig not found. Looked in $portableZig, the ZIG environment variable, and PATH -- extract a portable zig into tools/zig, or put one on PATH."
 }
 
 if (-not (Test-Path $outDir)) { New-Item -ItemType Directory -Path $outDir | Out-Null }

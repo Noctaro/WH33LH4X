@@ -24,7 +24,7 @@ import argparse
 import sys
 from collections import Counter
 
-from gip_protocol import GIP_TYPES, decode_gip, describe_pairs
+from evidence.gip_protocol import GIP_TYPES, decode_gip, describe_pairs
 
 
 def load(path):
