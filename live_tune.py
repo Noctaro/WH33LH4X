@@ -29,6 +29,8 @@ Anything unparseable leaves the previous values in place and is reported once.
 import json
 import os
 
+import ffb_render as render
+
 # Every tunable, with the value that means "unchanged from how the game sent it". Anything not
 # in here is ignored, so a stray key in the file is a typo rather than a silent new setting.
 DEFAULTS = {
@@ -42,6 +44,7 @@ DEFAULTS = {
     "min_force": 0.0,       # floor on non-zero output, to beat the motor's own stiction
     "spring": 0.0,          # synthetic centring, from real wheel position. 0 = off
     "damper": 0.0,          # synthetic damping, from real wheel velocity. 0 = off
+    "friction": 0.0,        # synthetic drag whenever the wheel moves at all. 0 = off
 
     # Wheel buttons that adjust tuning while driving, as 1-based bit numbers; 0 = unassigned.
     # A game holds the foreground and every keystroke with it, so the wheel is the only input
@@ -60,6 +63,7 @@ STEPS = [
     ("min_force", 0.01, 0.0, 0.30),
     ("spring", 0.05, 0.0, 2.0),
     ("damper", 0.05, 0.0, 2.0),
+    ("friction", 0.05, 0.0, 1.0),
 ]
 
 # Below this, a force is "nothing" and must stay nothing. Without it, min_force would turn the
@@ -225,10 +229,17 @@ class LiveTune(object):
         if state is not None:
             spring = self.values["spring"]
             damper = self.values["damper"]
+            friction = self.values["friction"]
             if spring:
                 out += -state.position * spring
             if damper:
                 out += -state.velocity * damper
+            if friction:
+                # Not -sign(velocity) * gain written out again. ffb_render already holds the
+                # law that was fitted to this wheel, DEAD BAND INCLUDED -- and the dead band
+                # is the whole difference between drag and a buzz against a wheel at rest.
+                out += render.condition_force(
+                    "friction", render.legacy_condition_params("friction", friction), state)
 
         out = clamp(out, max(0.0, self.values["max_force"]))
 

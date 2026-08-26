@@ -12,11 +12,13 @@ New entries are welcome — copy the [template](#template-for-a-new-game) at the
 
 ## Status at a glance
 
+<!-- BEGIN generated from games.json -- edit games.json, not this table -->
 | Game | Status | Needs setup? | Verified |
 |---|---|---|---|
-| [DiRT 4](#dirt-4) | 🟡 Force feedback works; motor occasionally needs a game restart | Yes — device registration | 2026-08-25 |
+| [DiRT 4](#dirt-4) | 🟡 Playable -- Steering, pedals and force feedback all work -- the wheel loads up in a corner and pulls back to centre. | Yes -- vJoy must be registered as a wheel | 2026-08-25 |
 | [RaceRoom Racing Experience](#raceroom-racing-experience) | ⚪ Untested | Unknown | — |
 | [Automobilista 2](#automobilista-2) | ⚪ Untested | Unknown | — |
+<!-- END generated -->
 
 | Status | Meaning |
 |---|---|

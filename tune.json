@@ -6,6 +6,7 @@
   "min_force": 0.0,
   "spring": 0.0,
   "damper": 0.0,
+  "friction": 0.0,
   "btn_down": 0.0,
   "btn_up": 0.0,
   "btn_next": 0.0
