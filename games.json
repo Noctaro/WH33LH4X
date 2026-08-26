@@ -36,15 +36,19 @@
     },
     {
       "name": "RaceRoom Racing Experience",
-      "exe": [],
-      "status": "untested",
-      "summary": "Nobody has tried it yet.",
-      "setup_required": null,
-      "setup_summary": "Unknown",
-      "sends_ffb": null,
-      "verified": null,
+      "exe": ["rrrewebbrowser.exe"],
+      "status": "playable",
+      "summary": "Steering, pedals and force feedback all work, with no file to edit first.",
+      "setup_required": false,
+      "setup_summary": "No, just bind steering in the game",
+      "sends_ffb": true,
+      "verified": "2026-08-27",
       "docs": "GAMES.md#raceroom-racing-experience",
-      "quirks": []
+      "quirks": [
+        "Pick RRREWebBrowser.exe, in the game's Game folder. RRRE64.exe is the obvious choice and it is the wrong one: tried first, and the game would not let steering be assigned. The launcher stays resident for the whole session, which also matters because play.ps1 watches the name you picked and pulls the shim back out ten seconds after that process disappears.",
+        "RaceRoom asks for effects it never uses. It opens one constant force on block 1 and six sine effects on blocks 2 to 7, then stops all seven and restarts only the constant one. The sines are never started, and this wheel's firmware is silent on periodics anyway.",
+        "It sends duration 0xFFFF, the HID PID code for 'until I say stop', where DiRT 4 sends 0. We read that as a literal 65.535 seconds and expired the effect mid-lap, so force died until a menu made the game restart it. Fixed 2026-08-27."
+      ]
     },
     {
       "name": "Automobilista 2",

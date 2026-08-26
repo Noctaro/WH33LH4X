@@ -281,6 +281,23 @@ SPAN_CENTRE = (SPAN_LOW + SPAN_HIGH) / 2.0        # 12287
 SPAN_HALF = (SPAN_HIGH - SPAN_LOW) / 2.0          # 4096
 
 
+DURATION_INFINITE = 0xFFFF
+
+
+def duration_seconds(raw):
+    """
+    Turn a HID PID duration field into seconds, where 0xFFFF means forever.
+
+    The field is 16 bits, so a game that wants an effect to run until it says otherwise has
+    no number to send -- it sends the all-ones sentinel instead. Read literally that is
+    65.535 seconds, which is long enough to look like working force feedback and short
+    enough to die mid-lap. Measured 2026-08-27 in RaceRoom: its constant force expired
+    after 65.5s, nine times in one session, and only came back when a menu made the game
+    stop and restart the effect. DiRT 4 sends 0, which is why this stayed hidden.
+    """
+    return 0.0 if raw >= DURATION_INFINITE else raw / 1000.0
+
+
 def direction_x(dir_raw):
     """
     X-axis component of a HID PID direction field, as a multiplier in -1.0 .. +1.0.

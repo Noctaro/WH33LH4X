@@ -271,11 +271,34 @@ def test_wheel_state():
     return ok
 
 
+def test_infinite_duration():
+    """0xFFFF is a sentinel, not a 65.535 second effect."""
+    print("\ninfinite duration sentinel")
+    ok = check("0 stays infinite", R.duration_seconds(0) == 0.0)
+    ok &= check("2500 -> 2.5s", abs(R.duration_seconds(2500) - 2.5) < 1e-9)
+    ok &= check("0xFFFF -> infinite", R.duration_seconds(0xFFFF) == 0.0)
+
+    # The bug this test exists for: an effect the game means to run forever, expiring
+    # 65 seconds into a stint and staying silent until a menu restarted it.
+    forever = R.Effect(1)
+    forever.kind = "constant"
+    forever.duration = R.duration_seconds(0xFFFF)
+    forever.start(0.0)
+    ok &= check("still running after 10 minutes", not forever.expired(600.0))
+
+    timed = R.Effect(2)
+    timed.kind = "constant"
+    timed.duration = R.duration_seconds(2000)
+    timed.start(0.0)
+    ok &= check("a real 2s duration still expires", timed.expired(3.0))
+    return ok
+
+
 def main():
     print("ffb_render control-law checks")
     results = [test_matches_legacy(), test_friction_is_a_step(), test_di_conversion(),
                test_saturation_and_sign(), test_periodics(), test_direction_sign(),
-               test_envelope(), test_wheel_state()]
+               test_envelope(), test_wheel_state(), test_infinite_duration()]
     print()
     if all(results):
         print("ALL CHECKS PASSED")

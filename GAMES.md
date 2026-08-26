@@ -16,7 +16,7 @@ New entries are welcome — copy the [template](#template-for-a-new-game) at the
 | Game | Status | Needs setup? | Verified |
 |---|---|---|---|
 | [DiRT 4](#dirt-4) | 🟡 Playable -- Steering, pedals and force feedback all work -- the wheel loads up in a corner and pulls back to centre. | Yes -- vJoy must be registered as a wheel | 2026-08-26 |
-| [RaceRoom Racing Experience](#raceroom-racing-experience) | ⚪ Untested | Unknown | — |
+| [RaceRoom Racing Experience](#raceroom-racing-experience) | 🟡 Playable -- Steering, pedals and force feedback all work, with no file to edit first. | No -- bind steering in the game | 2026-08-27 |
 | [Automobilista 2](#automobilista-2) | ⚪ Untested | Unknown | — |
 <!-- END generated -->
 
@@ -268,11 +268,49 @@ wait for it:
 
 ## RaceRoom Racing Experience
 
-**Status:** ⚪ Untested.
+**Status:** 🟡 Playable. Steering, pedals and force feedback all work. Free to play, and no
+kernel anti-cheat.
 
-Free to play and has no kernel anti-cheat, so it is a reasonable next target. Whether it needs
-a device registration step like DiRT 4's is unknown — that mechanism is specific to
-Codemasters' engine, and RaceRoom's may or may not have an equivalent.
+**Verified:** 2026-08-27, Steam build, from a source checkout.
+
+No device registration step is needed. DiRT 4's `device_defines.xml` mechanism is specific to
+Codemasters' engine and RaceRoom has no equivalent.
+
+### Pick RRREWebBrowser.exe
+
+In `...\steamapps\common\raceroom racing experience\Game\`. Observed 2026-08-27: with anything
+else, the game would not let steering be assigned.
+
+### What it sends
+
+One constant force on block 1, plus six sine effects on blocks 2 to 7 that it allocates, stops
+and never starts. Nothing is lost by ignoring them: this wheel's firmware is silent on
+periodics anyway (see [docs/hardware.md](docs/hardware.md)).
+
+### Force stopping after about a minute, fixed 2026-08-27
+
+Force feedback died roughly 65 seconds into every stint and only came back on re-entering a
+menu. That was ours.
+
+RaceRoom asks for an effect that runs until it says stop, and the HID PID duration field is
+16 bits, so there is no number that means forever. Games send the all-ones sentinel `0xFFFF`
+instead. We read it as a literal 65.535 seconds and expired the effect mid-lap. A menu made
+RaceRoom stop and restart the effect, which restarted the fuse.
+
+Measured from `logs/vjoy_bridge_20260826_235738.log`: nine effects in one session, each alive
+65.1 to 65.6 seconds. DiRT 4 sends duration 0, which is why this stayed hidden through all of
+its testing.
+
+The bridge now logs a `decode.effect` line with the raw duration on the first packet that
+defines an effect, so the next game that encodes something unexpectedly says so in the log
+rather than in the wheel. RaceRoom's reads:
+
+```
+decode.effect  block=1 kind=constant raw_duration=65535 seconds=infinite
+```
+
+Confirmed on the fix: one constant force alive **220 s**, ending only when the session was
+left, against a hard ceiling of 65.6 s before it.
 
 ---
 

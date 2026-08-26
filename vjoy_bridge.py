@@ -295,6 +295,11 @@ class EffectDecoder(object):
         # question a whole session of driving could not. Directions are counted rather than
         # logged per packet -- they arrive ~66x a second and only the DISTINCT values matter.
         self.dir_counts = {}
+        # An effect's shape is set once and then only its magnitude is streamed, so the
+        # defining packet is worth a line each time it says something new. A duration read
+        # wrong is silent for a minute and then sounds like a broken wheel, and nothing in
+        # this log would have shown it.
+        self.effect_seen = set()
         self.mag_min = 0.0
         self.mag_max = 0.0
         # The most recent direction, for per-tick telemetry. Distinct values alone cannot show
@@ -361,8 +366,15 @@ class EffectDecoder(object):
                 return
             effect.kind = kind
             effect.gain = f["Gain"] / 255.0                  # BYTE, not 0..10000
-            effect.duration = f["Duration"] / 1000.0         # ms; 0 stays 0 = infinite
+            effect.duration = render.duration_seconds(f["Duration"])
             effect.start_delay = f.get("StartDelay", 0) / 1000.0
+            seen = (block, kind, f["Duration"])
+            if seen not in self.effect_seen:
+                self.effect_seen.add(seen)
+                log.event("decode.effect", block=block, kind=kind,
+                          raw_duration=f["Duration"],
+                          seconds=effect.duration or "infinite",
+                          gain=round(effect.gain, 3))
             dir_raw = f["DirX"]
             effect.direction = render.direction_x(dir_raw)
             self.last_dir = dir_raw
@@ -877,6 +889,10 @@ def main():
         return 0
     except RuntimeError as exc:
         print("\n  %s" % exc)
+        # The console this was printed to is hidden when the GUI is the one launching, so the
+        # reason has to survive somewhere the window can read it back. One event, one field,
+        # so reading it is a split rather than a parser.
+        log.event("exit.fatal", reason=str(exc))
         return 1
     finally:
         # Order matters: silence the motor before anything else is torn down, so an error

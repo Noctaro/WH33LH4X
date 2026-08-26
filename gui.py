@@ -48,12 +48,19 @@ from motor_sink import IpcMotorSink
 ROOT = os.path.dirname(os.path.abspath(__file__))
 SETTINGS = os.path.join(ROOT, "gui_settings.json")
 TUNE = os.path.join(ROOT, "tune.json")
+# Asking play.ps1 to stop, rather than killing it. See _stop.
+STOP_REQUEST = os.path.join(ROOT, "stop.request")
+LOGS = os.path.join(ROOT, "logs")
 GAMES = os.path.join(ROOT, "games.json")
 
 POLL_MS = 250
 # How long the bridge gets to appear after Start before the window says it has not. Generous:
 # WGI enumeration alone can take several seconds when the wheel was only just plugged in.
 BRIDGE_GRACE = 20.0
+# How long play.ps1 gets to shut itself down after being asked, before it is killed. Its wait
+# loop polls every 2 seconds and the bridge takes a moment to let go of vJoy, so this is that
+# with room to spare.
+STOP_GRACE = 8.0
 
 # Strength scales the force the GAME sends. It is the volume knob, and the one people reach
 # for first, so it is the one slider that must be here.
@@ -188,6 +195,30 @@ class ShimView(object):
 
     def close(self):
         """Nothing is held open between reads, so there is nothing to release."""
+
+
+def last_log_line():
+    """
+    Why the newest bridge run gave up, or None if it did not say.
+
+    The bridge writes one `exit.fatal` event before returning non-zero, and that is the only
+    thing read here. Guessing from the last console line does not work: a failed run still
+    releases the motor on the way out, so the final line is housekeeping and the diagnosis is
+    several lines above it.
+    """
+    try:
+        logs = [os.path.join(LOGS, n) for n in os.listdir(LOGS)
+                if n.startswith("vjoy_bridge_") and n.endswith(".log")]
+        if not logs:
+            return None
+        with open(max(logs, key=os.path.getmtime), encoding="utf-8",
+                  errors="replace") as fh:
+            for line in fh:
+                if "exit.fatal" in line and "reason=" in line:
+                    return line.split("reason=", 1)[1].strip()
+    except Exception:
+        pass                           # a missing reason must never break the window
+    return None
 
 
 def is_steam_game(exe_path, game=None):
@@ -392,6 +423,8 @@ class App(object):
         self.started_at = None
         self.bridge_seen = False
         self.warned_no_bridge = False
+        # Set when a stop has been asked for and not yet happened. See _stop.
+        self.stop_deadline = None
         self.tune = self._load_tune()
         self.game = tk.StringVar(value=self._load_setting("game", ""))
 
@@ -550,15 +583,42 @@ class App(object):
             self._say("START THE GAME FROM STEAM NOW -- play.ps1 waits up to 10 minutes.")
 
     def _stop(self):
-        if self.proc is not None and self.proc.poll() is None:
-            # terminate() lets play.ps1's finally block run, which is what removes the shim
-            # from the game folder and restores any dinput8.dll it moved aside.
-            self.proc.terminate()
-            self._say("Stopping -- play.ps1 is cleaning up the game folder.")
-        self._ended()
+        """
+        Ask play.ps1 to stop, and only kill it if asking does not work.
+
+        terminate() is TerminateProcess on Windows, so PowerShell never unwinds and its
+        finally block never runs. That block is what kills the bridge and takes the shim back
+        out of the game folder, so killing the window's child used to leave a bridge holding
+        vJoy invisibly and a dinput8.dll sitting in somebody's game directory. A file play.ps1
+        polls for costs one line there and makes the ordinary exit path do the cleanup.
+        """
+        if self.proc is None or self.proc.poll() is not None:
+            self._ended()
+            return
+        self._request_stop()
+        # Waiting here would freeze the window for as long as cleanup takes. _poll already
+        # runs four times a second and already notices the process ending, so it does the
+        # waiting and kills only if the deadline passes.
+        self.stop_deadline = time.monotonic() + STOP_GRACE
+        self.stop_btn.configure(state="disabled")
+        self._say("Stopping. play.ps1 is cleaning up the game folder.")
+
+    def _request_stop(self):
+        """Touch the file play.ps1 polls for. Returns whether it worked."""
+        try:
+            with open(STOP_REQUEST, "w", encoding="utf-8") as fh:
+                fh.write("stop\n")
+            return True
+        except Exception:
+            return False               # killing is the fallback for exactly this
 
     def _ended(self):
         self.proc = None
+        self.stop_deadline = None
+        try:
+            os.remove(STOP_REQUEST)
+        except OSError:
+            pass
         self.start_btn.configure(state="normal")
         self.stop_btn.configure(state="disabled")
 
@@ -652,8 +712,24 @@ class App(object):
             # notice. Without this the window sits looking healthy while the game gets no wheel
             # input -- exactly how the read-only-section bug in ShimView stayed invisible.
             self.warned_no_bridge = True
-            self._say("The bridge has not come up after %d seconds -- the game will get no "
-                      "wheel input. Check the newest log in logs\." % int(BRIDGE_GRACE))
+            # Quote the log rather than pointing at it. The bridge always says why it gave up,
+            # in a console nobody can see, in a file nobody opens. "vJoy device 1 is busy"
+            # sitting on screen is the difference between five seconds and a lost test run.
+            reason = last_log_line()
+            if reason:
+                self._say("The bridge did not start: %s" % reason)
+            else:
+                self._say("The bridge has not come up after %d seconds. The game will get no "
+                          "wheel input. Check the newest log in logs." % int(BRIDGE_GRACE))
+
+        if (self.stop_deadline is not None and self.proc is not None
+                and time.monotonic() > self.stop_deadline):
+            # Asking did not work. Kill it, and say what that leaves behind rather than
+            # reporting a clean stop that did not happen.
+            self.stop_deadline = None
+            self.proc.terminate()
+            self._say("play.ps1 did not stop when asked, so it was killed. The shim may "
+                      "still be in the game folder.")
         self.root.after(POLL_MS, self._poll)
 
     def _vjoy_help(self):
@@ -716,8 +792,17 @@ class App(object):
             pass
 
     def _quit(self):
+        # Unlike the Stop button, there is no poll loop left to finish the job: the window is
+        # going away. So this one waits, and closing takes a few seconds when a game was
+        # running. That is the right trade against leaving a bridge on vJoy and a dinput8.dll
+        # in somebody's game folder, which is what closing this window used to do.
         if self.proc is not None and self.proc.poll() is None:
-            self._stop()
+            self._request_stop()
+            try:
+                self.proc.wait(timeout=STOP_GRACE)
+            except Exception:
+                self.proc.terminate()
+            self._ended()
         self.view.close()
         self.root.destroy()
 
