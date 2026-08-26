@@ -186,8 +186,13 @@ class free_wheel(object):
 
     At rest the firmware applies its own very stiff auto-centering, which fights you and
     swamps any manual movement you are trying to measure. Claiming the motor -- even with
-    a ZERO-magnitude effect -- suspends it, so the wheel goes loose. Releasing the effect
-    hands the stock centering back.
+    a ZERO-magnitude effect -- suspends it, so the wheel goes loose.
+
+    Releasing the effect does NOT hand the stock centering back, though this used to say it
+    did. Measured 2026-08-26 (evidence/centring_test.py): unload and reset both returned True
+    and the wheel then stayed exactly as slack as it had been while the effect was held. Only
+    ending the process restores it. __exit__ still drops the effect, because leaving one
+    loaded is worse -- just do not expect the wheel to stiffen again afterwards.
     """
 
     def __init__(self, session, seconds):

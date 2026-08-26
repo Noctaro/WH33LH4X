@@ -128,14 +128,12 @@ class WgiMotorSink(MotorSink):
 
     name = "wgi"
 
-    def __init__(self, motor, loop, max_force=1.0, gain=1.0, hold_seconds=3600.0,
-                 initial_force=0.0):
+    def __init__(self, motor, loop, max_force=1.0, gain=1.0, hold_seconds=3600.0):
         super().__init__(max_force)
         self.motor = motor
         self.loop = loop
         self.gain = clamp(abs(gain))
         self.hold_seconds = hold_seconds
-        self.initial_force = initial_force
         self.effect = None
         self.foreground_hint = None
         self._vector3 = None
@@ -188,15 +186,17 @@ class WgiMotorSink(MotorSink):
         except Exception as exc:
             log.event("sink.gain_failed", error=repr(exc))
 
-        # The magnitude the effect is LOADED with, which is not always 0. wgi_probe loads a
-        # fresh effect already carrying the force it wants and reliably produces torque; this
-        # sink loads at zero and rewrites afterwards, and on 2026-08-25 that path drove nothing
-        # at 0.60 while wgi_probe moved the same motor at 0.10 a minute later. Which of the two
-        # differences matters is not yet established, so this is a knob rather than a fix --
-        # see stiction_test.py, which uses it to tell the two apart.
-        first = clamp(self.initial_force, self.max_force)
+        # Loaded at ZERO and rewritten afterwards -- the order shim/wgi.c uses, and the order
+        # measured to work. 2026-08-26, evidence/revive_test.py: with the motor deliberately
+        # silenced by low force, a fresh effect loaded at zero and THEN commanded to 0.30 drove
+        # the wheel, while a fresh effect loaded ALREADY CARRYING 0.30 stayed silent (0 of 2),
+        # as did waiting without reloading (0 of 2).
+        #
+        # This used to be an `initial_force` knob, kept because wgi_probe pre-charges its
+        # effect and looked the more reliable of the two. That reading is now contradicted,
+        # and no caller ever set it.
         effect = ff.ConstantForceEffect()
-        effect.set_parameters(Vector3(first, 0.0, 0.0),
+        effect.set_parameters(Vector3(0.0, 0.0, 0.0),
                               timedelta(seconds=self.hold_seconds))
 
         result = self.loop.run_until_complete(self.motor.load_effect_async(effect))
@@ -208,9 +208,8 @@ class WgiMotorSink(MotorSink):
         self.effect = effect
         effect.start()
         self._started = True
-        self._last = first
-        log.event("sink.open", sink=self.name, gain=self.gain, max_force=self.max_force,
-                  initial_force=first)
+        self._last = 0.0
+        log.event("sink.open", sink=self.name, gain=self.gain, max_force=self.max_force)
         return self
 
     def close(self):

@@ -97,9 +97,15 @@ window re-grabs it automatically and prints `[foreground OK]` / `[!! NOT foregro
 each second so you can see the state instead of guessing.
 
 **Releasing the wheel feels looser, not weaker.** At idle the firmware runs its own strong
-centering spring. The moment any effect takes the motor, that spring is suspended — so even
-a gentle effect feels looser than the resting wheel. Press `r` to give the motor back to the
-firmware and get stock centering again.
+centering spring — with nothing claiming the device the wheel returns to centre by itself,
+precisely and hard. The moment this process takes the motor that spring is suspended and the
+wheel goes slack, so even a gentle effect feels looser than the resting wheel.
+
+**`r` unloads the effect, but it does not give the spring back.** Measured 2026-08-26
+([`evidence/centring_test.py`](evidence/centring_test.py)): after `try_unload_effect_async` and
+`try_reset_async` both returned `True`, six hand-pushed quarter turns held their position
+exactly as they did with the effect still loaded. The device stays claimed for the life of the
+process — exit it to get stock centering back.
 
 ## Menu reference
 

@@ -15,7 +15,7 @@ New entries are welcome — copy the [template](#template-for-a-new-game) at the
 <!-- BEGIN generated from games.json -- edit games.json, not this table -->
 | Game | Status | Needs setup? | Verified |
 |---|---|---|---|
-| [DiRT 4](#dirt-4) | 🟡 Playable -- Steering, pedals and force feedback all work -- the wheel loads up in a corner and pulls back to centre. | Yes -- vJoy must be registered as a wheel | 2026-08-25 |
+| [DiRT 4](#dirt-4) | 🟡 Playable -- Steering, pedals and force feedback all work -- the wheel loads up in a corner and pulls back to centre. | Yes -- vJoy must be registered as a wheel | 2026-08-26 |
 | [RaceRoom Racing Experience](#raceroom-racing-experience) | ⚪ Untested | Unknown | — |
 | [Automobilista 2](#automobilista-2) | ⚪ Untested | Unknown | — |
 <!-- END generated -->
@@ -74,13 +74,21 @@ Back up `device_defines.xml` first. Steam's *Verify integrity of game files* res
 anything goes wrong, and will also remove them on a game update — expect to reapply after
 patches.
 
-### Why the action map is needed
+### Why the action map is provided
 
 The engine binds steering as **two halves of one axis** (`di_x_axis` `type="lower"` and
-`type="upper"`). Binding that through the game's own UI fails: assigning the first direction
-works, and assigning the second drops the device with *"Steuerungsgerät geändert / the
-connection to an input device was disconnected"*. Declaring both halves in XML avoids the UI
-path entirely.
+`type="upper"`). The action map declares both halves up front, so a fresh install has working
+steering without going near the settings screen.
+
+This section used to say the action map was the *only* way to bind steering, because assigning
+the second direction in the game's own UI dropped the device with *"Steuerungsgerät geändert /
+the connection to an input device was disconnected"*. **That was a symptom of the unregistered
+device, not of the UI.** Re-tested 2026-08-26 with vJoy registered as `type="wheel"`: steering
+was rebound to a button and then reassigned to the axis from the game's own settings screen,
+with no drop.
+
+Untested: whether a fresh install with `device_defines.xml` edited but *no* action map can bind
+steering through the UI alone. Both files were present in that test, so step 2 stays.
 
 ### Settings that work
 

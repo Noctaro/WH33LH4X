@@ -68,6 +68,9 @@ FEEL = [
 ]
 
 PD_NOTE = (
+    "Why a spring at all: this wheel has a strong centring spring of its own, but it stays "
+    "suspended for as long as the bridge holds the motor (measured 2026-08-26). Without one "
+    "of these the wheel sits wherever you leave it.\n\n"
     "Spring and Damper are a pair. The spring does the centring; the damper stops it "
     "overshooting and hunting. Raise them together.\n\n"
     "If you know control theory: this is a PD controller. Spring is the proportional term "
