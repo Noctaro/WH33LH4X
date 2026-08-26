@@ -148,6 +148,7 @@ user32 = ctypes.WinDLL("user32", use_last_error=True)
 
 WS_OVERLAPPEDWINDOW = 0x00CF0000
 SW_SHOW = 5
+SW_HIDE = 0
 CW_USEDEFAULT = -2147483648
 PM_REMOVE = 0x0001
 
@@ -232,6 +233,19 @@ class PumpThread(threading.Thread):
             print("        enumerate and force output will be silent.")
             log.event("foreground.refused")
         return ok
+
+    def hide(self):
+        """
+        Put the window away while keeping the message pump running.
+
+        Only safe once nothing in this process still needs Windows.Gaming.Input. Enumeration,
+        force output and position reads are all foreground-gated, and a hidden window cannot
+        hold the foreground -- so calling this early silently breaks all three. The bridge
+        calls it only after the shim reports itself live, which is the point WGI stops being
+        used in this process at all.
+        """
+        if self.hwnd:
+            user32.ShowWindow(self.hwnd, SW_HIDE)
 
     def stop(self):
         self._stop.set()

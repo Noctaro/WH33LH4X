@@ -57,7 +57,11 @@ param(
     [switch] $NoFfb,
     # How long to wait for the game process to show up. Steam can take a while when it has to
     # start the client, update, or prompt for a login.
-    [int] $StartTimeout = 120
+    [int] $StartTimeout = 120,
+    # Start the bridge without a console window. For the GUI, which reports bridge state in
+    # its own window and would otherwise put a second window on screen for every session.
+    # A bare run leaves the console visible: from a terminal, the bridge's output IS the UI.
+    [switch] $Quiet
 )
 
 $ErrorActionPreference = 'Stop'
@@ -189,7 +193,14 @@ try {
         # quiet way to break argument handling later in the script.
         $bridgeArgs = @($bridge, '--gain', $Gain, '--max-force', $MaxForce)
         if ($NoFfb) { $bridgeArgs += '--no-ffb' }
-        $bridgeProc = Start-Process -FilePath $python -ArgumentList $bridgeArgs -PassThru
+        # -WindowStyle Hidden rather than -NoNewWindow: the bridge still gets a console, so
+        # its stdout handles stay valid and every print() keeps working. -NoNewWindow would
+        # hand it this script's console, and under the GUI there is not one.
+        $bridgeProc = if ($Quiet) {
+            Start-Process -FilePath $python -ArgumentList $bridgeArgs -PassThru -WindowStyle Hidden
+        } else {
+            Start-Process -FilePath $python -ArgumentList $bridgeArgs -PassThru
+        }
         if ($NoFfb) {
             Write-Host "bridge started (pid $($bridgeProc.Id))  INPUT ONLY -- no force feedback"
             Write-Host "  Bind your controls now, then restart without -NoFfb to play."

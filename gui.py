@@ -33,9 +33,10 @@ RUN IT WITH pythonw.exe so there is no console window:
     .\.venv\Scripts\pythonw.exe gui.py
 """
 
+import ctypes
 import json
-import mmap
 import os
+import time
 import struct
 import subprocess
 import sys
@@ -50,6 +51,9 @@ TUNE = os.path.join(ROOT, "tune.json")
 GAMES = os.path.join(ROOT, "games.json")
 
 POLL_MS = 250
+# How long the bridge gets to appear after Start before the window says it has not. Generous:
+# WGI enumeration alone can take several seconds when the wheel was only just plugged in.
+BRIDGE_GRACE = 20.0
 
 # The wheel-feel knobs, and the range the GUI allows.
 #
@@ -83,53 +87,85 @@ PD_NOTE = (
 
 # --------------------------------------------------------------------------- shared section
 
+# Watching a shared section must never CREATE one. See ShimView.
+FILE_MAP_READ = 0x0004
+_k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+_k32.OpenFileMappingW.restype = ctypes.c_void_p
+_k32.OpenFileMappingW.argtypes = (ctypes.c_ulong, ctypes.c_int, ctypes.c_wchar_p)
+_k32.MapViewOfFile.restype = ctypes.c_void_p
+_k32.MapViewOfFile.argtypes = (ctypes.c_void_p, ctypes.c_ulong, ctypes.c_ulong,
+                               ctypes.c_ulong, ctypes.c_size_t)
+_k32.UnmapViewOfFile.argtypes = (ctypes.c_void_p,)
+_k32.CloseHandle.argtypes = (ctypes.c_void_p,)
+_k32.GetTickCount64.restype = ctypes.c_ulonglong
+
+
 class ShimView(object):
     """
-    READ-ONLY view of the shim's shared section.
+    READ-ONLY view of the shim's shared section. It observes; it owns nothing.
 
     It does NOT use IpcMotorSink, and that is not a style preference. `IpcMotorSink.open()`
     stamps the bridge heartbeat, and the shim treats that stamp as "the bridge is alive" --
     so a GUI that opened one would make the shim hold the motor on behalf of a bridge that is
     not running. The struct layout is still taken from IpcMotorSink rather than copied, so
     there is one definition of the wire format and it stays matched to shim/ipc.h.
+
+    IT ALSO MUST NOT CREATE THE SECTION, WHICH IS THE HARDER HALF. This class used to call
+    `mmap.mmap(-1, size, tagname=NAME, access=ACCESS_READ)`. With fileno -1 that CREATES the
+    mapping when none exists -- and creates it PAGE_READONLY. Every later writer then fails:
+    the bridge died on `OSError [WinError 87]` a second after starting, and the shim logged
+    `ipc: MapViewOfFile failed, err=87` from inside the game. The game ran with no wheel input
+    at all, and the GUI cheerfully reported "Bridge running" while showing `not running`.
+
+    It only bit once the GUI became the thing that starts the bridge, because whoever touches
+    the section first creates it, and pressing Start guarantees that is the GUI.
+
+    So: OpenFileMappingW, which FAILS when there is nothing to open, instead of mmap, which
+    invents one. Opened and closed per read, so a dead bridge's section is not held alive by
+    the window that was only ever meant to watch it.
     """
-
-    def __init__(self):
-        self._mm = None
-
-    def _attach(self):
-        if self._mm is not None:
-            return True
-        try:
-            self._mm = mmap.mmap(-1, IpcMotorSink._STRUCT.size, tagname=IpcMotorSink._NAME,
-                                 access=mmap.ACCESS_READ)
-        except Exception:
-            self._mm = None
-        return self._mm is not None
 
     def read(self):
         """(shim_alive, shim_state, bridge_alive) -- all False/None when nothing is running."""
-        if not self._attach():
+        blob = self._snapshot()
+        if blob is None:
             return (False, IpcMotorSink.STATE_NONE, False)
         try:
-            magic, _version = struct.unpack_from("<II", self._mm, 0)
+            magic, _version = struct.unpack_from("<II", blob, 0)
             if magic != IpcMotorSink._MAGIC:
                 return (False, IpcMotorSink.STATE_NONE, False)
-            bridge_tick, shim_tick, state = struct.unpack_from("<QQI", self._mm, 16)
+            bridge_tick, shim_tick, state = struct.unpack_from("<QQI", blob, 16)
         except Exception:
             return (False, IpcMotorSink.STATE_NONE, False)
 
-        import ctypes
-        now = ctypes.windll.kernel32.GetTickCount64()
+        now = _k32.GetTickCount64()
         fresh = IpcMotorSink._STALE_MS
         return (bool(shim_tick) and (now - shim_tick) < fresh,
                 state,
                 bool(bridge_tick) and (now - bridge_tick) < fresh)
 
+    @staticmethod
+    def _snapshot():
+        """A copy of the section's bytes, or None when nobody has published one."""
+        size = IpcMotorSink._STRUCT.size
+        handle = _k32.OpenFileMappingW(FILE_MAP_READ, 0, IpcMotorSink._NAME)
+        if not handle:
+            return None
+        view = None
+        try:
+            view = _k32.MapViewOfFile(handle, FILE_MAP_READ, 0, 0, size)
+            if not view:
+                return None
+            return ctypes.string_at(view, size)
+        except Exception:
+            return None
+        finally:
+            if view:
+                _k32.UnmapViewOfFile(view)
+            _k32.CloseHandle(handle)
+
     def close(self):
-        if self._mm is not None:
-            self._mm.close()
-            self._mm = None
+        """Nothing is held open between reads, so there is nothing to release."""
 
 
 def is_steam_game(exe_path, game=None):
@@ -226,6 +262,12 @@ class App(object):
         self.notes = GameNotes()
         self.view = ShimView()
         self.proc = None
+        # Start time and whether the bridge was EVER seen alive, so a bridge that dies during
+        # startup can be reported. play.ps1 outlives it -- it goes on waiting for the game --
+        # so its exit code says nothing about the bridge underneath.
+        self.started_at = None
+        self.bridge_seen = False
+        self.warned_no_bridge = False
         self.tune = self._load_tune()
         self.game = tk.StringVar(value=self._load_setting("game", ""))
 
@@ -338,8 +380,10 @@ class App(object):
         appid = (game or {}).get("steam_appid")
 
         ps = os.path.join(ROOT, "play.ps1")
+        # -Quiet keeps the bridge's console off screen. This window already reports bridge
+        # state in its Status panel, so a console adds a second window and no information.
         cmd = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ps,
-               "-Game", exe]
+               "-Game", exe, "-Quiet"]
         # STEAM DRM RELAUNCHES THE GAME THROUGH THE CLIENT, so the exe we start exits at once
         # and the real game appears as a different process. Launching it ourselves therefore
         # looks like the game quitting instantly and play.ps1 correctly tears everything down.
@@ -350,6 +394,9 @@ class App(object):
         try:
             # CREATE_NO_WINDOW: the point of a GUI is not to spawn a console behind it.
             self.proc = subprocess.Popen(cmd, cwd=ROOT, creationflags=0x08000000)
+            self.started_at = time.monotonic()
+            self.bridge_seen = False
+            self.warned_no_bridge = False
         except Exception as exc:
             self._say("Could not start: %s" % exc)
             return
@@ -365,13 +412,16 @@ class App(object):
             # nothing says a person has to be the one to ask it.
             try:
                 os.startfile("steam://rungameid/%d" % appid)   # noqa: S606
-                self._say("Bridge running. Asked Steam to launch the game -- "
-                          "play.ps1 is waiting for it.")
+                # Say what was REQUESTED, never what is true -- the badges above are the only
+                # things reading real state. This line used to claim "Bridge running" while the
+                # badge beside it said "not running", and the badge was the honest one.
+                self._say("Asked Steam to launch the game. play.ps1 is starting the bridge "
+                          "-- watch the Bridge badge.")
             except Exception as exc:
-                self._say("Bridge running. Start the game from Steam now. (%s)" % exc)
+                self._say("Could not ask Steam to launch it (%s). Start it from Steam "
+                          "yourself." % exc)
         else:
-            self._say("Bridge running. START THE GAME FROM STEAM NOW -- "
-                      "play.ps1 waits up to 10 minutes for it.")
+            self._say("START THE GAME FROM STEAM NOW -- play.ps1 waits up to 10 minutes.")
 
     def _stop(self):
         if self.proc is not None and self.proc.poll() is None:
@@ -417,10 +467,22 @@ class App(object):
             IpcMotorSink.STATE_ACTIVE: "driving",
         }.get(state, "—") if shim_alive else "not in a game")
 
+        if bridge_alive:
+            self.bridge_seen = True
+
         if self.proc is not None and self.proc.poll() is not None:
             self._say("play.ps1 exited (code %s). The game folder has been cleaned up."
                       % self.proc.returncode)
             self._ended()
+        elif (self.proc is not None and not self.bridge_seen and not self.warned_no_bridge
+              and self.started_at is not None
+              and time.monotonic() - self.started_at > BRIDGE_GRACE):
+            # play.ps1 survives a bridge that died at startup, so nothing else here would ever
+            # notice. Without this the window sits looking healthy while the game gets no wheel
+            # input -- exactly how the read-only-section bug in ShimView stayed invisible.
+            self.warned_no_bridge = True
+            self._say("The bridge has not come up after %d seconds -- the game will get no "
+                      "wheel input. Check the newest log in logs\." % int(BRIDGE_GRACE))
         self.root.after(POLL_MS, self._poll)
 
     # -- small helpers -------------------------------------------------------

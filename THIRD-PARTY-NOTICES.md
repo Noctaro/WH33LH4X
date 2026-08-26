@@ -22,11 +22,20 @@ Source alone carries no third-party binaries. The bundle built by
 | `lib\winrt\*.pyd`, `lib\winrt\msvcp140.dll` | inside the PyWinRT wheels | MIT for PyWinRT; `msvcp140.dll` is Microsoft's C++ runtime, redistributed as PyWinRT ships it |
 | `lib\pyvjoy\libdJoyInterface.dll` (and `x86`) | inside the `pyvjoyffb` wheel | MIT, (c) 2017 Shaul Eizikovich |
 | `shim\dinput8.dll` | built from `shim/*.c` in this repo | ours, MIT |
+| `python\_tkinter.pyd`, `python\tcl86t.dll`, `python\tk86t.dll`, `lib\tkinter\*`, `lib\tcl8.6\*`, `lib\tk8.6\*` | CPython 3.11.9 **full Windows install** | PSF for the Python parts; Tcl/Tk is BSD-style, text in `python\LICENSE.txt` |
 
 `msvcp140.dll` is worth calling out because it contradicts a reasonable assumption: the **shim**
 needs no VC++ redistributable, since zig links it against OS API sets only. That remains true.
 The Python side is separate — PyWinRT bundles the C++ runtime beside its extension modules, and
 the bundle carries it because PyWinRT does.
+
+**Tcl/Tk is the one row that does not come from a downloaded artifact.** The embeddable
+distribution ships no tkinter at all, so `packaging/build_bundle.ps1` copies those six paths out
+of the build machine's full CPython install — the same 3.11.9 release, which the build enforces
+rather than assumes. The licence obligation is already met by a file the bundle carries anyway:
+CPython's `LICENSE.txt` reproduces the original Tcl/Tk terms in its incorporated-software
+section. Worth stating explicitly, because "it is covered by the Python licence that is already
+in the folder" is true here but is not a safe reflex in general.
 
 ---
 

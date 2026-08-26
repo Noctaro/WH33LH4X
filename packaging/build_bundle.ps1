@@ -22,6 +22,14 @@
 # tree. Installed in one resolved pass they merge. Installed in separate --target passes, pip
 # overwrites rather than merges and the tree comes out missing namespaces. Do not split it up.
 #
+# WHY TKINTER IS COPIED OUT OF THE HOST PYTHON
+#
+# The embeddable distribution ships no tkinter at all -- no _tkinter.pyd, no tcl/tk DLLs, no
+# script library. gui.py needs all three. They come from the host CPython install, which is
+# why the host has to be the SAME 3.11.x as the pinned runtime; _tkinter.pyd is a C extension
+# tied to one minor version's ABI, and a mismatch reads like a corrupt download rather than a
+# build-machine problem. The check below fails loudly instead.
+#
 # Usage:
 #   .\packaging\build_bundle.ps1                     # build into dist\
 #   .\packaging\build_bundle.ps1 -OutDir C:\somewhere
@@ -58,9 +66,13 @@ $sourceFiles = @(
     'vjoy_bridge.py', 'ffb_render.py', 'probe_log.py', 'live_tune.py',
     'motor_sink.py', 'wgi_probe.py', 'wheel_profile.py',
     'vjoy_ffb_spike.py', 'dinput_abi.py', 'tune_report.py',
+    'gui.py', 'games.json',
     'play.ps1', 'tune.json', 'requirements.txt',
     'README.md', 'GAMES.md', 'COMMANDS.md', 'LICENSE', 'THIRD-PARTY-NOTICES.md'
 )
+
+# gui.py reads games.json at startup for the per-game notes, so the two ship together or the
+# notes panel is empty for every game.
 
 Write-Host "repo:    $repo"
 Write-Host "out:     $staging"
@@ -115,6 +127,49 @@ if ($LASTEXITCODE -ne 0) { Write-Error "pip install --target failed with exit co
 Get-ChildItem $libDir -Recurse -Directory -Filter '__pycache__' |
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 
+# --- tkinter ----------------------------------------------------------------------------------
+# WHERE THE SCRIPT LIBRARY GOES IS NOT ARBITRARY. Tcl searches relative to the folder holding
+# tcl86t.dll, and its first candidate is <that folder>\..\lib\tcl8.6. The DLLs sit in python\
+# and the bundle already has lib\ for vendored packages, so dropping tcl8.6 and tk8.6 into lib\
+# is found with no TCL_LIBRARY, no TK_LIBRARY and no launcher wrapper. That path was read out of
+# the search list Tcl prints when it cannot find init.tcl, not guessed.
+$hostPrefix = & python -c "import sys; print(sys.base_prefix)"
+if ($LASTEXITCODE -ne 0) { Write-Error "Could not ask the host python where it lives." }
+# No % in this -c string: PowerShell mangles percent signs on the way to a native exe, and
+# the resulting SyntaxError points at python rather than at the quoting.
+$hostVer = & python -c "import sys; print(str(sys.version_info[0]) + '.' + str(sys.version_info[1]))"
+$wantVer = ($pyVersion -split '\.')[0..1] -join '.'
+if ($hostVer -ne $wantVer) {
+    Write-Error ("Host python is $hostVer but the bundle pins $wantVer. _tkinter.pyd is built " +
+                 "against one minor version's ABI, so copying it across versions produces an " +
+                 "ImportError at runtime. Build on $wantVer.")
+}
+Write-Host "tkinter: from $hostPrefix (python $hostVer)"
+
+foreach ($f in '_tkinter.pyd', 'tcl86t.dll', 'tk86t.dll') {
+    $src = Join-Path $hostPrefix "DLLs\$f"
+    if (-not (Test-Path $src)) { Write-Error "No $f in $hostPrefix\DLLs -- not a full CPython install?" }
+    Copy-Item $src (Join-Path $pyDir $f)
+}
+$tkinterSrc = Join-Path $hostPrefix 'Lib\tkinter'
+if (-not (Test-Path $tkinterSrc)) { Write-Error "No Lib\tkinter in $hostPrefix." }
+Copy-Item $tkinterSrc (Join-Path $libDir 'tkinter') -Recurse
+foreach ($d in 'tcl8.6', 'tk8.6') {
+    $src = Join-Path $hostPrefix "tcl\$d"
+    if (-not (Test-Path $src)) { Write-Error "No tcl\$d in $hostPrefix." }
+    Copy-Item $src (Join-Path $libDir $d) -Recurse
+}
+
+# 2.1 MB of tcl/tk that nothing in this GUI can reach: tzdata is timezone tables for `clock`,
+# demos are Tk's sample applications. The encoding\ and msgs\ directories STAY -- encodings are
+# loaded on demand and dropping them breaks non-ASCII paths, and msgs\ is what makes the file
+# dialog appear in the user's own language.
+foreach ($d in (Join-Path $libDir 'tcl8.6\tzdata'), (Join-Path $libDir 'tk8.6\demos')) {
+    if (Test-Path $d) { Remove-Item $d -Recurse -Force }
+}
+Get-ChildItem (Join-Path $libDir 'tkinter') -Recurse -Directory -Filter '__pycache__' |
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+
 # --- our own files ----------------------------------------------------------------------------
 foreach ($f in $sourceFiles) {
     $src = Join-Path $repo $f
@@ -143,6 +198,14 @@ $cmdLines = @(
 )
 Set-Content -Path (Join-Path $staging 'WH33LH4X.cmd') -Value $cmdLines -Encoding ASCII
 
+# The window. pythonw.exe rather than python.exe so no console sits behind it, and `start` so
+# the launching cmd closes instead of lingering for the life of the GUI.
+$guiLines = @(
+    '@echo off',
+    'start "" "%~dp0python\pythonw.exe" "%~dp0gui.py" %*'
+)
+Set-Content -Path (Join-Path $staging 'WH33LH4X-GUI.cmd') -Value $guiLines -Encoding ASCII
+
 # --- report and zip --------------------------------------------------------------------------
 $files = @(Get-ChildItem $staging -Recurse -File)
 $size  = ($files | Measure-Object -Property Length -Sum).Sum
@@ -159,3 +222,4 @@ if (-not $SkipZip) {
 Write-Host ""
 Write-Host "verify the runtime with:"
 Write-Host "  $staging\python\python.exe -c ""import winrt.windows.gaming.input.forcefeedback, pyvjoy, typing_extensions; print('imports OK')"""
+Write-Host "  $staging\python\python.exe -c ""import tkinter; tkinter.Tk().destroy(); print('tkinter OK')"""
