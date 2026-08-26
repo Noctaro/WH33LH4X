@@ -67,6 +67,9 @@ $sourceFiles = @(
     'motor_sink.py', 'wgi_probe.py', 'wheel_profile.py',
     'vjoy_ffb_spike.py', 'dinput_abi.py', 'tune_report.py',
     'gui.py', 'games.json',
+    # tune.json is copied from the repo on EVERY build, overwriting whatever the last
+    # bundle had. That is deliberate: a build produces a clean default with no forces
+    # dialled in, rather than inheriting one machine's feel. Do not add preservation.
     'play.ps1', 'tune.json', 'requirements.txt',
     'README.md', 'GAMES.md', 'COMMANDS.md', 'LICENSE', 'THIRD-PARTY-NOTICES.md'
 )

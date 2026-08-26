@@ -12,22 +12,51 @@ just as well, the pre-charge is doing nothing and `initial_force` can go.
     --variant preload   unload, load a fresh effect ALREADY CARRYING 0.30, start
     --variant zero      unload, load a fresh effect at 0.0, start, then set 0.30
     --variant wait      change nothing, just wait the same time and probe again
+    --variant focus     keep the effect, DROP THE FOREGROUND, take it back, probe
 
 `wait` is the third control: if the motor comes back on its own, neither reload proves anything.
 
 RESULT, 2026-08-26, Hori Force Feedback Racing Wheel DLX:
 
-    zero      REVIVED       1 of 1 valid runs
-    preload   still silent  0 of 2
-    wait      still silent  0 of 2
+    zero      revived 1 of 5
+    preload   revived 0 of 2
+    wait      revived 0 of 2
 
-So the pre-charge is not the thing that works -- it is the thing that fails. The 2026-08-25
-claim this script was written to check said the opposite, and it was two uncontrolled runs.
-`initial_force` was dropped from WgiMotorSink the same day.
+NOTHING IN THIS PROCESS REVIVES A SILENCED MOTOR. The first `zero` run did revive, which
+briefly looked like an answer; four more runs of the same variant did not. The single
+success is best read as the spontaneous recovery visible elsewhere in these logs, where a
+probe reports SILENT and a later one reports DRIVES with nothing changed in between. That
+is exactly what the `wait` control exists to catch, and why it stays.
 
-n is small and the positive is a single trial: the second `zero` run never silenced the motor,
-so it returned no verdict. One run also went SILENT -> DRIVES by itself mid-kill, which is why
-`wait` has to stay in any future version of this test.
+What DOES always work is a new process. Every run's baseline probe drove the wheel, six
+times out of six, on a motor that the previous run had left silent.
+
+The 2026-08-25 claim this script was written to check said a PRE-CHARGED load was the
+thing that revived it. That is the worst performer here. `initial_force` was dropped from
+WgiMotorSink on 2026-08-26.
+
+SETTLED, 2026-08-26: DROPPING THE FOREGROUND REVIVES IT, 12 of 12 valid runs, no failures.
+
+    focus     revived 12 of 12 valid    (4 more runs never silenced the motor)
+    zero      revived  1 of 5
+    preload   revived  0 of 2
+    wait      revived  0 of 2
+
+This is the first thing tried that has a mechanism behind it rather than a count.
+Losing the foreground hands the motor back to the firmware, the firmware clears
+whatever latched, and we take it back working. That one mechanism accounts for all
+three things already known: the centring spring returning when you alt-tab out of a
+game, force resuming when you come back, and a fresh process always working, because
+a new process necessarily re-acquires.
+
+The first two runs were treated as preliminary on purpose, because `zero` had revived on
+its first run, been written up as the answer, and then failed four times in a row. Ten
+more runs settled it.
+
+STILL OPEN: whether the shim can trigger this WITHOUT a foreground change. Inside a game
+the game is the foreground, so the shim cannot drop it without minimising the game. If
+releasing the WGI device objects and re-enumerating has the same effect, the shim could
+recover on its own. Unloading the EFFECT does not, which is already measured here.
 
 HOW THE MOTOR IS KILLED. Two strategies, because the first one was wrong.
 
@@ -47,6 +76,7 @@ ONE TRIAL PER PROCESS, because a fresh process is the only known way back.
 
 import argparse
 import asyncio
+import ctypes
 import sys
 import time
 from datetime import timedelta
@@ -60,6 +90,10 @@ import winrt.windows.gaming.input.forcefeedback as ff
 from winrt.windows.foundation.numerics import Vector3
 
 from wgi_probe import PumpThread, has_motor, report, rule, wait_for_devices
+
+SW_MINIMIZE = 6
+SW_RESTORE = 9
+FOCUS_AWAY_SECONDS = 4.0
 
 MOVED = 0.01
 PROBE_FORCE = 0.30
@@ -249,7 +283,8 @@ def kill_stop(eff, wheel, pump, tries=6):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--variant", choices=("preload", "zero", "wait"), required=True)
+    p.add_argument("--variant", choices=("preload", "zero", "wait", "focus"),
+                   required=True)
     p.add_argument("--kill", choices=("low", "stop"), default="low",
                    help="how to silence the motor first (default: low)")
     p.add_argument("--wait", type=float, default=20.0)
@@ -299,6 +334,32 @@ def main():
         if args.variant == "wait":
             time.sleep(3.0)
             revived = probe(eff, wheel, pump, "after waiting")
+        elif args.variant == "focus":
+            # Losing the foreground hands this motor back to the firmware: you feel the
+            # centring spring return, and during normal play force resumes when you come back.
+            # Nothing has ever checked whether that also clears the SILENT state. If it does,
+            # it is the only in-process recovery found so far, and the shim could do it
+            # deliberately instead of the user restarting the game.
+            #
+            # Minimising is the cheapest way to genuinely lose foreground: hiding the window
+            # is not the same thing, and this needs another window to actually become
+            # foreground.
+            user32 = ctypes.windll.user32
+            print("  dropping the foreground for %.0fs ..." % FOCUS_AWAY_SECONDS)
+            user32.ShowWindow(pump.hwnd, SW_MINIMIZE)
+            time.sleep(FOCUS_AWAY_SECONDS)
+            still_ours = user32.GetForegroundWindow() == pump.hwnd
+            print("  foreground actually left us: %s" % (not still_ours))
+            user32.ShowWindow(pump.hwnd, SW_RESTORE)
+            time.sleep(0.4)
+            got_it_back = pump.ensure_foreground()
+            print("  foreground taken back: %s" % got_it_back)
+            time.sleep(0.6)
+            if not got_it_back:
+                print("  INCONCLUSIVE -- could not take the foreground back, so a SILENT")
+                print("  result here would only mean the probe was gated off.")
+                return 1
+            revived = probe(eff, wheel, pump, "after focus round trip")
         else:
             eff.unload()
             time.sleep(1.0)

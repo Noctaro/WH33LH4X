@@ -187,14 +187,18 @@ class WgiMotorSink(MotorSink):
         except Exception as exc:
             log.event("sink.gain_failed", error=repr(exc))
 
-        # Loaded at ZERO and rewritten afterwards -- the order shim/wgi.c uses, and the order
-        # measured to work. 2026-08-26, evidence/revive_test.py: with the motor deliberately
-        # silenced by low force, a fresh effect loaded at zero and THEN commanded to 0.30 drove
-        # the wheel, while a fresh effect loaded ALREADY CARRYING 0.30 stayed silent (0 of 2),
-        # as did waiting without reloading (0 of 2).
+        # Loaded at ZERO and rewritten afterwards. This is the order shim/wgi.c uses, and
+        # the order that drives DiRT 4 for hours.
+        #
+        # It is NOT a recovery mechanism. Once this motor goes silent, nothing inside the
+        # process brings it back: measured 2026-08-26 with evidence/revive_test.py, a
+        # fresh effect loaded at zero then commanded to 0.30 revived it 1 time in 5, a
+        # fresh effect loaded already carrying 0.30 revived it 0 times in 2, and simply
+        # waiting revived it 0 times in 2. The single success is best read as the
+        # spontaneous recovery seen elsewhere in those runs. A NEW PROCESS always works.
         #
         # This used to be an `initial_force` knob, kept because wgi_probe pre-charges its
-        # effect and looked the more reliable of the two. That reading is now contradicted,
+        # effect and looked the more reliable of the two. That reading is contradicted,
         # and no caller ever set it.
         effect = ff.ConstantForceEffect()
         effect.set_parameters(Vector3(0.0, 0.0, 0.0),

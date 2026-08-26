@@ -31,9 +31,15 @@ The claim under test is therefore CONFIRMED (our process suspends the factory sp
 sentence that was actually false was the one about giving it back. Fixed in README.md and in
 wheel_profile.free_wheel.
 
-What block B cannot separate: whether the spring is suspended by HOLDING AN EFFECT or merely by
-this process opening the motor at all. Both blocks look identical. It does not matter to the
-bridge, which always holds an effect, but do not state the stronger version.
+WHY BOTH BLOCKS LOOK THE SAME: the pump window holds the FOREGROUND for the whole run, and
+the foreground is what holds the motor. Unloading the effect was never the variable that
+mattered. Observed independently during play: alt-tab out of a running game and the
+firmware spring returns, alt-tab back and force resumes. Same gate as enumeration,
+position reads and force output, all of which WGI ties to the foreground.
+
+So this script cannot separate 'suspended by holding an effect' from 'suspended by being
+in front with the motor open', and it never could. To test that properly, drop the
+foreground rather than the effect.
 
 The ONLY honest control for "does this wheel centre on its own" is to run no software at all
 and push it by hand.

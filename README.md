@@ -105,15 +105,19 @@ window re-grabs it automatically and prints `[foreground OK]` / `[!! NOT foregro
 each second so you can see the state instead of guessing.
 
 **Releasing the wheel feels looser, not weaker.** At idle the firmware runs its own strong
-centering spring — with nothing claiming the device the wheel returns to centre by itself,
-precisely and hard. The moment this process takes the motor that spring is suspended and the
-wheel goes slack, so even a gentle effect feels looser than the resting wheel.
+centering spring. With nothing claiming the device the wheel returns to centre by itself,
+precisely and hard. The moment this process takes the motor that spring is suspended and
+the wheel goes slack, so even a gentle effect feels looser than the resting wheel.
 
-**`r` unloads the effect, but it does not give the spring back.** Measured 2026-08-26
-([`evidence/centring_test.py`](evidence/centring_test.py)): after `try_unload_effect_async` and
-`try_reset_async` both returned `True`, six hand-pushed quarter turns held their position
-exactly as they did with the effect still loaded. The device stays claimed for the life of the
-process — exit it to get stock centering back.
+**What gives the spring back is losing the FOREGROUND, not unloading the effect.** Alt-tab
+away from a running game and the firmware spring returns; go back and force works again.
+`r` unloads the effect but changes nothing on its own: measured 2026-08-26 with
+[`evidence/centring_test.py`](evidence/centring_test.py), after `try_unload_effect_async`
+and `try_reset_async` both returned `True`, six hand-pushed quarter turns held their
+position exactly as they had with the effect still loaded, because the probe window still
+held the foreground throughout. That is the same gate as everything else here: WGI ties
+enumeration, position reads and force output to the foreground, and the motor claim with
+them.
 
 ## Menu reference
 

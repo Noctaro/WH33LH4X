@@ -188,11 +188,17 @@ class free_wheel(object):
     swamps any manual movement you are trying to measure. Claiming the motor -- even with
     a ZERO-magnitude effect -- suspends it, so the wheel goes loose.
 
-    Releasing the effect does NOT hand the stock centering back, though this used to say it
-    did. Measured 2026-08-26 (evidence/centring_test.py): unload and reset both returned True
-    and the wheel then stayed exactly as slack as it had been while the effect was held. Only
-    ending the process restores it. __exit__ still drops the effect, because leaving one
-    loaded is worse -- just do not expect the wheel to stiffen again afterwards.
+    Releasing the effect does NOT hand the stock centering back, though this used to say
+    it did. Measured 2026-08-26 (evidence/centring_test.py): unload and reset both
+    returned True and the wheel stayed exactly as slack as it had been while the effect
+    was held.
+
+    What actually returns the motor to the firmware is LOSING THE FOREGROUND. Alt-tab out
+    of a running game and the centring spring comes back; alt-tab in and force resumes.
+    That is why the measurement above saw no difference between its two blocks: the probe
+    window held the foreground for both. __exit__ still drops the effect, because leaving
+    one loaded is worse, but do not expect the wheel to stiffen again while this process
+    is still in front.
     """
 
     def __init__(self, session, seconds):

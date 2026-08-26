@@ -36,8 +36,8 @@ New entries are welcome — copy the [template](#template-for-a-new-game) at the
 ## DiRT 4
 
 **Status:** 🟡 Steering, pedals and force feedback all work — the wheel loads up in a corner
-and pulls back to centre. The one rough edge is that the motor can stop producing torque and
-need the game restarting; see [Known issues](#dirt-4-known-issues).
+and pulls back to centre. The one rough edge is that the motor can stop producing torque,
+which an alt-tab out and back clears; see [Known issues](#dirt-4-known-issues).
 
 **Verified:** 2026-08-25, Steam build, app id 421020. Re-confirmed from the packaged
 bundle (embeddable Python, prebuilt shim) rather than a source checkout.
@@ -123,11 +123,15 @@ DiRT 4's centring force is proportional to steering angle, so it is weakest exac
 positions are. "It holds position instead of centring" is at least as likely to be cogging at one
 of those spots as it is to be stiction.
 
-Commanding a force this wheel cannot act on also has a cost. After about a second of it, the
-motor goes silent for the rest of the process -- audible as two short hums -- while reporting
-itself perfectly healthy through every `Windows.Gaming.Input` call. Whether that is a driver
-stall cut-out or something else is a guess; the behaviour is measured and reproducible. It is
-why `stiction_test.py` defaults to `--step 0.02` and warns below it.
+Commanding a force this wheel cannot act on also has a cost. After about a second of it,
+the motor goes silent, audible as two short hums, while reporting itself perfectly
+healthy through every `Windows.Gaming.Input` call. Whether that is a driver stall cut-out
+or something else is a guess; the behaviour is measured and reproducible. It is why
+`stiction_test.py` defaults to `--step 0.02` and warns below it.
+
+This used to say the motor stays silent for the rest of the process. It does not: giving
+up the foreground and taking it back clears it, 12 times out of 12. See
+[Known issues](#dirt-4-known-issues).
 
 Against the session above, only **10% of non-zero output falls below breakaway and 0.3% clips**.
 So the bottom of the range is not where the problem is, and the headroom at the top is where the
@@ -182,9 +186,24 @@ In game:
 ### Known issues
 
 - **The motor can go silent, and nothing looks wrong when it does.** Correct force is
-  commanded, the bridge log looks perfect, the effect still reports as running, and the wheel
-  is dead. **Restarting the game clears it** -- the motor claim lives in the shim inside the
-  game process, so a fresh game is a fresh motor. The bridge does not need restarting.
+  commanded, the bridge log looks perfect, the effect still reports as running, and the
+  wheel is dead.
+
+  **ALT-TAB OUT OF THE GAME AND BACK IN.** That clears it, and you do not have to quit.
+  Measured 2026-08-26 with `evidence/revive_test.py --variant focus`: after silencing the
+  motor deliberately, dropping the foreground for four seconds and taking it back revived
+  it in **12 of 12** runs. Nothing else tried came close. Reloading the effect managed 1
+  in 5, reloading it with the force already applied 0 in 2, and waiting 0 in 2.
+
+  The reason is that this motor belongs to whoever is in the foreground. Losing focus
+  hands it back to the firmware, which clears the fault, and returning takes it again.
+  That is also why the wheel's own centring spring comes back when you alt-tab away, and
+  why restarting the game works: a new process has to re-acquire.
+
+  Restarting the game still works if alt-tab does not. The bridge never needs restarting.
+
+  *Confirmed on a deliberately silenced motor outside a game. Doing it from inside a
+  running game is the same foreground transition, but has not been separately measured.*
 
   Two mechanisms are known to produce exactly this, and they are told apart by evidence rather
   than by symptom:
