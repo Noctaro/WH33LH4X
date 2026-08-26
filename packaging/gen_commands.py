@@ -165,7 +165,7 @@ WH33LH4X.cmd -Game "C:\\...\\dirt4.exe"
 
 Force feedback tuning is not a flag. It lives in `tune.json` and is re-read within half a
 second of a save, so it changes mid-corner without restarting anything — see
-[README](README.md#tuning-force-feedback-while-you-drive).
+[docs/tuning.md](docs/tuning.md).
 
 ---
 

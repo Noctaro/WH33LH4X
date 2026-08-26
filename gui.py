@@ -55,6 +55,18 @@ POLL_MS = 250
 # WGI enumeration alone can take several seconds when the wheel was only just plugged in.
 BRIDGE_GRACE = 20.0
 
+# Strength scales the force the GAME sends. It is the volume knob, and the one people reach
+# for first, so it is the one slider that must be here.
+#
+# The cap is 1.0 because 1.0 is exactly what the game asked for. Above that is amplification,
+# which is a real thing to want on a game that sends weak force, but it is not a first-run
+# knob -- live_tune's button tuner goes to 3.0 and tune.json has no limit at all.
+STRENGTH = ("strength", "Strength", 0.0, 1.0, "how hard the game's own force is felt")
+
+# If it is missing from tune.json, live_tune uses 1.0. Showing 0.0 here would be a lie, and
+# touching the slider would then write that lie to the file.
+TUNE_DEFAULTS = {"strength": 1.0}
+
 # The wheel-feel knobs, and the range the GUI allows.
 #
 # live_tune's own button-tuner permits up to 2.0. This caps lower ON PURPOSE. Spring and damper
@@ -62,6 +74,9 @@ BRIDGE_GRACE = 20.0
 # force already reflects wheel position from tens of milliseconds ago -- GAMES.md records that
 # too much gain makes it hunt, and at worst sweep lock to lock. A slider is easier to move
 # carelessly than a config file is to edit, so the slider gets the smaller range.
+#
+# Strength needs no such caution: it scales the game's force without reading wheel position,
+# so there is no loop to close and nothing to self-excite.
 FEEL = [
     ("spring", "Spring", 0.0, 1.0,
      "pulls back to centre, harder the further off you are"),
@@ -72,6 +87,13 @@ FEEL = [
 ]
 
 PD_NOTE = (
+    "Strength is the volume knob. It multiplies the force the game itself sends, so 1.00 is "
+    "exactly what the game asked for and anything less is quieter. Set this first, before "
+    "touching anything below it.\n\n"
+    "Two things sit above it that this window cannot see. max_force in tune.json caps the "
+    "peak, and the wheel's own strength setting in the HORI device manager app is a gain "
+    "stage of its own worth about 3.5x between its lowest and highest setting. If the whole "
+    "wheel feels wrong at every position of this slider, that app is where to look.\n\n"
     "Why a spring at all: this wheel has a strong centring spring of its own, but it stays "
     "suspended for as long as the bridge holds the motor (measured 2026-08-26). Without one "
     "of these the wheel sits wherever you leave it.\n\n"
@@ -435,29 +457,25 @@ class App(object):
         self.notes_text.configure(state="disabled")
 
     def _build_feel(self, parent):
-        box = ttk.LabelFrame(parent, text="Wheel feel -- adds force the game is not sending",
-                             padding=8)
+        box = ttk.LabelFrame(parent, text="Force feedback", padding=8)
         box.pack(fill="x", pady=(10, 0))
         self.feel_vars = {}
-        for key, label, lo, hi, hint in FEEL:
-            row = ttk.Frame(box)
-            row.pack(fill="x", pady=1)
-            ttk.Label(row, text=label, width=8).pack(side="left")
-            var = tk.DoubleVar(value=float(self.tune.get(key, 0.0)))
-            scale = ttk.Scale(row, from_=lo, to=hi, variable=var, length=150,
-                              command=lambda _v, k=key: self._feel_changed(k))
-            scale.pack(side="left")
-            val = ttk.Label(row, width=5)
-            val.pack(side="left", padx=(6, 6))
-            ttk.Label(row, text=hint, foreground="#555").pack(side="left")
-            self.feel_vars[key] = (var, val)
-            self._update_feel_label(key)
+
+        # Strength first, and set apart: it scales the game's own force, while the three below
+        # add force the game never sent. Putting them in one undivided list implies they are
+        # the same kind of knob.
+        self._feel_row(box, STRENGTH)
+        ttk.Separator(box, orient="horizontal").pack(fill="x", pady=6)
+        ttk.Label(box, text="Added force the game is not sending:",
+                  foreground="#555").pack(anchor="w", pady=(0, 2))
+        for spec in FEEL:
+            self._feel_row(box, spec)
 
         self.feel_hint = tk.StringVar(value="")
         ttk.Label(box, textvariable=self.feel_hint, foreground="#a05000",
                   wraplength=560, justify="left").pack(anchor="w", pady=(6, 0))
         ttk.Button(box, text="What are these?",
-                   command=lambda: self._info("Spring, Damper and Friction", PD_NOTE)
+                   command=lambda: self._info("Strength, Spring, Damper and Friction", PD_NOTE)
                    ).pack(anchor="w", pady=(4, 0))
 
     # -- behaviour -----------------------------------------------------------
@@ -544,10 +562,30 @@ class App(object):
         self.start_btn.configure(state="normal")
         self.stop_btn.configure(state="disabled")
 
+    def _feel_row(self, box, spec):
+        key, label, lo, hi, hint = spec
+        row = ttk.Frame(box)
+        row.pack(fill="x", pady=1)
+        ttk.Label(row, text=label, width=8).pack(side="left")
+        var = tk.DoubleVar(value=float(self.tune.get(key, TUNE_DEFAULTS.get(key, 0.0))))
+        scale = ttk.Scale(row, from_=lo, to=hi, variable=var, length=150,
+                          command=lambda _v, k=key: self._feel_changed(k))
+        scale.pack(side="left")
+        val = ttk.Label(row, width=5)
+        val.pack(side="left", padx=(6, 6))
+        ttk.Label(row, text=hint, foreground="#555").pack(side="left")
+        self.feel_vars[key] = (var, val)
+        self._update_feel_label(key)
+
     def _feel_changed(self, key):
         self._update_feel_label(key)
         self.tune[key] = round(self.feel_vars[key][0].get(), 3)
         self._save_tune()
+        # The hint follows the slider just moved. A hint about Spring left standing while
+        # somebody drags Strength reads as a comment on Strength.
+        if key == "strength":
+            self._strength_hint()
+            return
         spring = self.tune.get("spring", 0.0)
         damper = self.tune.get("damper", 0.0)
         if spring >= 0.3 and damper <= 0.01:
@@ -557,6 +595,26 @@ class App(object):
             self.feel_hint.set("A spring is weakest near centre, and this wheel has spots "
                                "there it will not move at any usable force. Expect it to "
                                "stop just short -- that is the hardware, not the setting.")
+        else:
+            self.feel_hint.set("")
+
+    def _strength_hint(self):
+        """
+        Explain the two ways this slider stops behaving like a volume knob.
+
+        max_force is not on screen, so a slider that visibly moves while the wheel does not
+        change is otherwise unexplainable. It clips whenever the scaled force exceeds it, and
+        a game at full lock sends 1.0, so strength above max_force buys nothing there.
+        """
+        strength = self.tune.get("strength", 1.0)
+        ceiling = self.tune.get("max_force", 1.0)
+        if strength <= 0.0:
+            self.feel_hint.set("Zero switches the game's own force off. Only Spring, Damper "
+                               "and Friction are left.")
+        elif ceiling and strength > ceiling:
+            self.feel_hint.set("max_force in tune.json caps output at %.2f, so the strongest "
+                               "moments the game sends are already clipped. Raising this "
+                               "further only affects the quieter ones." % ceiling)
         else:
             self.feel_hint.set("")
 

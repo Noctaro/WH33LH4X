@@ -1,7 +1,7 @@
 r"""
 centring_test.py -- does holding an effect really suspend the wheel's own auto-centring?
 
-THE CLAIM UNDER TEST (README.md:96, relied on by wheel_profile.free_wheel):
+THE CLAIM UNDER TEST (docs/hardware.md, relied on by wheel_profile.free_wheel):
     holding the motor makes the wheel go limp, i.e. the firmware stops pulling it to centre.
 
 It has never been measured, and it is now LOAD-BEARING FOR A FEATURE: the GUI's spring slider

@@ -71,7 +71,7 @@ $sourceFiles = @(
     # bundle had. That is deliberate: a build produces a clean default with no forces
     # dialled in, rather than inheriting one machine's feel. Do not add preservation.
     'play.ps1', 'tune.json', 'requirements.txt',
-    'README.md', 'GAMES.md', 'COMMANDS.md', 'LICENSE', 'THIRD-PARTY-NOTICES.md'
+    'README.md', 'GAMES.md', 'COMMANDS.md', 'SECURITY.md', 'LICENSE', 'THIRD-PARTY-NOTICES.md'
 )
 
 # gui.py reads games.json at startup for the per-game notes, so the two ship together or the
