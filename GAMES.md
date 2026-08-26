@@ -202,8 +202,14 @@ In game:
 
   Restarting the game still works if alt-tab does not. The bridge never needs restarting.
 
-  *Confirmed on a deliberately silenced motor outside a game. Doing it from inside a
-  running game is the same foreground transition, but has not been separately measured.*
+  **It has never happened in a real session.** Every observation of the motor going silent
+  came from `stiction_test.py` or `revive_test.py`, both of which command tiny forces at a
+  wheel that is deliberately held still. Driving does not do that: your hands are moving the
+  wheel, so a force either moves it or is overridden. Keep this as a tip in case it ever bites
+  someone, not as something to expect.
+
+  *Confirmed on a deliberately silenced motor outside a game. Doing it from inside a running
+  game is the same foreground transition, but has not been separately measured.*
 
   Two mechanisms are known to produce exactly this, and they are told apart by evidence rather
   than by symptom:
