@@ -1,18 +1,21 @@
 # WH33LH4X
 
-Drives a HORI FFB Racing Wheel's motor from Windows, outside any game engine, using
+Drives a Hori Force Feedback Racing Wheel DLX's motor from Windows, outside any game engine, using
 `Windows.Gaming.Input`. Constant force and ramp work natively; spring/damper/friction/
 inertia are computed in software because the firmware's own versions push the wrong way.
 
-Hardware: HORI FFB Racing Wheel Series X (`VID 0x0F0D`). The wheel must be in **Xbox mode**
+Hardware: **Hori Force Feedback Racing Wheel DLX** (`VID 0x0F0D`). The wheel must be in **Xbox mode**
 (`PID 0x015C`) — a long-press of the PROFILE button switches from PC mode, which has no
 force-feedback interface at all. `wgi_probe.py --list-only` will tell you which mode it's in.
 
-**You also want HORI Device Manager Vol.2**, which is the HORI app that works while the wheel
-is in Xbox mode. It holds a wheel-side force feedback strength setting that this project does
-not touch and cannot read — so if two machines feel different with identical `tune.json`
-values, that setting is the first place to look. Note what yours is set to before changing
-anything here.
+**You also want the "HORI FFB RWD-Gerätemanager für Xbox Series X Series S"** from the
+Microsoft Store. It is the HORI app that can talk to the wheel while it is in Xbox mode; the
+other HORI apps cannot. **It is driven with the wheel itself — it does not respond to keyboard
+or mouse**, which is confusing the first time you open it.
+
+It holds a wheel-side force feedback strength setting that this project does not touch and
+cannot read — so if two machines feel different with identical `tune.json` values, that setting
+is the first place to look. Note what yours is set to before changing anything here.
 
 ## Quickstart — playing a game
 

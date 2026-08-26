@@ -26,13 +26,24 @@ import re
 import sys
 
 # The force below which this wheel does not move at all, so anything under it is commanded and
-# then silently does nothing. MEASURED, not assumed: stiction_test.py on 2026-08-25 gave right
-# 0.022 (0.01-0.04 over 5 passes) and left 0.010. Taking the stiffer direction.
+# then silently does nothing. MEASURED on a Hori Force Feedback Racing Wheel DLX (VID 0x0F0D,
+# Xbox mode) with stiction_test.py on 2026-08-25 -- ANOTHER WHEEL NEEDS ITS OWN RUN, this is not a
+# constant of the API or of racing wheels in general.
 #
-# This was 0.1 until then -- a placeholder that was never a measurement, and it made the same
-# session look like 75% of its output was wasted when the real figure is far smaller. If you
-# run this against a different wheel, re-measure rather than trusting this number.
-STICTION = 0.02
+# Every pass broke away on the FIRST step tried, at --step 0.02 and again at 0.01, so each run
+# only ever reported its own increment. 0.01 is therefore an upper bound rather than a reading,
+# and this wheel has no meaningful stiction problem. Its real trouble is cogging: specific rotor
+# positions near centre that will not move at 0.30.
+#
+# It has been wrong twice, in opposite directions, which is why the provenance is written down:
+#   * 0.1 was a placeholder that was never measured at all, and made a session look like 75%
+#     of its output was wasted.
+#   * 0.02 came from a real run whose later passes had walked the wheel into its end stop. A
+#     wheel against the stop cannot move at any force, so those passes measured the stop and
+#     inflated the average. stiction_test.py now recentres before every pass.
+#
+# If you run this against a different wheel, re-measure rather than trusting this number.
+STICTION = 0.01
 
 LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
 

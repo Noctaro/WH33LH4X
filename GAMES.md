@@ -91,27 +91,53 @@ In `tune.json`:
 **These are conservative, and measurably so.** A 2026-08-25 session at these values:
 
 ```
-game asked : -0.953 .. +0.855
-wheel got  : -0.171 .. +0.191
-non-zero samples 200; 75.0% under 0.1 (stiction range), 0.5% at the ceiling
+game asked : -1.000 .. +1.000
+wheel got  : -0.200 .. +0.200
+non-zero samples 1699; 10.0% under 0.01 (below breakaway), 0.3% at the ceiling
 ```
 
-**Measured 2026-08-25.** This wheel's breakaway force -- the level below which the motor moves
-it not at all -- is **0.022 right, 0.010 left** (`stiction_test.py`, 5 passes each). Against the
-session above that leaves **23% of non-zero output below breakaway and 0.5% at the ceiling**: a
-little is lost at the bottom, and there is a lot of unused headroom at the top.
+**Measured 2026-08-25 on a Hori Force Feedback Racing Wheel DLX** (`VID 0x0F0D`, Xbox mode). Every
+number in this section is that one device -- the bridge is not HORI-specific, and another wheel
+needs its own `stiction_test.py` run rather than these figures.
 
-Two changes follow, and they are independent:
+Breakaway force -- the level below which the motor does not move the wheel at all -- came out
+**below 0.02, and below 0.01**. That is not a measurement so much as a ceiling: every pass broke
+away on the *first* step tried, at both step sizes, so each run reports its own `--step`. This
+wheel has no meaningful stiction problem.
 
-- **`min_force: 0.02`.** This is hardware compensation, not an effect: it lifts small non-zero
-  forces to something the motor can actually express, and recovers most of that 23% *without*
-  raising peak force -- so it adds no oscillation risk.
-- **`strength` above 0.2**, since only 0.5% of output is clipping. This one does raise peak
-  force, so move it in steps and read the [oscillation note](#dirt-4-known-issues) first.
+**But there are positions it will not leave.** Seen repeatedly near centre, the wheel does not
+move at **0.30** -- thirty times the breakaway figure. Cogging is the obvious explanation and it
+is *not* established; belt binding or a moulded detent would look identical. That matters here
+specifically:
+DiRT 4's centring force is proportional to steering angle, so it is weakest exactly where those
+positions are. "It holds position instead of centring" is at least as likely to be cogging at one
+of those spots as it is to be stiction.
 
-An earlier version of this section said 75% of output fell below stiction. That came from a
-hardcoded `0.1` in `tune_report.py` that had never been measured -- it was five times the real
-figure. The constant now carries the measured value.
+Commanding a force this wheel cannot act on also has a cost. After about a second of it, the
+motor goes silent for the rest of the process -- audible as two short hums -- while reporting
+itself perfectly healthy through every `Windows.Gaming.Input` call. Whether that is a driver
+stall cut-out or something else is a guess; the behaviour is measured and reproducible. It is
+why `stiction_test.py` defaults to `--step 0.02` and warns below it.
+
+Against the session above, only **10% of non-zero output falls below breakaway and 0.3% clips**.
+So the bottom of the range is not where the problem is, and the headroom at the top is where the
+opportunity is:
+
+- **`strength` above 0.2.** The game is asking for full scale and getting 0.2 of it, with
+  almost nothing clipping. This raises peak force, so move it in steps and read the
+  [oscillation note](#dirt-4-known-issues) first. **This is the change that matters.**
+- **`min_force: 0.01`**, optional. Hardware compensation, not an effect -- it lifts small
+  non-zero forces to something the motor can express. It recovers that 10% without raising
+  peak force, so it carries no oscillation risk, but it is a small effect either way.
+
+This figure has been wrong twice, in opposite directions, which is worth recording:
+
+- **0.1** was a hardcoded placeholder in `tune_report.py` that was never measured. It made the
+  same kind of session look like 75% of its output was wasted.
+- **0.022 right / 0.010 left** came from a real run, but its later passes had walked the wheel
+  into its end stop. A wheel against the stop cannot move at any force, so those passes
+  measured the stop, not stiction, and inflated the right-hand average. `stiction_test.py` now
+  recentres the wheel before every pass.
 
 **`invert: true` is measured, not preference**, and confirmed by feel. With our force output
 at zero, the game's centring spring disabled and the car driving, DiRT 4's force points the
@@ -145,13 +171,28 @@ In game:
 <a name="dirt-4-known-issues"></a>
 ### Known issues
 
-- **The motor can go silent, and nothing looks wrong when it does.** If the shim's log
-  (`%TEMP%\wh33lh4x_shim.log`) shows `bridge went quiet -- releasing the motor`, the motor has
-  been released and re-claimed; doing that repeatedly leaves it accepting effects and
-  producing no torque while still reporting a running effect. Correct force is commanded, the
-  bridge log looks perfect, and the wheel is dead. **Restarting the game clears it** -- the
-  motor claim lives in the shim inside the game process, so a fresh game is a fresh motor. The
-  bridge does not need restarting.
+- **The motor can go silent, and nothing looks wrong when it does.** Correct force is
+  commanded, the bridge log looks perfect, the effect still reports as running, and the wheel
+  is dead. **Restarting the game clears it** -- the motor claim lives in the shim inside the
+  game process, so a fresh game is a fresh motor. The bridge does not need restarting.
+
+  Two mechanisms are known to produce exactly this, and they are told apart by evidence rather
+  than by symptom:
+
+  1. **Claim churn.** If the shim's log (`%TEMP%\wh33lh4x_shim.log`) shows `bridge went quiet
+     -- releasing the motor`, the motor was released and re-claimed. Doing that repeatedly
+     leaves it accepting effects and producing no torque.
+  2. **A force the wheel cannot act on.** Measured 2026-08-25 with `stiction_test.py`:
+     commanding force at a position the wheel will not leave, for about a second, silences the
+     motor **for the rest of the process** while every `Windows.Gaming.Input` call keeps
+     reporting healthy. Audible as **two short hums**. Nothing in any log records it, and it
+     fits "a fresh game is a fresh motor" exactly. **Whether this ever happens during play is
+     untested** -- it was produced by a diagnostic deliberately ramping tiny forces, which is
+     not what the bridge does.
+
+  If the shim log has no release line and you heard the hums, it was the cut-out. Lowering
+  `strength` far enough that the wheel is commanded forces it cannot act on makes this *more*
+  likely, not less.
 - **Oscillation at high gain.** Too much `strength` makes the wheel hunt and, at worst, sweep
   lock to lock on its own. The game's force reflects wheel position from some tens of
   milliseconds ago, and a laggy spring with too much gain is unstable. Lower `strength`.

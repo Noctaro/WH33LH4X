@@ -10,7 +10,7 @@ wheel publishes no PID collection at all. Windows.Gaming.Input is a different st
 ForceFeedbackMotor comes from the GIP driver for Xbox-licensed devices -- and it reaches
 the motor that the other two cannot see.
 
-Confirmed on a HORI FFB Racing Wheel (VID 0x0F0D, PID 0x015C, Xbox mode):
+Confirmed on a Hori Force Feedback Racing Wheel DLX (VID 0x0F0D, PID 0x015C, Xbox mode):
 
     force_feedback_motors : 1
     is_enabled            : True

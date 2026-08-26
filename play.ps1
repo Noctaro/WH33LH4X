@@ -86,7 +86,7 @@ if ($PSBoundParameters.Count -eq 0) {
     # as "nothing happened". Say what this is instead. -BridgeOnly is the old bare-run
     # behaviour for anyone who wants it.
     Write-Host @'
-WH33LH4X -- force feedback for the HORI FFB Racing Wheel in PC sims.
+WH33LH4X -- force feedback for the Hori Force Feedback Racing Wheel DLX in PC sims.
 
 The wheel only exposes force feedback through Windows.Gaming.Input, which no sim speaks. This
 presents a virtual vJoy wheel to the game and renders what the game sends on the real motor.
