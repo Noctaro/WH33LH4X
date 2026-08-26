@@ -11,8 +11,8 @@
 # it passes a one-effect-at-a-time test and only shows up in a real game, as bad feel.
 #
 # Both DLL copies report FileVersion 0.0.0, so nothing can detect the swap from file metadata.
-# GetvJoyVersion() at runtime is the only check that works. Read the audit before unpinning:
-# .claude/plans/packaging-handoff.md
+# GetvJoyVersion() at runtime is the only check that works. Do not unpin without running
+# that check against the DLL actually installed on the machine.
 pyvjoyffb==0.4
 
 # WinRT projections. Pinned as a set — winrt-runtime and the namespace packages are built

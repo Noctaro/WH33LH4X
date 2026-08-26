@@ -93,7 +93,8 @@ class MotorSink(object):
         That churn is what makes the wheel go silent: claiming and releasing this motor
         repeatedly leaves it accepting effects and producing no torque, with the effect still
         reporting Running. Correct force, loaded effect, dead wheel -- and nothing in any log
-        looks wrong. See the WGI notes in .claude/memory.
+        looks wrong. `evidence/revive_test.py` silences this motor on demand and records
+        what brings it back.
         """
 
     def close(self):

@@ -33,8 +33,9 @@ matters; see [the bridge section](#in-progress-a-bridge-into-real-games) for why
 below needs a venv:
 
 ```powershell
-.\shimuild.ps1                    # needs zig; see COMMANDS.md
-.\packaginguild_bundle.ps1        # -> dist\WH33LH4X```
+.\shim\build.ps1                # needs zig; see COMMANDS.md
+.\packaging\build_bundle.ps1     # -> dist\WH33LH4X
+```
 
 **3. Check the foundation before involving a game:**
 
@@ -50,7 +51,14 @@ only make it harder to see that.
 **4. Do the per-game setup** from [GAMES.md](GAMES.md). For DiRT 4 this is two XML edits, and
 without them the game sends non-directional force that never centres.
 
-**5. Play:**
+**5. Play.** Double-click **`WH33LH4X-GUI.cmd`**, pick the game exe, press Start.
+
+The window handles the parts that are easy to get wrong: it passes `-NoLaunch` and asks
+Steam to start the game itself, shows what is known to be quirky about that title, and
+reports whether the bridge and the shim are really live rather than leaving you to guess.
+Spring, damper and friction sliders write to `tune.json` as you move them.
+
+The command line does the same job and is not going away:
 
 ```powershell
 .\WH33LH4X.cmd -Game "C:\...\DiRT 4\dirt4.exe" -NoLaunch
@@ -263,6 +271,11 @@ Every script's flags and a one-line description of each live in
 
 | File | Purpose |
 |---|---|
+| `gui.py` | The window: pick a game, start it, watch bridge and shim state, tune the feel |
+| `games.json` | Per-game notes and quirks. Source for the GUI's panel AND for GAMES.md's status table |
+| `vjoy_bridge.py` | Feeds the wheel's position into vJoy, and force back out through the shim |
+| `motor_sink.py` | The two ways to reach the motor: WGI directly, or the shim over shared memory |
+| `ffb_render.py` | The control laws: spring, damper, friction, inertia, periodics, envelopes |
 | `wgi_probe.py` | The tool: detection, message pump, effect menu, sweeps, cleanup |
 | `wheel_profile.py` | Calibration, `wheel_profile.json` persistence, software condition effects |
 | `vjoy_ffb_spike.py` | Verifies the vJoy force-feedback path the game bridge is being built on |
@@ -271,12 +284,16 @@ Every script's flags and a one-line description of each live in
 | `probe_log.py` | Session logging to `logs/` |
 | `stiction_test.py` | Measures the wheel's breakaway force — where `tune.json`'s `min_force` comes from |
 | `dinput_abi.py` | ctypes binding for DirectInput 8, used by `vjoy_ffb_spike.py` |
+| `test_ffb_render.py`, `test_shimview.py` | Run both before touching the control laws or the GUI's view of the shared section. Neither needs hardware |
 | [`evidence/`](evidence/README.md) | Four APIs that **do not work** on this wheel, and the probes that prove it — GameInput, DirectInput, raw HID and raw GIP. Start with its README; the code is only there so the answers stay checkable |
 
-Why the other three APIs fail, the discovery process, and every gotcha found along the way
-are written up in `.claude/memory/` rather than here — see `hori-wheel-ffb-probe-goal.md`
-and `wgi-forcefeedback-api-gotchas.md` if you want the full story instead of just the
-result.
+Why the other APIs fail, and what was measured rather than assumed, is written up in
+[`evidence/README.md`](evidence/README.md). Each question has its answer in a sentence,
+with the script that produced it beside it.
+
+Anything load-bearing has been written into `evidence/README.md` or into comments beside
+the code it constrains, so the reasoning sits next to the thing it explains rather than in
+a document that goes stale on its own.
 
 ## Thanks ♥
 

@@ -1,7 +1,7 @@
 r"""
 revive_test.py -- does a PRE-CHARGED effect load revive a motor that has gone silent?
 
-THE CLAIM UNDER TEST (.claude/memory/wgi-forcefeedback-api-gotchas.md):
+THE CLAIM UNDER TEST, as recorded on 2026-08-25:
     "A fresh effect loaded already carrying 0.30 moved the same wheel" after a load-at-zero
     effect drove nothing. Recorded from two runs, an hour apart, and never controlled.
 

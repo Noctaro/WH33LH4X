@@ -1,6 +1,5 @@
-# These were only ever in .git\info\exclude, which is local to one clone and never travels.
-# A fresh clone therefore saw dist\, logs\ and .venv\ as untracked noise. This file is the
-# committed version of the same list.
+# Build output, toolchains and caches. Anything specific to one machine stays out of here and
+# lives in .git\info\exclude instead, which is local to a clone and never committed.
 
 # --- build output ---------------------------------------------------------
 dist/
@@ -20,12 +19,11 @@ zig-*.zip
 __pycache__/
 .ruff_cache/
 
-# --- machine-specific state -----------------------------------------------
+# --- session output -------------------------------------------------------
 # wheel_profile.json is a calibration keyed to one wheel's VID:PID. Committing it would hand
 # the next person a measurement taken on hardware they do not have.
 wheel_profile.json
 logs/
 
-# --- editor and assistant ------------------------------------------------
+# --- editors --------------------------------------------------------------
 .vscode/
-.claude/

@@ -29,6 +29,23 @@ second of a save, so it changes mid-corner without restarting anything — see
 
 ## 1. Playing a game
 
+### `WH33LH4X-GUI.cmd` — the window
+
+Ships in the downloadable bundle. Pick a game, press Start, watch three status badges. It shells out to `play.ps1` below
+rather than reimplementing it, so everything true of `play.ps1` is true here too.
+
+What it adds over the command line:
+
+- **Steam titles are handled for you.** It passes `-NoLaunch` and asks the client to start
+  the game, because Steam DRM relaunches the exe as a different process and a direct
+  launch looks like the game quitting instantly.
+- **Per-game notes** from `games.json` — the quirks that otherwise cost you an evening.
+- **Spring, Damper and Friction** sliders, written straight to `tune.json` as you move them.
+- **Status badges** read from the shim's shared section: vJoy, bridge, shim.
+
+Takes no arguments. Runs under `pythonw.exe` so no console sits behind it, and it starts
+the bridge with `-Quiet` so none appears for that either.
+
 ### `play.ps1` — start the bridge, run a game, clean up after
 
 Ships in the downloadable bundle. Also reachable as `WH33LH4X.cmd`, which is the same script with the PowerShell execution
@@ -52,6 +69,7 @@ Run it with no arguments for usage.
 | `-NoLaunch` | switch | — | Deploy and start the bridge, but launch the game yourself -- what you want for a Steam title. |
 | `-NoFfb` | switch | — | Feed the axes but never take the motor. USE THIS WHILE BINDING CONTROLS. |
 | `-StartTimeout` | int | `120` | Seconds to wait for the game process to appear. Steam can be slow. |
+| `-Quiet` | switch | — | — |
 
 ### `WH33LH4X.cmd`
 
@@ -210,6 +228,17 @@ against a newer runtime or a different wheel.
 
 Run before proposing a change to `ffb_render.py`. No test framework, no dependencies, no
 hardware: `.\.venv\Scripts\python.exe test_ffb_render.py`. Takes no flags.
+
+### `test_shimview.py` — the GUI must not create the shared section
+
+No hardware, no wheel, no game. Asserts the ORDER that broke a real session rather than
+the parts: a viewer touching the section before any writer must not bring it into
+existence, or every later writer fails with `WinError 87` and the game gets no wheel
+input.
+
+**It skips itself when a bridge is already running.** It opens a real sink, and closing
+one zeroes the bridge heartbeat -- against a live session that is a force-feedback
+dropout. Takes no flags.
 
 ### `evidence/probe.py` — does GameInput expose force-feedback motors? (**no**)
 

@@ -16,7 +16,7 @@ on:
     branches: [main, 'feature/**']
     # Prose cannot change what gets built, so it should not cost a Windows build. Deliberately
     # NOT applied to pull_request: a merge is validated in full, whatever it touched.
-    paths-ignore: ['**.md', 'docs/**', '.claude/**']
+    paths-ignore: ['**.md', 'docs/**']
   pull_request:
   workflow_dispatch:
 

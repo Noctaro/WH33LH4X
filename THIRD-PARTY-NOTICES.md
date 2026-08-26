@@ -20,7 +20,7 @@ Source alone carries no third-party binaries. The bundle built by
 |---|---|---|
 | `python\*` (embeddable CPython 3.11.9) | python.org | PSF; ships its own `LICENSE.txt` |
 | `lib\winrt\*.pyd`, `lib\winrt\msvcp140.dll` | inside the PyWinRT wheels | MIT for PyWinRT; `msvcp140.dll` is Microsoft's C++ runtime, redistributed as PyWinRT ships it |
-| `lib\pyvjoy\libdJoyInterface.dll` (and `x86`) | inside the `pyvjoyffb` wheel | MIT, (c) 2017 Shaul Eizikovich |
+| `lib\pyvjoy\lib\x64\vJoyInterface.dll` (and `x86`) | inside the `pyvjoyffb` wheel | MIT, (c) 2017 Shaul Eizikovich |
 | `shim\dinput8.dll` | built from `shim/*.c` in this repo | ours, MIT |
 | `python\_tkinter.pyd`, `python\tcl86t.dll`, `python\tk86t.dll`, `lib\tkinter\*`, `lib\tcl8.6\*`, `lib\tk8.6\*` | CPython 3.11.9 **full Windows install** | PSF for the Python parts; Tcl/Tk is BSD-style, text in `python\LICENSE.txt` |
 
