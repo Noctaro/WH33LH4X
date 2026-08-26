@@ -92,6 +92,20 @@ steering through the UI alone. Both files were present in that test, so step 2 s
 
 ### Settings that work
 
+> **These numbers assume the wheel's own strength setting is on 8.** That control lives in
+> the *HORI FFB RWD-Devicemanager für Xbox Series X Series S* app from the Microsoft Store,
+> it is driven with the wheel itself rather than the keyboard, and whatever you set there
+> persists without the app running.
+>
+> It is a real gain stage above everything in `tune.json`. Measured 2026-08-26: at a fixed
+> commanded force of 0.30, the wheel travelled **0.099** at strength 8, **0.029** at
+> strength 1, and **0.106** back at 8 again. About 3.5x, from the same file. So the values
+> below are only meaningful once yours matches.
+>
+> Breakaway force does **not** show this, and looking there wasted two attempts. It sits
+> below the smallest step this wheel tolerates at both settings, so the ramp reports its
+> own `--step` either way. Travel at a fixed force is what has resolution here.
+
 In `tune.json`:
 
 ```json
