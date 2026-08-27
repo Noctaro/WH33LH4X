@@ -1,32 +1,22 @@
 """
-vjoy_bridge.py -- present the HORI wheel to DirectInput games through vJoy.
+vjoy_bridge.py: present the wheel to DirectInput games through vJoy.
 
-THE PROBLEM THIS SOLVES
------------------------
-Both of the wheel's USB modes are dead ends for sims:
+Both of the wheel's USB modes are dead ends for sims. PC mode is seen by DirectInput but its
+collection is input only, so there is no force feedback to expose. Xbox mode has force
+feedback, but only through Windows.Gaming.Input, which DirectInput cannot see. Sims read
+wheels through DirectInput, so the wheel has no force feedback in any of them.
 
-  * PC mode   -- DirectInput sees it and it steers, but the joystick collection is
-                 input-only (no HID usage page 0x0F), so there is no force feedback for any
-                 driver to expose. Not fixable.
-  * Xbox mode -- force feedback works, but only through Windows.Gaming.Input, and it is
-                 invisible to DirectInput entirely.
+This closes the gap both ways: vJoy presents a virtual wheel that games see and send effects
+to, and those effects are rendered on the real motor through the shim.
 
-RaceRoom, Automobilista 2 and Dirt 4 all read wheels through DirectInput. So this wheel has
-no force feedback in any PC sim. The bridge closes that gap: vJoy presents a virtual wheel
-that games can see and send effects to, and we render those effects on the real motor.
+    real wheel -> shim (in the game) -> this bridge -> vJoy -> game
+    game -> vJoy effects -> this bridge -> ffb_render -> shim -> motor
 
-**Keep the wheel in XBOX mode.** Its invisibility to DirectInput is a feature here -- the
-game can only see the vJoy device, so there is never a real device to hide.
+CONSTRAINT: keep the wheel in Xbox mode. Both the readings and the force depend on it, and
+its invisibility to DirectInput means a game can only see the vJoy device.
 
-WHAT WORKS TODAY (phase B1): the INPUT path.
-
-    real wheel --(WGI reading)--> this bridge --(vJoy feeder API)--> game sees a wheel
-
-Force feedback is NOT wired up yet, and cannot simply be switched on: WGI force output is
-foreground-gated, so a background process like this one cannot drive the motor while a game
-is in front. That is tracked separately; see motor_sink.py for the full explanation and the
-interface the fix will land behind. Position READING is not gated, which is why the input
-path works from here without any trickery.
+CONSTRAINT: readings come from the shim once a game is running, not from WGI here. Both are
+foreground gated. See docs/hardware.md#the-foreground-owns-the-motor.
 
 Usage:
     python vjoy_bridge.py                 # feed vJoy device 1 at 100 Hz
@@ -90,12 +80,10 @@ def unidirectional(value):
 
 # Which real-wheel control drives which vJoy axis.
 #
-# Mapped onto the six axes DirectInput ACTUALLY sees on vJoy -- X Y Z RX RY RZ. The vJoy SDK
-# claims nine (it also advertises SL0/SL1/WHL) but DirectInput enumerates only six, measured
-# in B0. Anything mapped beyond those six would be written successfully and never arrive.
-#
-# Pedals get their own axes rather than a combined one. Sims let you rebind axes but they
-# cannot un-combine two pedals that were summed before they arrived.
+# CONSTRAINT: only X, Y, Z, RX, RY and RZ arrive. The vJoy SDK advertises nine axes but
+# DirectInput enumerates six, and anything beyond them writes successfully and never arrives.
+# Pedals get their own axes: a sim can rebind an axis but cannot un-combine two that were
+# summed before they arrived.
 AXIS_MAP = [
     # (reading attribute, vJoy usage, label, converter)
     ("wheel", HID_USAGE_X, "steering", bidirectional),
@@ -110,17 +98,12 @@ class WheelReader(object):
     """
     Reads the real wheel, and reports honestly when it cannot.
 
-    POSITION READING IS FOREGROUND-GATED, exactly like force output. An earlier version of
-    this docstring said the opposite, on the strength of a background sample that could not
-    tell tracking from values gathered across focus transitions -- the same data showed 65%
-    of background samples at exactly 0.000 against 0% while foregrounded.
+    CONSTRAINT: position reading is foreground gated, exactly like force output. Zeros while a
+    game is in front mean vJoy's axes never move, the game cannot bind steering, and a game
+    that never bound steering sends no force feedback either.
 
-    That matters more than it looks: if this returns zeros while a game is in front, vJoy's
-    axes never move, the game cannot bind steering, and a game that has not bound steering
-    never sends force feedback either. The whole bridge dies at the input end.
-
-    So when a `source` is given -- the IPC sink, fed by the shim inside the game -- readings
-    come from there instead, and WGI is only the fallback for running without a game.
+    So when a source is given, the IPC sink fed by the shim inside the game, readings come
+    from there. WGI is only the fallback for running without a game.
     """
 
     def __init__(self, wheel, source=None):
@@ -139,8 +122,7 @@ class WheelReader(object):
                 self.from_shim += 1
                 self.last = reading
                 return reading
-            # Fall through to WGI rather than returning None: before the game has loaded the
-            # shim there is nothing publishing, and our own window may still be in front.
+            # Fall through to WGI: before the game loads the shim nothing is publishing.
         if self.wheel is None:
             self.failures += 1
             return None
@@ -157,8 +139,8 @@ class WheelReader(object):
         """What this wheel actually has, so unmapped axes can be skipped and reported."""
         caps = {}
         if self.wheel is None:
-            # Readings come from the shim; we never saw the device ourselves. Unknown rather
-            # than False, so nothing gets skipped on the strength of a guess.
+            # Readings come from the shim, so the device was never seen here. Unknown rather
+            # than False, so nothing is skipped on a guess.
             return {"clutch": None, "handbrake": None, "pattern_shifter": None,
                     "max_wheel_angle": None}
         for attr, probe in (("clutch", "has_clutch"),
@@ -190,7 +172,7 @@ class VJoyFeeder(object):
     def open(self):
         status = sdk.GetVJDStatus(self.rid)
         if status in (VJD_STAT_MISS, VJD_STAT_BUSY):
-            raise RuntimeError("vJoy device %d is %s -- configure or free it in vJoyConf."
+            raise RuntimeError("vJoy device %d is %s. Configure or free it in vJoyConf."
                                % (self.rid, STATUS_NAMES.get(status, status)))
 
         # Which of our mapped axes this device actually has configured. Writing to an axis
@@ -261,26 +243,19 @@ EFFECT_KINDS = {
 
 class EffectDecoder(object):
     """
-    Turns vJoy's force-feedback packets into `ffb_render` effects.
+    Turns vJoy's force feedback packets into ffb_render effects.
 
-    THREADING. vJoy delivers packets on ITS OWN THREAD. Nothing here may touch WinRT, and
-    the render loop must not have effect state mutated underneath it mid-computation, so
-    packets are pushed onto a queue and applied by the bridge thread between ticks. That is
-    the one rule; everything else in this class is arithmetic.
+    CONSTRAINT: vJoy delivers packets on its own thread. Nothing here may touch WinRT, and the
+    render loop must not have effect state mutated mid-computation, so packets are queued and
+    applied by the bridge thread between ticks.
 
-    UNITS. The wire format is NOT what DirectInput was handed, measured in B0 by
-    `vjoy_ffb_spike.py`, which re-measures it on every run:
+    CONSTRAINT: the wire format is not what DirectInput was handed. Gain arrives as a 0-255
+    byte, duration in milliseconds with 0xFFFF meaning infinite, magnitudes and coefficients
+    unchanged at +-10000 full scale. Getting gain or duration wrong is a silent factor of 40,
+    not a crash. vjoy_ffb_spike.py re-measures this on every run.
 
-      * gain arrives as a 0-255 BYTE, not 0..10000
-      * duration arrives in MILLISECONDS, not microseconds, and 0 means infinite
-      * magnitudes and condition coefficients arrive unchanged, +-10000 full scale
-      * direction becomes polar, and HOW A GAME SIGNS A FORCE DEPENDS ON THE GAME. A
-        cartesian sender is normalised to 8191 (90 degrees) either way and the sign has
-        nowhere to live but the magnitude. A polar sender -- DiRT 4 is one -- keeps the
-        magnitude positive and flips the angle 0 <-> 180 instead. Assuming the first was
-        universal is what rectified our entire output; see `ffb_render.direction_x`.
-
-    Getting gain or duration wrong is a silent factor-of-40 error, not a crash.
+    CONSTRAINT: how a game signs a force depends on the game, so direction is a mode. See
+    docs/tuning.md#how-dir_mode-reads-a-games-direction-field.
     """
 
     def __init__(self, mixer, clock=time.monotonic):
@@ -291,20 +266,16 @@ class EffectDecoder(object):
         self.dropped = 0
         self.unknown = 0
 
-        # Which convention is this game actually using? Cheap to record and it settles the
-        # question a whole session of driving could not. Directions are counted rather than
-        # logged per packet -- they arrive ~66x a second and only the DISTINCT values matter.
+        # Which convention this game uses. Counted rather than logged per packet: they
+        # arrive about 66 times a second and only the distinct values matter.
         self.dir_counts = {}
-        # An effect's shape is set once and then only its magnitude is streamed, so the
-        # defining packet is worth a line each time it says something new. A duration read
-        # wrong is silent for a minute and then sounds like a broken wheel, and nothing in
-        # this log would have shown it.
+        # An effect's shape is set once and only its magnitude is streamed after, so the
+        # defining packet is logged whenever it says something new.
         self.effect_seen = set()
         self.mag_min = 0.0
         self.mag_max = 0.0
-        # The most recent direction, for per-tick telemetry. Distinct values alone cannot show
-        # whether direction tracks STEERING, and that correlation is what identifies the
-        # encoding -- so the current value has to reach the tick line.
+        # The most recent direction, for per-tick telemetry. Its correlation with steering
+        # is what identifies the encoding, so the current value has to reach the tick line.
         self.last_dir = 0
         self.last_dir_x = 0.0
 
@@ -405,13 +376,10 @@ class EffectDecoder(object):
             effect.periodic_phase_deg = f["Phase"] / 100.0
             effect.periodic_period = f["Period"] / 1000.0
         elif reptype == PT_CONDREP:
-            # POSITIVE COEFFICIENT RESISTS. That is the convention WGI was measured to use
-            # (the firmware spring centres on +1/+1), and ffb_render.condition_force negates
-            # the raw formula to match it. `dinput_probe.spring_params` asserts the opposite,
-            # but that file never reached a working force-feedback device, so its comment is
-            # an untested assumption rather than evidence. If a game's spring drives the
-            # wheel outward instead of centring it, this is the line to flip -- and the fix
-            # belongs here, at the decode boundary, not in the control law.
+            # CONSTRAINT: a positive coefficient resists. Measured, the firmware spring
+            # centres on +1/+1, and ffb_render.condition_force negates the formula to match.
+            # If a game's spring drives the wheel outward, flip it here at the decode
+            # boundary, not in the control law.
             axis = 1 if f["isY"] else 0
             effect.conditions[axis] = render.ConditionParams.from_di(
                 offset=f["CenterPointOffset"],
@@ -480,9 +448,9 @@ def sweep_mode(feeder, target, rate, seconds):
     But reading the real wheel needs OUR process to have focus. So binding a real axis is a
     catch-22: focus the game and the axis is frozen, focus us and the game is not looking.
 
-    Synthetic motion breaks it. The game cannot tell where the movement came from, so with
-    this running you can leave the game focused and bind normally. Nothing here touches the
-    wheel -- no detection, no WGI, no reading -- which is exactly why focus stops mattering.
+    Synthetic motion breaks it: the game cannot tell where the movement came from, so the
+    game can stay focused while binding. Nothing here touches the wheel, no detection and no
+    WGI, which is why focus stops mattering.
 
     Bind first with this, then play with the real feeder.
     """
@@ -559,7 +527,7 @@ def parse_args():
                    help="where force goes. 'ipc' (default) publishes to the shim inside the "
                         "game, which is the only thing that works with a game running. 'wgi' "
                         "drives the motor from this process and only produces torque while "
-                        "OUR window is in front -- diagnostics only.")
+                        "this window is in front. Diagnostics only.")
     p.add_argument("--no-grab", action="store_true",
                    help="never take the foreground. Force output will be silent unless you "
                         "click the probe window yourself, but nothing steals your keyboard.")
@@ -593,21 +561,20 @@ def main():
         except TypeError:
             init_apartment(0)
 
-    rule("vJoy bridge -- input path (phase B1)")
-    print("  Feeds the real wheel's position into vJoy so DirectInput games can see it.")
-    print("  Force feedback is NOT active yet -- see motor_sink.py for why.")
-    print("  The wheel must be in XBOX mode.")
+    rule("vJoy bridge")
+    print("  Feeds the real wheel into vJoy so DirectInput games can see it, and renders")
+    print("  the force those games send back onto the real motor.")
+    print("  The wheel must be in Xbox mode.")
     if log_path:
         print("  Log: %s" % log_path)
 
-    # Sweep mode never touches the wheel, so it needs no message pump, no WinRT apartment
-    # and no detection -- and therefore does not care who has the foreground. That is the
-    # entire point of it.
+    # Sweep mode never touches the wheel, so it needs no pump, no apartment and no
+    # detection, and does not care who has the foreground.
     if args.sweep:
         feeder = None
         try:
             feeder = VJoyFeeder(args.device).open()
-            rule("Binding helper -- synthetic %s" % args.sweep)
+            rule("Binding helper: synthetic %s" % args.sweep)
             sweep_mode(feeder, args.sweep, args.rate, args.sweep_seconds)
             return 0
         except KeyboardInterrupt:
@@ -636,8 +603,7 @@ def main():
         # and reading it is the only way to see the wheel while a game holds the foreground.
         # Dropping the sink for --no-ffb silently took the input path down with it, which
         # looks exactly like "the game sees no input". Force is withheld further down, by not
-        # registering the callback and never commanding anything -- which is all --no-ffb
-        # should ever have meant.
+        # registering the callback and never commanding anything.
         use_ipc = args.sink == "ipc" and not args.dry_run
 
         raw, wheels = wait_for_devices(args.wait, pump)
@@ -654,11 +620,9 @@ def main():
         # Create the IPC sink BEFORE the reader, because it is also the reader's source: the
         # shim publishes wheel position through the same section it takes force from.
         if use_ipc:
-            # The sink's own limit is a HARD GUARD against a bug producing nonsense, not the
-            # user-facing ceiling -- `tune.json`'s max_force is that, and it has to be the only
-            # one, or raising it in the file would silently do nothing against a lower clamp
-            # further down. A knob that looks like it works and does not is the exact bug this
-            # whole session started with.
+            # CONSTRAINT: this limit is a guard against a bug, not the user facing ceiling.
+            # tune.json's max_force is that, and must be the only one, or raising it in the
+            # file does nothing against a lower clamp further down.
             sink = IpcMotorSink(max_force=1.0, gain=args.gain).open()
 
         if wheel is None and sink is None:
@@ -666,12 +630,10 @@ def main():
             print("  Found a device via %s but no RacingWheel to read position from." % label)
             return 1
         if wheel is None:
-            # NOT a failure with the IPC sink. Enumerating here needs OUR window in front, so
-            # a bridge started after the game never sees the wheel -- and does not need to,
-            # because the shim inside the game supplies both readings and force. Requiring it
-            # was what forced "start the bridge first", which is a bad thing to require of
-            # anyone launching a game from Steam.
-            print("  No wheel enumerated in this process -- readings will come from the shim.")
+            # Not a failure with the IPC sink. Enumerating needs this window in front, so a
+            # bridge started after the game never sees the wheel and does not need to: the
+            # shim supplies both readings and force.
+            print("  No wheel enumerated here. Readings will come from the shim.")
             print("  (Normal when the game is already running; it owns the foreground.)")
 
         reader = WheelReader(wheel, source=sink)
@@ -697,7 +659,7 @@ def main():
         if skipped:
             print("  not present on this wheel, left at rest: %s" % ", ".join(skipped))
         if args.dry_run:
-            print("  DRY RUN -- nothing is being written to vJoy.")
+            print("  Dry run: nothing is being written to vJoy.")
 
         # --- force feedback: render what the game sends onto the real motor ---
         if not args.no_ffb and not args.dry_run and (motor is not None or sink is not None):
@@ -717,11 +679,11 @@ def main():
             print("  %s" % sink.describe())
             print("  Effects a DirectInput client sends to vJoy are rendered here and")
             print("  played on the real wheel. Everything is computed in software and")
-            print("  summed into one command -- see ffb_render.EffectMixer.")
+            print("  summed into one command. See ffb_render.EffectMixer.")
             print()
             if args.sink == "ipc":
                 print("  Force goes to the shim inside the game, which calls WGI from there.")
-                print("  This process never takes the foreground -- the game keeps it, which")
+                print("  This process never takes the foreground. The game keeps it, which")
                 print("  is exactly what makes the motor reachable. Copy")
                 print("  shim\\build\\dinput8.dll next to the game exe if you have not yet;")
                 print("  until the shim reports 'driving' above, nothing reaches the wheel.")
@@ -729,7 +691,7 @@ def main():
             else:
                 print("  !! WGI force output is foreground-gated, so while an effect is")
                 print("     PLAYING this process takes the foreground and your keystrokes")
-                print("     -- including Ctrl+C -- go to the probe window, not here. It")
+                print("     including Ctrl+C, go to the probe window, not here. It")
                 print("     releases focus as soon as nothing is playing. Use --run-seconds")
                 print("     for a self-terminating run, or --no-grab to keep your keyboard.")
                 print("     That gate is why the shim exists; use --sink ipc with a game.")
@@ -746,10 +708,10 @@ def main():
             print("  created %s" % args.tune)
         tune.poll(0.0)
 
-        rule("Running -- press Ctrl+C to stop")
+        rule("Running: press Ctrl+C to stop")
         print("  Open joy.cpl and watch the vJoy device's axes track the real wheel.")
         print()
-        print("  Live tuning: %s -- edit it while driving, changes apply within %.1fs."
+        print("  Live tuning: %s. Edit it while driving, changes apply within %.1fs."
               % (args.tune, tune.poll_seconds))
         print("  %s" % tune.summary())
         # Two multiplications sit between a full-scale effect and the motor, and only one of
@@ -772,11 +734,10 @@ def main():
         stop_at = time.monotonic() + args.run_seconds if args.run_seconds > 0 else None
         while stop_at is None or time.monotonic() < stop_at:
             now = time.monotonic()
-            # BEFORE anything that can decide to skip this tick. The shim treats a lapsed
-            # heartbeat as the bridge having died and releases the motor -- and re-claiming it
-            # repeatedly leaves it silent while still reporting a running effect. Readings
-            # pause routinely, in menus and loading screens, so tying our liveness to them
-            # meant the wheel could go permanently dead just from pausing the game.
+            # CONSTRAINT: stamp before anything that can skip this tick. A lapsed heartbeat
+            # makes the shim release the motor, and re-claiming it repeatedly leaves it silent
+            # while still reporting a running effect. Readings pause routinely, in menus and
+            # loading screens.
             if sink is not None:
                 sink.keepalive()
             reading = reader.read()
@@ -784,12 +745,11 @@ def main():
                 written = feeder.feed(reading, caps)
                 state.update(reading.wheel, now)
 
-                # Buttons only arrive over the IPC sink -- a WGI reading has no button set
-                # here -- so this is quietly inert on the other paths.
+                # Buttons only arrive over the IPC sink, so this is inert on other paths.
                 buttons = getattr(reading, "buttons", 0)
                 if buttons != last_buttons:
-                    # Printing every new bitfield IS the button-discovery tool: press one and
-                    # read off which bit moved. Without it, assigning btn_up means guessing.
+                    # Printing every new bitfield is the button discovery tool: press one
+                    # and read off which bit moved.
                     bits = [str(i + 1) for i in range(32) if buttons & (1 << i)]
                     print("    buttons 0x%08X  bits %s"
                           % (buttons, ",".join(bits) if bits else "-"), flush=True)
@@ -820,30 +780,19 @@ def main():
                     force = tune.apply(raw_force, state)
                     sink.set_force(force)
 
-                    # Take the foreground ONLY while an effect is actually playing, and ONLY
-                    # when we are the ones driving the motor.
-                    #
-                    # WGI gates force output on foreground, so with the 'wgi' sink the grab is
-                    # necessary -- but grabbing unconditionally makes the tool unusable: it
-                    # steals every keystroke, including the Ctrl+C meant to stop it. Gating on
-                    # running effects means the console keeps focus when there is no force to
-                    # lose.
-                    #
-                    # With the 'ipc' sink the grab is not merely unnecessary, it is ACTIVELY
-                    # WRONG: the shim inside the game is what talks to the motor, so stealing
-                    # focus would take it away from the game that needs it -- breaking the
-                    # very thing this sink exists to make work.
+                    # CONSTRAINT: take the foreground only while an effect is playing, and
+                    # only on the wgi sink. Grabbing unconditionally steals every keystroke
+                    # including the Ctrl+C meant to stop it, and on the ipc sink it takes
+                    # focus from the game the shim needs to be in front.
                     if (args.sink != "ipc" and not args.no_grab
                             and decoder.mixer.running_effects()
                             and now - last_foreground > 0.1):
                         pump.ensure_foreground()
                         last_foreground = now
 
-                    # Once the shim is live it supplies both readings and force, so nothing in
-                    # THIS process touches WGI again -- and the probe window is then a second
-                    # window sitting on the user's screen for no reason. Hiding rather than
-                    # destroying keeps the message pump, which is cheap and avoids a teardown
-                    # path that only ever runs here.
+                    # Once the shim is live nothing here touches WGI again, so the probe
+                    # window is a second window for no reason. Hidden rather than destroyed,
+                    # which keeps the message pump and avoids a teardown path.
                     if (args.sink == "ipc" and not probe_hidden and sink is not None
                             and sink.shim_state()[0]):
                         pump.hide()
@@ -898,17 +847,16 @@ def main():
         # Order matters: silence the motor before anything else is torn down, so an error
         # on the way out cannot leave the wheel holding a force.
         if sink is not None:
-            # Only when force was actually being commanded. With --no-ffb the sink is open
-            # purely to read the wheel, and a single zero write would still stamp the
-            # heartbeat -- making the shim load the effect and take the motor for half a
-            # second on the way out, which is the one thing --no-ffb promises not to do.
+            # Only when force was being commanded. With --no-ffb the sink is open purely to
+            # read, and a single zero write would stamp the heartbeat, making the shim take
+            # the motor for half a second on the way out.
             if decoder is not None:
                 try:
                     sink.set_force(0.0)
                 except Exception:
                     pass
             sink.close()
-            print("  motor released -- %d writes, %d failures" % (sink.writes, sink.failures))
+            print("  motor released: %d writes, %d failures" % (sink.writes, sink.failures))
         if decoder is not None:
             print("  ffb packets %d received, %d dropped, %d unrecognised"
                   % (decoder.received, decoder.dropped, decoder.unknown))

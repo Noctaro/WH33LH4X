@@ -1,11 +1,11 @@
 r"""
-test_shimview.py -- the GUI must WATCH the shared section, never create it.
+test_shimview.py: the window must watch the shared section, never create it.
 
 WHY THIS TEST EXISTS
 
 gui.ShimView originally attached with `mmap.mmap(-1, size, tagname=NAME, access=ACCESS_READ)`.
 With fileno -1 that CREATES the mapping when none exists, and creates it PAGE_READONLY. Once
-the GUI became the thing that starts the bridge, the GUI always got there first -- so the
+the window became the thing that starts the bridge it always got there first, so the
 section existed, read-only, before any writer opened it. Both writers then failed:
 
     vjoy_bridge : OSError [WinError 87] out of mmap.mmap, one second after starting
@@ -19,7 +19,7 @@ bug lived entirely in WHO TOUCHED IT FIRST, which no single-component test can s
 
 So this test asserts the ORDER that failed, not the parts.
 
-NEVER RUN THIS DURING A LIVE SESSION -- and it now refuses to. Step 3 opens a real
+Never run this during a live session, and it now refuses to. Step 3 opens a real
 IpcMotorSink against the real section name, and `IpcMotorSink.close()` deliberately zeroes the
 force and the bridge heartbeat so the shim drops the motor at once. Against a running bridge
 that is a force-feedback dropout mid-corner. The bridge re-stamps within one loop so it
@@ -50,10 +50,10 @@ def main():
     print("ShimView must observe, not create\n")
 
     # A live bridge owns this section, and step 3 would zero its heartbeat on close. Refuse
-    # rather than interfere -- and rather than report failures that only mean "something else
+    # rather than interfere, and rather than report failures that only mean "something else
     # is running", which is what the first two checks degrade into in that case.
     if gui.ShimView._snapshot() is not None:
-        print("  SKIPPED -- the shared section already exists, so a bridge or a game is")
+        print("  SKIPPED: the shared section already exists, so a bridge or a game is")
         print("  running. Stop it and run this again: the test opens a real sink, and")
         print("  closing one zeroes the bridge heartbeat.")
         return 0
@@ -64,7 +64,7 @@ def main():
     check("reads as 'nothing running' when no bridge exists",
           view.read(), (False, IpcMotorSink.STATE_NONE, False))
 
-    # 2. THE ACTUAL BUG. Reading must not bring the section into existence -- if it does, it
+    # 2. The actual bug: reading must not bring the section into existence. If it does, it
     #    exists read-only and every writer afterwards fails with WinError 87.
     check("reading did not create the section",
           gui.ShimView._snapshot() is None, True)

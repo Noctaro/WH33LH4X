@@ -14,6 +14,11 @@ name: build
 on:
   push:
     branches: [main, 'feature/**']
+    # A release is this same pipeline with one more job on the end, so the thing users download
+    # is built by the process that was already tested rather than by a second one written for
+    # the occasion. GitHub ignores path filters on tag pushes, so the paths-ignore below cannot
+    # cause a tag to build nothing.
+    tags: ['v*']
     # Prose cannot change what gets built, so it should not cost a Windows build. Deliberately
     # NOT applied to pull_request: a merge is validated in full, whatever it touched.
     paths-ignore: ['**.md', 'docs/**']
@@ -164,3 +169,39 @@ jobs:
             dist/WH33LH4X-windows-x64.zip
             dist/SHA256SUMS.txt
           if-no-files-found: error
+
+  # Only on a v* tag. Every other push stops at the job above, where the zip is a workflow
+  # artifact: it expires, and downloading one needs a GitHub login. A release is what turns
+  # that same file into something a stranger can click.
+  release:
+    name: draft the release
+    runs-on: ubuntu-latest
+    needs: [bundle]
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      # The workflow grants read at the top. Creating a release needs write, and it is granted
+      # HERE rather than there so no other job in this file can publish anything.
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: wh33lh4x-bundle
+          path: dist/
+
+      # gh is preinstalled on the runner, so this needs no third-party action. In a project
+      # whose whole trust story is "you can read everything we run", adding a dependency to
+      # the step that produces the download would be the wrong place to save five lines.
+      #
+      # --draft is the point: the tag builds the artifacts and stages them, and a human still
+      # has to read the notes and press publish. Nothing reaches users without that press.
+      - name: Draft a release with the bundle attached
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            dist/WH33LH4X-windows-x64.zip \
+            dist/SHA256SUMS.txt \
+            --draft \
+            --verify-tag \
+            --title "$GITHUB_REF_NAME" \
+            --notes "Draft. Replace these notes before publishing."

@@ -1,43 +1,17 @@
 """
-ffb_render.py -- force-feedback control laws, in normalised units.
+ffb_render.py: force feedback control laws, in normalised units.
 
-This is the arithmetic half of the bridge: given what a game asked for and what the wheel is
-doing, produce one number in -1.0 .. +1.0 for the motor. It touches no hardware, no vJoy and
-no WinRT, which is what makes it testable and what makes it survive the bridge's architecture
-changing underneath it.
+Given what a game asked for and what the wheel is doing, produce one number in -1.0 .. +1.0
+for the motor. Touches no hardware, no vJoy and no WinRT.
 
-WHY IT EXISTS SEPARATELY
------------------------
-`wheel_profile.run_software_condition` already implements these laws, but with the strengths
-baked in as `CONDITION_GAINS` -- values fitted to this wheel for a menu where the user picks
-one effect and one magnitude. A game does not work that way: it sends its own coefficients,
-saturations and dead bands, several effects at once, and expects them summed. So the laws are
-lifted here and parameterised, and `wheel_profile` delegates.
-
-UNITS -- read this before changing anything
--------------------------------------------
-Everything here is NORMALISED:
-
-  * position, velocity, acceleration -- reading units and reading units/sec, as
-    `RacingWheel.get_current_reading().wheel` produces them (-1.0 .. +1.0 across full lock)
-  * coefficients, saturations, dead bands -- fractions, NOT DirectInput's 0..10000 integers
-  * output force -- -1.0 .. +1.0
-
-DirectInput's integers are converted once, at the boundary, by `ConditionParams.from_di`.
-Keeping DI units out of the interior is deliberate: the alternative is dividing by 10000 in
-a dozen places and eventually forgetting one, which is a factor-of-10000 error that presents
-as "force feedback does nothing".
-
-Coefficients are NOT clamped to DirectInput's ±1.0-equivalent range, because the software
-conditions in `wheel_profile` legitimately use a spring gain of 2.0 -- measured, not guessed.
-Saturation still bounds the result, so an out-of-range coefficient only decides how quickly
-the effect reaches full force.
+CONSTRAINT: everything here is normalised. DirectInput 0..10000 integers are converted once,
+at the boundary, by ConditionParams.from_di. See docs/development.md#ffb_render for the unit
+table, why this module is separate, and why coefficients are not clamped.
 """
 
 import math
 
-# DirectInput expresses coefficients, saturations, offsets and dead bands as integers with
-# this full-scale value. It is the only place the number appears.
+# DirectInput full scale for coefficients, saturations, offsets and dead bands.
 DI_FULL_SCALE = 10000.0
 
 
@@ -48,25 +22,17 @@ def clamp(value, limit=1.0):
 
 
 class WheelState(object):
-    """
-    Position, velocity and acceleration of the real wheel.
+    """Position, velocity and acceleration of the real wheel, with velocity smoothed."""
 
-    Differentiating a quantised reading ~100x a second is noisy, and that noise goes straight
-    to the motor as audible chatter. Velocity is smoothed before being differentiated again,
-    without which inertia is pure hash -- measured while building the software conditions.
-    """
-
-    # Exponential smoothing factor for velocity. 1.0 is no smoothing (raw and jittery);
-    # lower is smoother but lags the wheel. Fitted against logged ticks from this wheel and
-    # moved here from wheel_profile with the laws -- it is the difference between a smooth
-    # inertia effect and audible chatter, so do not adjust it casually.
+    # CONSTRAINT: fitted to logged ticks from this wheel. 1.0 is no smoothing and makes
+    # inertia audibly chatter; lower is smoother but lags. See docs/development.md#ffb_render.
     VELOCITY_SMOOTHING = 0.25
 
     def __init__(self):
         self.position = 0.0
         self.velocity = 0.0
         self.acceleration = 0.0
-        # Unsmoothed, kept only so logs can show what the smoothing actually removed.
+        # Unsmoothed, kept so logs can show what the smoothing removed.
         self.raw_velocity = 0.0
         self._last_position = None
         self._last_time = None
@@ -95,13 +61,7 @@ class WheelState(object):
 
 
 class ConditionParams(object):
-    """
-    One axis of a DirectInput condition effect, in normalised units.
-
-    The four condition kinds differ only in WHICH signal they are fed -- displacement,
-    velocity, acceleration, or velocity for friction -- so they share this one parameter set
-    and one formula.
-    """
+    """One axis of a DirectInput condition effect, in normalised units."""
 
     __slots__ = ("offset", "pos_coeff", "neg_coeff", "pos_saturation",
                  "neg_saturation", "deadband")
@@ -128,14 +88,10 @@ class ConditionParams(object):
 
     def force(self, x):
         """
-        The DirectInput condition formula, verbatim in normalised units.
+        The DirectInput condition formula, in normalised units.
 
-        Outside a dead band centred on `offset`, force is proportional to how far past the
-        dead band the signal is, with a separate coefficient and saturation each side. Inside
-        it, zero -- which is what stops a friction effect buzzing when the wheel is still.
-
-        The dead band is the FULL width, so each side extends offset +- deadband/2. Getting
-        that wrong halves or doubles every dead zone a game asks for.
+        CONSTRAINT: deadband is the full width, so each side extends offset +- deadband/2.
+        Getting it wrong halves or doubles every dead zone a game asks for.
         """
         delta = x - self.offset
         half_band = self.deadband / 2.0
@@ -154,8 +110,7 @@ class ConditionParams(object):
                    self.pos_saturation, self.neg_saturation, self.deadband))
 
 
-# Which wheel signal each condition kind reacts to. This table IS the difference between the
-# four effects; everything else about them is shared.
+# Which wheel signal each condition kind reacts to. The only difference between the four.
 CONDITION_SIGNAL = {
     "spring": lambda s: s.position,
     "damper": lambda s: s.velocity,
@@ -164,10 +119,10 @@ CONDITION_SIGNAL = {
 }
 
 CONDITION_HELP = {
-    "spring": "pulls back to centre -- force grows with how far off-centre you are",
-    "damper": "resists SPEED -- turning fast is heavy, turning slowly is light",
+    "spring": "pulls back to centre: force grows with how far off-centre you are",
+    "damper": "resists speed: turning fast is heavy, turning slowly is light",
     "friction": "constant drag whenever the wheel moves, at any speed",
-    "inertia": "resists ACCELERATION -- heavy to start or stop turning, free once moving",
+    "inertia": "resists acceleration: heavy to start or stop turning, free once moving",
 }
 
 
@@ -175,13 +130,9 @@ def condition_force(kind, params, state):
     """
     Force for one condition effect, -1.0 .. +1.0.
 
-    NOTE THE SIGN. A condition RESISTS the signal it reacts to, so the force is the negative
-    of the formula's output. Expressed this way a positive coefficient always means "resist
-    more", which is what a game means by it, and it makes every one of these effects
-    physically incapable of running away: force is derived from the motion it opposes, so a
-    wrong coefficient makes an effect inert rather than violent. That is not true of the
-    firmware's own condition effects, two of which were measured driving the wheel into the
-    end stop.
+    CONSTRAINT: the formula output is negated, because a condition resists the signal it
+    reacts to. Force derived from the motion it opposes cannot run away, so a wrong
+    coefficient makes an effect inert rather than violent. See docs/hardware.md.
     """
     signal = CONDITION_SIGNAL[kind](state)
     return clamp(-params.force(signal))
@@ -189,35 +140,11 @@ def condition_force(kind, params, state):
 
 def legacy_condition_params(kind, gain, offset=0.0, deadband=0.10):
     """
-    Reproduce `wheel_profile.CONDITION_GAINS` behaviour exactly, as ConditionParams.
+    Reproduce wheel_profile.CONDITION_GAINS behaviour exactly, as ConditionParams.
 
-    The menu's software conditions (`1s`-`4s`) must feel identical after this refactor --
-    their gains were fitted to logged ticks from this wheel, so any change in feel is a bug,
-    not a tuning opportunity. This is the bridge between that world and the parameterised one.
-
-    Friction is the odd one: the old law was direction-only, a flat +-gain outside a velocity
-    dead band, with no proportionality at all. That is expressible here as a very steep
-    coefficient saturating immediately -- same output, no special case in the formula.
-
-    One deliberate difference, and only one: AT EXACTLY the dead-band edge the old law is
-    already at full drag (its test was `abs(v) < 0.05`, so 0.05 itself is outside), whereas
-    this returns 0 there and full drag an epsilon beyond. The transition is 1e-6 wide, the
-    function is discontinuous at that point either way, and a velocity landing on exactly
-    0.05 has measure zero. Documented rather than special-cased, because a `friction` branch
-    in the formula would have to be maintained forever to buy nothing.
-
-    `offset` is the SPRING's centre, and applies to the spring alone. The menu deliberately
-    springs back to wherever the wheel was sitting when the effect started rather than to an
-    assumed zero, so the caller passes that in.
-
-    It must not leak into the others: damper and friction react to velocity and inertia to
-    acceleration, and those have no centre to be offset from. Applying it to all four -- as
-    this function first did -- silently biases them, e.g. a damper at rest commanding force
-    because its "velocity" was being measured relative to a wheel position. Caught by
-    comparing against the original laws over a sweep, which is exactly what that check is for.
-
-    (`ConditionParams.offset` itself stays general: DirectInput lets a game set a centre point
-    on any condition, and `from_di` passes whatever it sends.)
+    CONSTRAINT: offset is the spring's centre and applies to the spring alone. Damper,
+    friction and inertia react to velocity or acceleration, which have no centre, and
+    offsetting those biases them. See docs/development.md#ffb_render.
     """
     centre = offset if kind == "spring" else 0.0
     if kind == "friction":
@@ -252,11 +179,8 @@ WAVEFORMS = {
 
 def periodic_force(shape, magnitude, offset, phase_deg, period_s, elapsed_s):
     """
-    One periodic sample. The firmware is silent on every periodic, so these are synthesised
-    by rewriting a constant force -- `wgi_probe.synth_wave` proved the technique works.
-
-    A zero period would divide by zero and, more usefully, means "no wave", so it returns the
-    offset alone rather than raising into an audio-rate loop.
+    One periodic sample, synthesised by rewriting a constant force: the firmware is silent on
+    every periodic. See docs/hardware.md. A zero period means no wave and returns the offset.
     """
     if period_s <= 0.0:
         return clamp(offset)
@@ -264,17 +188,12 @@ def periodic_force(shape, magnitude, offset, phase_deg, period_s, elapsed_s):
     return clamp(offset + magnitude * WAVEFORMS[shape](phase))
 
 
-# How to read a game's direction field. Set live from tune.json; see direction_x().
-#   "sin"  -- treat it as a true polar angle and take the X component. Correct for a game
-#             that points forces around a full circle.
-#   "span" -- treat it as a steering axis across the 90-180 degree quarter circle, which is
-#             where DiRT 4 puts left and right. Interpolates between them.
-#   "sign"  -- the same two directions with no interpolation, so nothing nulls out halfway.
+# How a game's direction field is read: "sin", "span" or "sign". Set live from tune.json.
+# See docs/tuning.md#how-dir_mode-reads-a-games-direction-field.
 DIRECTION_MODE = "sin"
 
-# The measured span: dirx 8191 (90 deg) to 16383 (180 deg), so the centre is halfway between
-# and half-width is a quarter of that. Named rather than inlined because these came off a log
-# and someone will want to know where they came from before changing them.
+# MEASURED: the span DiRT 4 uses, dirx 8191 (90 deg) to 16383 (180 deg).
+# See docs/tuning.md#how-dir_mode-reads-a-games-direction-field.
 SPAN_LOW = 8191.0
 SPAN_HIGH = 16383.0
 SPAN_CENTRE = (SPAN_LOW + SPAN_HIGH) / 2.0        # 12287
@@ -285,16 +204,7 @@ DURATION_INFINITE = 0xFFFF
 
 
 def duration_seconds(raw):
-    """
-    Turn a HID PID duration field into seconds, where 0xFFFF means forever.
-
-    The field is 16 bits, so a game that wants an effect to run until it says otherwise has
-    no number to send -- it sends the all-ones sentinel instead. Read literally that is
-    65.535 seconds, which is long enough to look like working force feedback and short
-    enough to die mid-lap. Measured 2026-08-27 in RaceRoom: its constant force expired
-    after 65.5s, nine times in one session, and only came back when a menu made the game
-    stop and restart the effect. DiRT 4 sends 0, which is why this stayed hidden.
-    """
+    """HID PID duration to seconds. 0xFFFF is the infinite sentinel, not 65.535 s."""
     return 0.0 if raw >= DURATION_INFINITE else raw / 1000.0
 
 
@@ -302,61 +212,16 @@ def direction_x(dir_raw):
     """
     X-axis component of a HID PID direction field, as a multiplier in -1.0 .. +1.0.
 
-    MEASURED, not assumed. Sending cartesian +X through DirectInput to vJoy arrives as
-    `DirX=8191`, which is a quarter of 32768 -- so the field is a full circle in 32768 steps
-    and +X sits at 90 degrees. Sending -X arrives as 8191 as well: DirectInput normalises a
-    single-axis cartesian vector, and the sign cannot survive that. For a CARTESIAN sender,
-    then, the sign of a force travels in the magnitude (+3000 / -3000 round-tripped exactly).
-
-    THAT IS NOT THE ONLY CONVENTION, AND ASSUMING IT WAS COST US THE WHOLE OUTPUT SIGN.
-
-    A game is equally free to send a positive magnitude and point it with a POLAR angle,
-    flipping 0 <-> 180 degrees to mean left and right. DiRT 4 does exactly that. Both of those
-    angles are zeros of sin, so the old degeneracy guard below returned +1.0 for each of them
-    and every leftward force came out rightward. The wheel could then only ever pull one way:
-    no centring (a centring force must change sign as the wheel crosses centre), and a
-    permanent tug towards one side that felt like being dragged into whatever you scraped.
-    Symmetric effects -- kerbs, gravel, engine rumble -- feel perfectly normal rectified,
-    which is what made it survive so long: only directional forces reveal it.
-
-    So the guard still refuses to return 0 -- an angle with no X component would multiply every
-    force by zero and silence a one-axis device, which is never what a game means -- but it now
-    resolves the two zeros by WHICH HALF OF THE CIRCLE the angle is in. That keeps the sign
-    continuous the whole way round: 1 degree and 359 degrees have X components of +0.017 and
-    -0.017, and now return +1.0 and -1.0 rather than both returning +1.0.
-
-    THAT WAS STILL NOT ENOUGH, AND THE LOG SAID WHY.
-
-    DiRT 4 flips direction to mean left and right exactly as described above -- but between
-    90 and 180 degrees, not 0 and 180. Measured over one session:
-
-        8191  (90 deg)  x11780      <- one direction
-        16383 (180 deg) x2990       <- the other
-        12287 (135 deg) x29, then a long tail of ones and twos
-
-    Those two values are ~99% of every packet; the 1253 others are transient sweeps between
-    them, which is why the field first looked like a continuous axis spanning a quarter
-    circle. Both dominant values are non-negative under sin -- sin(90) is +1 and sin(180) is
-    0, which the degeneracy guard then turns into +1 as well -- so a polar reading rectifies
-    this game no matter how carefully the boundary is handled. The quarter circle contains no
-    negative sine to find.
-
-    So the reading is a MODE, because both conventions are real and a wheel meets both. Mode
-    is read live from tune.json, and a game that re-sends its direction every tick -- DiRT 4
-    does -- switches over within milliseconds. That is deliberate: the alternative was a
-    relaunch per guess, and each guess costs a game load and a drive back to the corner.
+    CONSTRAINT: never return 0, and resolve the two sine zeros by which half of the circle
+    the angle is in. A game may encode left and right as a polar flip rather than in the
+    magnitude, and rectifying that removes centring entirely. See docs/tuning.md.
     """
     if DIRECTION_MODE == "span":
-        # Linear across the measured span, so the sweeps between the two dominant values pass
-        # through smoothly rather than snapping. Polarity is MEASURED, not chosen: with the
-        # other sign, force correlated +0.365 with steering angle -- pushing deeper into the
-        # turn instead of back out of it. Clamped because a game is not obliged to stay
-        # inside the range we measured.
+        # MEASURED polarity: the other sign correlated +0.365 with steering angle, pushing
+        # deeper into the turn. Clamped because a game may send outside the measured range.
         return clamp((SPAN_CENTRE - dir_raw) / SPAN_HALF)
     if DIRECTION_MODE == "sign":
-        # The same two directions, without interpolation. Worth having because linear
-        # interpolation puts a force NULL at 135 degrees: if a game dwells there under load,
-        # 'span' drops the force out entirely and 'sign' does not.
+        # No interpolation, so no force null at 135 degrees where "span" drops out.
         return -1.0 if dir_raw > SPAN_CENTRE else 1.0
 
     turn = (dir_raw % 32768) / 32768.0          # 0.0 .. 1.0 of a full circle
@@ -369,11 +234,10 @@ def direction_x(dir_raw):
 def envelope_scale(elapsed_s, duration_s, attack_level, attack_time_s,
                    fade_level, fade_time_s):
     """
-    DirectInput envelope: ramp in from `attack_level`, hold at 1.0, ramp out to `fade_level`.
+    DirectInput envelope: ramp in from attack_level, hold at 1.0, ramp out to fade_level.
 
-    Levels are fractions of the effect's own magnitude. An infinite effect (duration <= 0)
-    can attack but can never fade, because there is no end to fade towards -- a fade computed
-    against an unknown end time is what makes a held effect mysteriously decay.
+    Levels are fractions of the effect's magnitude. An infinite effect (duration <= 0) attacks
+    but never fades, because there is no end to fade towards.
     """
     scale = 1.0
     if attack_time_s > 0.0 and elapsed_s < attack_time_s:
@@ -399,15 +263,9 @@ class Effect(object):
     """
     One effect a game created, as it currently stands.
 
-    A game builds an effect across SEVERAL packets -- a Set Effect report carrying duration
-    and gain, then a type-specific report carrying magnitude or coefficients, then an Effect
-    Operation report to start it -- and it may update any of them later without touching the
-    others. So this is a mutable record that packets patch in place, never a value rebuilt
-    per packet. Rebuilding is how you lose the gain a game set once at load time and never
-    resent.
-
-    Everything is in normalised units by the time it lands here; converting is the decoder's
-    job, not this one's.
+    CONSTRAINT: mutable, patched in place by each packet. A game builds an effect across
+    several reports and may update one later without resending the others, so rebuilding per
+    packet loses values set once at load time, such as gain.
     """
 
     def __init__(self, block):
@@ -427,8 +285,7 @@ class Effect(object):
         self.periodic_phase_deg = 0.0
         self.periodic_period = 0.0      # seconds
 
-        # DirectInput sends one condition block per axis. A wheel only has one, but a game
-        # written for a 2-axis stick may send two; the first is the one that steers.
+        # One condition block per axis. A wheel has one, and the first is the one that steers.
         self.conditions = {}            # axis index -> ConditionParams
 
         self.attack_level = 1.0
@@ -457,9 +314,8 @@ class Effect(object):
         """
         True once a finite effect has played out its duration and loops.
 
-        A game is not obliged to send a stop for an effect that simply ran out, so an
-        effect that never expires here is one that keeps commanding force forever -- felt as
-        a wheel that stays heavy after the game moved on.
+        A game need not send a stop for an effect that ran out, so an effect that never
+        expires here keeps commanding force forever.
         """
         if not self.running or self.duration <= 0.0:
             return False
@@ -478,9 +334,7 @@ class Effect(object):
         if self.kind == "constant":
             value = self.magnitude
         elif self.kind == "ramp":
-            # Ramps interpolate across the effect's duration. With no duration there is
-            # nothing to interpolate over, so it holds at its start value rather than
-            # dividing by zero or jumping to the end.
+            # With no duration there is nothing to interpolate over, so hold at the start.
             if self.duration > 0.0:
                 progress = min(1.0, elapsed / self.duration)
             else:
@@ -494,9 +348,8 @@ class Effect(object):
             params = self.conditions.get(0)
             if params is None:
                 return 0.0
-            # Conditions are not scaled by the envelope: an envelope shapes a played effect
-            # over time, while a condition is a continuous response to what the wheel is
-            # doing. Fading a spring would make the wheel go slack mid-corner.
+            # CONSTRAINT: no envelope on conditions. A condition is a continuous response,
+            # and fading a spring would make the wheel go slack mid-corner.
             return clamp(condition_force(self.kind, params, state)
                          * self.gain * self.direction)
         else:
@@ -516,15 +369,12 @@ class EffectMixer(object):
     """
     Every effect the game has loaded, and their sum.
 
-    Concurrent effects are the normal case, not an edge case: a sim runs a centring spring, a
-    damper and a road-texture periodic at once and updates them independently. They are kept
-    apart by effect block index, which is why this project requires vJoy >= 2.2.0 -- older
-    builds report index 1 for everything and this dictionary would collapse to one entry.
+    CONSTRAINT: needs vJoy 2.2.0 or newer. Older builds report effect block index 1 for
+    everything, and this dictionary collapses to one entry. See docs/vjoy.md.
 
-    All of them are rendered in SOFTWARE and summed into one command, even the conditions the
-    firmware could run natively. That is deliberate: the motor is driven through a single
-    held constant-force effect, and a firmware condition running alongside it would add an
-    unknown torque that nothing here can account for. One renderer, one number, one clamp.
+    Every effect renders in software and sums into one command, including conditions the
+    firmware could run natively: the motor is driven through one held constant force effect,
+    and a firmware condition alongside it would add torque nothing here can account for.
     """
 
     def __init__(self):
@@ -559,8 +409,8 @@ class EffectMixer(object):
         """
         Sum of every running effect, clamped once at the end.
 
-        Clamping per effect instead would quietly change the mix: three effects at 0.5 should
-        saturate to 1.0 together, not be flattened to 0.5 each and then summed to 1.5.
+        CONSTRAINT: clamp once, not per effect. Three effects at 0.5 saturate to 1.0 together
+        rather than being flattened to 0.5 each and summed to 1.5.
         """
         if self.paused or not self.actuators_enabled:
             return 0.0

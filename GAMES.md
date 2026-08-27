@@ -15,9 +15,9 @@ New entries are welcome — copy the [template](#template-for-a-new-game) at the
 <!-- BEGIN generated from games.json -- edit games.json, not this table -->
 | Game | Status | Needs setup? | Verified |
 |---|---|---|---|
-| [DiRT 4](#dirt-4) | 🟡 Playable -- Steering, pedals and force feedback all work -- the wheel loads up in a corner and pulls back to centre. | Yes -- vJoy must be registered as a wheel | 2026-08-26 |
-| [RaceRoom Racing Experience](#raceroom-racing-experience) | 🟡 Playable -- Steering, pedals and force feedback all work, with no file to edit first. | No, just bind steering in the game | 2026-08-27 |
-| [Automobilista 2 Demo](#automobilista-2-demo) | 🟡 Playable -- Steering, pedals and force feedback all work, but the game adds a centre deadzone of its own and lets throttle bleed into steering. | Yes, set Controller Damping to 0 | 2026-08-27 |
+| [DiRT 4](#dirt-4) | 🟡 Playable: Steering, pedals and force feedback all work: the wheel loads up in a corner and pulls back to centre. | Yes, vJoy must be registered as a wheel | 2026-08-26 |
+| [RaceRoom Racing Experience](#raceroom-racing-experience) | 🟡 Playable: Steering, pedals and force feedback all work, with no file to edit first. | No, just bind steering in the game | 2026-08-27 |
+| [Automobilista 2 Demo](#automobilista-2-demo) | 🟡 Playable: Steering, pedals and force feedback all work, but the game adds a centre deadzone of its own and lets throttle bleed into steering. | Yes, set Controller Damping to 0 | 2026-08-27 |
 <!-- END generated -->
 
 | Status | Meaning |

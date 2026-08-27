@@ -2,14 +2,14 @@
 Acceptance test for Track D phase D1: is the dinput8.dll proxy transparent?
 
 The D1 bar is "a game starts normally with the proxy present and still sees its controllers".
-Launching a game to find that out is slow and ambiguous -- if a game misbehaves
+Launching a game to find that out is slow and ambiguous: if a game misbehaves
 you learn nothing about *where*. So this drives the proxy directly and compares it against the
 system DLL in the same process:
 
   1. all five exports resolve by their undecorated names
   2. DirectInput8Create through the proxy returns a usable IDirectInput8
   3. enumerating game controllers through the proxy yields EXACTLY the devices the system DLL
-     yields -- same instances, same names, same force-feedback flags
+     yields: same instances, same names, same force feedback flags
   4. the proxy wrote its log, and recorded a real system DLL rather than falling back
 
 Step 3 is the one that matters. A proxy that loads and returns S_OK but hands back a crippled
@@ -171,7 +171,7 @@ def main():
         print("\nD1 NOT met.")
         return 1
     print("\nD1 met at the API level: the proxy is transparent to DirectInput.")
-    print("Remaining D1 evidence is a real game -- copy shim/build/dinput8.dll by its exe.")
+    print("Remaining D1 evidence is a real game: copy shim/build/dinput8.dll by its exe.")
     return 0
 
 
