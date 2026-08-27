@@ -16,8 +16,8 @@ New entries are welcome — copy the [template](#template-for-a-new-game) at the
 | Game | Status | Needs setup? | Verified |
 |---|---|---|---|
 | [DiRT 4](#dirt-4) | 🟡 Playable -- Steering, pedals and force feedback all work -- the wheel loads up in a corner and pulls back to centre. | Yes -- vJoy must be registered as a wheel | 2026-08-26 |
-| [RaceRoom Racing Experience](#raceroom-racing-experience) | 🟡 Playable -- Steering, pedals and force feedback all work, with no file to edit first. | No -- bind steering in the game | 2026-08-27 |
-| [Automobilista 2](#automobilista-2) | ⚪ Untested | Unknown | — |
+| [RaceRoom Racing Experience](#raceroom-racing-experience) | 🟡 Playable -- Steering, pedals and force feedback all work, with no file to edit first. | No, just bind steering in the game | 2026-08-27 |
+| [Automobilista 2 Demo](#automobilista-2-demo) | 🟡 Playable -- Steering, pedals and force feedback all work, but the game adds a centre deadzone of its own and lets throttle bleed into steering. | Yes, set Controller Damping to 0 | 2026-08-27 |
 <!-- END generated -->
 
 | Status | Meaning |
@@ -314,12 +314,77 @@ left, against a hard ceiling of 65.6 s before it.
 
 ---
 
-## Automobilista 2
+## Automobilista 2 Demo
 
-**Status:** ⚪ Untested.
+**Status:** 🟡 Playable. Steering, pedals and force feedback all work, but the game adds a
+centre deadzone of its own and lets throttle bleed into steering. No anti-cheat.
 
-Built on Madness Engine, which generally accepts any DirectInput device with force feedback
-and exposes per-device settings in game. No anti-cheat.
+**Verified:** 2026-08-27, Steam, `AMS2DemoAVX.exe`. The full game is untested and may differ.
+
+### Set Controller Damping to 0 first
+
+Options > Controls > Configuration. **At 100, steering is completely dead on track** while the
+menus, calibration, pedals and force feedback all look perfect. The Custom Wheel preset can
+leave it at 100, so the usual advice for an unrecognised wheel is what puts it there.
+
+Nothing about the symptom points at a damping slider, so this is worth checking before anything
+else.
+
+#### How it was found
+
+The cross test did it:
+
+| Bound to | Result on track |
+|---|---|
+| wheel axis to throttle and brake | works, the car accelerates |
+| pedals to steering | ignored |
+
+The failure followed the **steering slot**, not the device and not the axis. That ruled out
+axis ranges, resolution, device IDs and the popular claim that the Madness engine blocks
+virtual devices, in one test. Damping sits on that slot: it kills whatever is bound there,
+leaves throttle, brake and force feedback alone, and applies only while driving.
+
+### The centre deadzone and the throttle bleed are the game's
+
+With damping fixed, throttle drags the steering further into the corner, and there is a dead
+patch around centre that calibration does not show.
+
+**Neither is ours.** Measured 2026-08-27 from `logs/vjoy_bridge_20260827_030410.log`:
+
+```
+max |steering - pos| overall: 0.0000
+
+wheel pos   throttle off        throttle on
+ -0.5       -0.5018 (n= 16)     -0.4785 (n=  8)
+ +0.2       +0.2035 (n= 53)     +0.2033 (n= 19)
+ +0.6       +0.6116 (n= 10)     +0.6140 (n=  9)
+```
+
+The steering fed to vJoy is the wheel position exactly, with no throttle term in it, at every
+position. The coupling is added inside the game.
+
+AMS2 classifies input devices and treats a wheel it does not recognise as a **gamepad**, which
+gets the engine's deadzone and sensitivity filtering. That filtering is speed dependent, which
+is why throttle changes the steering curve, and calibration looks fine because it reads the
+axis raw. [Reiza's own forum thread](https://forum.reizastudios.com/threads/vjoy-not-working.10026/)
+on this, with vJoy, ran from April 2020 to December 2021 and reached no fix:
+
+> there is a 10% deadzone around center (for each side) and at each end. This is enforced,
+> there is no option or workaround to disable it and it's there just while driving.
+
+Unlike DiRT 4, there is no device database to edit. Codemasters exposed theirs as an XML file;
+AMS2 identifies wheels by model, and vJoy's identity is fixed at `VID 0x1234 PID 0xBEAD`.
+
+### Things that are not the problem
+
+Tried, and changed nothing: Steam Input off, deleting the Documents folder, Return to Defaults,
+the over-rotate calibration trick. **Speed Sensitivity 0 is correct for a wheel**, so leave it.
+
+### What it sends
+
+One constant force, plus sine effects it allocates at gain 0 and never starts. Duration
+`0xFFFF`, the same infinite sentinel RaceRoom uses, so the fix described under RaceRoom covers
+this game too.
 
 ---
 

@@ -51,16 +51,22 @@
       ]
     },
     {
-      "name": "Automobilista 2",
-      "exe": [],
-      "status": "untested",
-      "summary": "Nobody has tried it yet.",
-      "setup_required": null,
-      "setup_summary": "Unknown",
-      "sends_ffb": null,
-      "verified": null,
-      "docs": "GAMES.md#automobilista-2",
-      "quirks": []
+      "name": "Automobilista 2 Demo",
+      "exe": ["ams2demoavx.exe", "ams2demo.exe"],
+      "status": "playable",
+      "summary": "Steering, pedals and force feedback all work, but the game adds a centre deadzone of its own and lets throttle bleed into steering.",
+      "setup_required": true,
+      "setup_summary": "Yes, set Controller Damping to 0",
+      "sends_ffb": true,
+      "verified": "2026-08-27",
+      "docs": "GAMES.md#automobilista-2-demo",
+      "quirks": [
+        "Set Controller Damping to 0 in Options > Controls > Configuration. At 100, which is where the Custom Wheel preset can leave it, steering is completely dead on track while the menus, calibration, pedals and force feedback all look perfect. This is the first thing to check and it is not obvious from any symptom.",
+        "Throttle bleeds into steering, and the game applies a centre deadzone that calibration does not show. Neither is ours: measured 2026-08-27, the steering fed to vJoy equals the wheel position exactly, with no throttle term, at every position. AMS2 treats a wheel it does not recognise as a gamepad and applies gamepad filtering, which is speed dependent. Reiza's own forum thread on this ran from 2020 to 2021 and reached no fix.",
+        "Speed Sensitivity 0 is correct for a wheel, so it is not worth changing. Steam Input, deleting the Documents folder, Return to Defaults and the over-rotate calibration trick were all tried and changed nothing.",
+        "There are two exes and the launcher picks by CPU support. AMS2DemoAVX.exe is the one that was tested.",
+        "It sends one constant force plus sine effects it never starts at gain 0, with duration 0xFFFF, the same infinite sentinel RaceRoom uses."
+      ]
     }
   ]
 }
