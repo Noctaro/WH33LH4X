@@ -61,12 +61,12 @@ Run it with no arguments for usage.
 | Parameter | Type | Default | What it does |
 |---|---|---|---|
 | `-Game` | string | — | Path to the game exe. Deploys the shim beside it and launches it. |
-| `-Gain` | double | `1.0` | Motor master gain. LATCHED when the shim loads the effect, so it cannot change while you drive -- leave it open and let `max_force` do the limiting. |
+| `-Gain` | double | `1.0` | Motor master gain. LATCHED when the shim loads the effect, so it cannot change while you drive. Leave it open and let `max_force` do the limiting. |
 | `-MaxForce` | double | `0.6` | STARTING cap on commanded force. `tune.json` overrides this live. |
 | `-KeepDll` | switch | — | Leave the shim in the game folder on exit instead of removing it. |
 | `-NoBridge` | switch | — | Deploy the shim but do not start the Python bridge. |
 | `-BridgeOnly` | switch | — | Start the bridge and nothing else. The old no-argument behaviour. |
-| `-NoLaunch` | switch | — | Deploy and start the bridge, but launch the game yourself -- what you want for a Steam title. |
+| `-NoLaunch` | switch | — | Deploy and start the bridge, but launch the game yourself. What you want for a Steam title. |
 | `-NoFfb` | switch | — | Feed the axes but never take the motor. USE THIS WHILE BINDING CONTROLS. |
 | `-StartTimeout` | int | `120` | Seconds to wait for the game process to appear. Steam can be slow. |
 | `-Quiet` | switch | — | — |
@@ -93,7 +93,7 @@ Ships in the downloadable bundle. Normally started for you by `play.ps1`. Run it
 | `--wait` | `30.0` | detection timeout |
 | `--dry-run` | — | read the wheel and report, but write nothing to vJoy |
 | `--no-ffb` | — | input path only; never take the motor |
-| `--sink` `ipc`/`wgi` | `ipc` | where force goes. 'ipc' (default) publishes to the shim inside the game, which is the only thing that works with a game running. 'wgi' drives the motor from this process and only produces torque while OUR window is in front -- diagnostics only. |
+| `--sink` `ipc`/`wgi` | `ipc` | where force goes. 'ipc' (default) publishes to the shim inside the game, which is the only thing that works with a game running. 'wgi' drives the motor from this process and only produces torque while this window is in front. Diagnostics only. |
 | `--no-grab` | — | never take the foreground. Force output will be silent unless you click the probe window yourself, but nothing steals your keyboard. |
 | `--run-seconds` | `0.0` | stop automatically after N seconds (default: run until Ctrl+C). Useful because an effect playing takes the foreground, which is also where your Ctrl+C would have gone. |
 | `--gain` | `0.5` | motor master gain 0.0-1.0 (default 0.5). Latched when the effect is loaded, so changing it needs a reload. |
@@ -129,7 +129,7 @@ or the real wheel. If it does not report `PASS`, nothing built on top of vJoy wi
 | `--feel` | — | play the effects slowly, one at a time, with instructions, so a human can judge whether each is rendered correctly. The default run is paced for a packet log and is far too fast to feel. |
 | `--hold` | `9.0` | seconds per effect in --feel mode (default 9) |
 | `--gap` | `5.0` | seconds of countdown between effects in --feel mode (default 5) |
-| `--send-only` | — | act purely as a DirectInput client: send effects to vJoy and do NOT acquire it or register a callback. This is how the bridge gets tested -- only one process can own a vJoy device, so the bridge holds it and this stands in for the game. |
+| `--send-only` | — | act purely as a DirectInput client: send effects to vJoy and do NOT acquire it or register a callback. This is how the bridge gets tested: only one process can own a vJoy device, so the bridge holds it and this stands in for the game. |
 | `--gain` | — | DirectInput effect gain 0.0-1.0. Defaults to 0.5 for the packet run and 1.0 for --feel: this gain arrives at the bridge as a byte and multiplies with the bridge's own limits, so 0.5 here is already halved before anything reaches the motor. |
 | `--no-log` | — | do not write a log file |
 
@@ -143,7 +143,7 @@ require.
 | Flag | Default | What it does |
 |---|---|---|
 | `--gain` | `1.0` | master gain 0.0-1.0, set before each load (default 1.0) |
-| `--magnitude` | `0.3` | effect magnitude 0.0-1.0 -- the intensity control (default 0.30) |
+| `--magnitude` | `0.3` | effect magnitude 0.0-1.0, the intensity control (default 0.30) |
 | `--duration` | `6.0` | seconds per effect, 0 = hold until Enter (default 6) |
 | `--wait` | `30.0` | detection timeout (default 30) |
 | `--list-only` | — | report only, play nothing |
@@ -214,7 +214,7 @@ None of these ship in the bundle.
 
 Everything below marked with a path lives in [`evidence/`](evidence/README.md) and
 records an API that **does not work** on this wheel. Run those as modules, from the repo
-root -- they import from it, so a direct path will not resolve:
+root, since they import from it, so a direct path will not resolve:
 
 ```
 .\.venv\Scripts\python.exe -m evidence.hid_probe
@@ -237,7 +237,7 @@ existence, or every later writer fails with `WinError 87` and the game gets no w
 input.
 
 **It skips itself when a bridge is already running.** It opens a real sink, and closing
-one zeroes the bridge heartbeat -- against a live session that is a force-feedback
+one zeroes the bridge heartbeat, and against a live session that is a force feedback
 dropout. Takes no flags.
 
 ### `evidence/probe.py` — does GameInput expose force-feedback motors? (**no**)
@@ -298,9 +298,9 @@ from.
 | Flag | Default | What it does |
 |---|---|---|
 | `--max` | `0.6` | highest force to try, 0.0-1.0 (default 0.60) |
-| `--step` | `0.02` | force increment per attempt (default 0.02). MEASURED 2026-08-25: on a Hori Force Feedback Racing Wheel DLX, 0.02 completed 9 of 9 runs while 0.01 completed 1 to 2 of 4 before the motor stalled, and both report the first step tried -- a finer step buys risk, not detail. Other wheels may take a smaller step safely. |
+| `--step` | `0.02` | force increment per attempt (default 0.02). MEASURED 2026-08-25: on a Hori Force Feedback Racing Wheel DLX, 0.02 completed 9 of 9 runs while 0.01 completed 1 to 2 of 4 before the motor stalled, and both report the first step tried, and a finer step buys risk, not detail. Other wheels may take a smaller step safely. |
 | `--passes` | `3` | measurements per direction (default 3); stiction scatters |
-| `--gain` | `1.0` | motor master gain (default 1.0 -- measure the hardware, not a gain) |
+| `--gain` | `1.0` | motor master gain (default 1.0: measure the hardware, not a gain) |
 | `--wait` | `20.0` | device wait timeout |
 | `--selftest` | `0` | skip measuring; probe for torque N times against one held effect and report how many worked. Use this to judge a reliability change. |
 | `--reopen` | — | with --selftest, close and reopen the motor for every probe. This REPRODUCES THE BUG (2/10 on 2026-08-25) and is kept for that. |

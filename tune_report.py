@@ -1,10 +1,10 @@
 r"""
-tune_report.py -- read a bridge session log and say what the force feedback actually did.
+tune_report.py: read a bridge session log and say what the force feedback actually did.
 
 WHY THIS EXISTS
 ---------------
 Feel is the goal, but feel is a terrible instrument for finding faults. A rectified output --
-every force pointing the same way, no matter which way the game meant it -- survived a full
+every force pointing the same way no matter which way the game meant it, survived a full
 session of driving described as "bumps and gravel feel ok", because rectification is inaudible
 on symmetric effects. It took thirty seconds of arithmetic on a log to see it.
 
@@ -27,7 +27,7 @@ import sys
 
 # The force below which this wheel does not move at all, so anything under it is commanded and
 # then silently does nothing. MEASURED on a Hori Force Feedback Racing Wheel DLX (VID 0x0F0D,
-# Xbox mode) with stiction_test.py on 2026-08-25 -- ANOTHER WHEEL NEEDS ITS OWN RUN. This is
+# Xbox mode) with stiction_test.py. Another wheel needs its own run. This is
 # not a
 # constant of the API or of racing wheels in general.
 #
@@ -121,7 +121,7 @@ def main():
     print("session: %s" % os.path.basename(path))
     print("samples: %d" % len(ticks))
     if not ticks:
-        print("\nNo telemetry in this log -- the bridge never reached its run loop.")
+        print("\nNo telemetry in this log: the bridge never reached its run loop.")
         return 1
 
     print("\neffects the game sent")
@@ -132,7 +132,7 @@ def main():
             print("  -> constant force ONLY: no spring, damper or periodic. Centring has to")
             print("     arrive inside that one signed stream, or be synthesised here.")
     else:
-        print("  none -- the game sent no effects at all.")
+        print("  none, the game sent no effects at all.")
 
     if directions:
         print("\ndirections the game used")
@@ -155,7 +155,7 @@ def main():
         print("  ** RECTIFIED: output never goes negative. The wheel physically cannot")
         print("     centre, and will pull one way permanently. This is a bug, not a setting.")
     elif pos == 0 and neg > 0:
-        print("  ** RECTIFIED (negative side only) -- same bug, mirrored.")
+        print("  ** RECTIFIED (negative side only): same bug, mirrored.")
 
     nz = [abs(v) for v in out if abs(v) > 0.001]
     if nz:
@@ -170,13 +170,13 @@ def main():
     # responds to where the wheel is, and the wheel goes where the force pushes it. So this
     # correlation is only a measurement of the GAME when we are not driving the wheel. Once
     # the loop is closed and running away, both saturate together and it reads strongly
-    # positive no matter what the game intended -- which is exactly how it was misread for
+    # positive no matter what the game intended, which is exactly how it was misread for
     # three rounds of "flip the sign and try again".
     #
     # To measure the game's intent, break the loop: set strength 0 in tune.json, steer by
     # hand, and read the OPEN LOOP number below.
     # Only the LAST unbroken stretch with no force applied. A session usually contains
-    # several, and in-game force feedback settings change between them -- one taken with the
+    # several, and in-game force feedback settings change between them. One taken with the
     # game's centring spring on and one with it off describe different games, and averaging
     # them together produced a confident wrong answer once already. The most recent stretch
     # is the one that matches how the game is configured now.
@@ -195,22 +195,22 @@ def main():
         r_open = correlation(ol)
         # A correlation over near-zero forces is a verdict about noise. This printed
         # "invert must be TRUE" from samples whose largest force was 0.066 of full scale and
-        # whose signs agreed 55% of the time -- a coin flip dressed up as r = +0.390. So the
+        # whose signs agreed 55% of the time: a coin flip dressed up as r = +0.390. So the
         # force has to be big enough to mean something before its sign is worth reporting.
         strongest = max((abs(g) for _s, g in ol), default=0.0)
         agree = (sum(1 for s, g in ol if s * g > 0) / len(ol)) if ol else 0.0
         decisive = strongest > 0.15 and (agree > 0.8 or agree < 0.2)
         if r_open is not None and len(ol) >= 10 and not decisive:
-            print("\nOPEN LOOP -- inconclusive")
+            print("\nOPEN LOOP: inconclusive")
             print("  Largest force seen was %.3f and signs agreed %.0f%% of the time, so"
                   % (strongest, 100 * agree))
             print("  there is no sign to read here. The game sent almost nothing while the")
-            print("  wheel was held at an angle -- which is itself a finding: its force may")
+            print("  wheel was held at an angle, which is itself a finding: its force may")
             print("  depend on wheel MOVEMENT rather than wheel ANGLE. Check the velocity")
             print("  section below.")
         elif r_open is not None and len(ol) >= 10:
             same = sum(1 for s, g in ol if s * g > 0)
-            print("\nOPEN LOOP -- the game's intent, measured while we drove the wheel with"
+            print("\nOPEN LOOP: the game's intent, measured while the wheel was driven with"
                   " nothing")
             print("  corr(steering, game force) = %+.3f over %d samples" % (r_open, len(ol)))
             print("  force points the SAME way as steering in %d of %d (%.0f%%)"
@@ -228,7 +228,7 @@ def main():
     # opposite handling. DiRT 4 with its centring spring disabled sends pure damping: nothing
     # while the wheel is held, force strictly opposing motion once it moves (measured at
     # r = -0.998, 0 of 34 samples agreeing in sign). Inverting a damping force turns it into
-    # NEGATIVE damping, which feeds energy into any disturbance -- a wheel that oscillates
+    # negative damping, which feeds energy into any disturbance: a wheel that oscillates
     # lock to lock from the smallest nudge. That is not a gain problem and no amount of
     # lowering strength fixes it.
     if have_game:
@@ -237,7 +237,7 @@ def main():
         if len(vel) >= 10:
             r_vel = correlation(vel)
             agree = sum(1 for v, g in vel if v * g > 0)
-            print("\nOPEN LOOP -- force against wheel MOVEMENT")
+            print("\nOPEN LOOP: force against wheel movement")
             if still:
                 print("  wheel held still: mean force %.3f over %d samples"
                       % (sum(abs(t[2]) for t in still) / len(still), len(still)))
@@ -260,7 +260,7 @@ def main():
               % (closed, len(ticks)))
         print("  our own output. Trust the OPEN LOOP section above for the game's intent.")
     if r is None:
-        print("  not enough samples with both steering and force -- drive some corners.")
+        print("  not enough samples with both steering and force. Drive some corners.")
     else:
         print("  corr(steering, force) = %+.3f over %d samples" % (r, len(pairs)))
         print("  %s" % bar(r))
@@ -268,7 +268,7 @@ def main():
             print("  -> GOOD. Force opposes steering: that is self-aligning torque.")
         elif r > 0.3:
             print("  -> INVERTED. Force pushes deeper into the turn. Set invert=true in")
-            print("     tune.json -- no restart needed.")
+            print("     tune.json, no restart needed.")
         else:
             print("  -> NO RELATIONSHIP. Either the sign is being destroyed, or the game is")
             print("     not sending centring at all. Check the directions section above.")
@@ -286,7 +286,7 @@ def main():
         span = max(angles) - min(angles)
         if span and max(angles) <= 16384:
             print("  the game never leaves the first half circle, where sin cannot go")
-            print("  negative -- so 'sin' mode CANNOT produce a leftward force here.")
+            print("  negative, so 'sin' mode cannot produce a leftward force here.")
         r_dir = correlation(aimed)
         if r_dir is not None:
             print("  corr(steering, dirx) = %+.3f" % r_dir)

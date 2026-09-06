@@ -1,5 +1,5 @@
 r"""
-gen_commands.py -- generate COMMANDS.md from the actual source.
+gen_commands.py: generate COMMANDS.md from the actual source.
 
 Flags and defaults are read out of the argparse calls and the PowerShell param() blocks,
 so the reference cannot claim a flag the code does not parse. The prose around them is
@@ -100,12 +100,12 @@ def flag_table(path):
 PS_HELP = {
     'Game': 'Path to the game exe. Deploys the shim beside it and launches it.',
     'Gain': 'Motor master gain. LATCHED when the shim loads the effect, so it cannot change '
-            'while you drive -- leave it open and let `max_force` do the limiting.',
+            'while you drive. Leave it open and let `max_force` do the limiting.',
     'MaxForce': 'STARTING cap on commanded force. `tune.json` overrides this live.',
     'KeepDll': 'Leave the shim in the game folder on exit instead of removing it.',
     'NoBridge': 'Deploy the shim but do not start the Python bridge.',
     'BridgeOnly': 'Start the bridge and nothing else. The old no-argument behaviour.',
-    'NoLaunch': 'Deploy and start the bridge, but launch the game yourself -- what you want '
+    'NoLaunch': 'Deploy and start the bridge, but launch the game yourself. What you want '
                 'for a Steam title.',
     'NoFfb': 'Feed the axes but never take the motor. USE THIS WHILE BINDING CONTROLS.',
     'StartTimeout': 'Seconds to wait for the game process to appear. Steam can be slow.',
@@ -293,7 +293,7 @@ None of these ship in the bundle.
 
 Everything below marked with a path lives in [`evidence/`](evidence/README.md) and
 records an API that **does not work** on this wheel. Run those as modules, from the repo
-root -- they import from it, so a direct path will not resolve:
+root, since they import from it, so a direct path will not resolve:
 
 ```
 .\.venv\Scripts\python.exe -m evidence.hid_probe
@@ -316,7 +316,7 @@ existence, or every later writer fails with `WinError 87` and the game gets no w
 input.
 
 **It skips itself when a bridge is already running.** It opens a real sink, and closing
-one zeroes the bridge heartbeat -- against a live session that is a force-feedback
+one zeroes the bridge heartbeat, and against a live session that is a force feedback
 dropout. Takes no flags.
 
 ### `evidence/probe.py` — does GameInput expose force-feedback motors? (**no**)

@@ -1,36 +1,12 @@
 r"""
-gui.py -- the window. Pick a game, start it, see whether the pieces are alive.
+gui.py: the window. Pick a game, start it, see whether the pieces are alive.
 
-SCOPE, DELIBERATELY SMALL
--------------------------
-This is the minimum that makes the tool usable without reading COMMANDS.md: choose a game,
-start and stop it, three status badges, what is known about that particular game, and the
-wheel-feel knobs. There is no setup wizard, no per-game installer, no live force meter. Those
-were planned and cut -- they can be added once something here proves inadequate, which is a
-better reason to build them than a plan written before anyone used it.
+Deliberately small: choose a game, start and stop it, three status badges, per-game notes, and
+the wheel feel sliders. No setup wizard, no per-game installer, no live force meter. See
+docs/development.md#the-window for why tkinter, and why this shells out to play.ps1.
 
-WHY TKINTER AND NOT A WEB UI
-----------------------------
-The alternative was Edge in app mode talking to a local HTTP server. That costs zero download,
-but it opens a listening socket -- in a tool whose central problem is convincing Windows and a
-suspicious user that an unsigned dinput8.dll is not malware. It also means two processes, two
-languages and a lifecycle where closing the window does not stop the server.
-
-tkinter is not in the embeddable runtime, so the bundle vendors tcl/tk: measured at +2.5 MB
-zipped, and the three binaries (tcl86t.dll, tk86t.dll, _tkinter.pyd) are signed by the Python
-Software Foundation. One process, one language, no port. It looks dated. That was accepted.
-
-WHY THIS SHELLS OUT TO play.ps1 INSTEAD OF LAUNCHING THE GAME ITSELF
---------------------------------------------------------------------
-play.ps1 deploys the shim, backs up a foreign dinput8.dll, starts the bridge, watches for the
-game process and cleans up on every exit path including Ctrl+C. It is 315 lines and it is
-verified on hardware. Porting it to Python is planned -- one launcher is better than two -- but
-a rewrite whose only test is "play DiRT 4 and see" should not also be the thing carrying a new
-UI. So: the GUI collects arguments, play.ps1 keeps doing the job it already does, and it gets
-retired once its replacement has driven a real session.
-
-RUN IT WITH pythonw.exe so there is no console window:
-    .\.venv\Scripts\pythonw.exe gui.py
+Run it with pythonw.exe so there is no console window:
+    .venv/Scripts/pythonw.exe gui.py
 """
 
 import ctypes
@@ -48,40 +24,39 @@ from motor_sink import IpcMotorSink
 ROOT = os.path.dirname(os.path.abspath(__file__))
 SETTINGS = os.path.join(ROOT, "gui_settings.json")
 TUNE = os.path.join(ROOT, "tune.json")
+# Asking play.ps1 to stop, rather than killing it. See _stop.
+STOP_REQUEST = os.path.join(ROOT, "stop.request")
+LOGS = os.path.join(ROOT, "logs")
 GAMES = os.path.join(ROOT, "games.json")
 
 POLL_MS = 250
-# How long the bridge gets to appear after Start before the window says it has not. Generous:
-# WGI enumeration alone can take several seconds when the wheel was only just plugged in.
+# How long the bridge gets to appear after Start. Generous: WGI enumeration alone can take
+# seconds when the wheel was only just plugged in.
 BRIDGE_GRACE = 20.0
+# How long play.ps1 gets to shut down after being asked, before it is killed. Its wait loop
+# polls every 2 seconds and the bridge takes a moment to release vJoy.
+STOP_GRACE = 8.0
+# How many games the Recent dropdown remembers. A shortcut, not a library.
+RECENT_MAX = 8
 
-# Strength scales the force the GAME sends. It is the volume knob, and the one people reach
-# for first, so it is the one slider that must be here.
-#
-# The cap is 1.0 because 1.0 is exactly what the game asked for. Above that is amplification,
-# which is a real thing to want on a game that sends weak force, but it is not a first-run
-# knob -- live_tune's button tuner goes to 3.0 and tune.json has no limit at all.
+# Strength scales the force the game sends. Capped at 1.0 because that is exactly what the
+# game asked for; amplification above it is expert territory, and tune.json has no limit.
 STRENGTH = ("strength", "Strength", 0.0, 1.0, "how hard the game's own force is felt")
 
-# If it is missing from tune.json, live_tune uses 1.0. Showing 0.0 here would be a lie, and
-# touching the slider would then write that lie to the file.
+# CONSTRAINT: live_tune defaults strength to 1.0 when absent. Showing 0.0 would be a lie the
+# slider then writes to the file.
 TUNE_DEFAULTS = {"strength": 1.0}
 
-# The wheel-feel knobs, and the range the GUI allows.
+# The wheel feel knobs, and the range the window allows.
 #
-# live_tune's own button-tuner permits up to 2.0. This caps lower ON PURPOSE. Spring and damper
-# close a loop around a wheel strong enough to whip itself to full lock, through a game whose
-# force already reflects wheel position from tens of milliseconds ago -- GAMES.md records that
-# too much gain makes it hunt, and at worst sweep lock to lock. A slider is easier to move
-# carelessly than a config file is to edit, so the slider gets the smaller range.
-#
-# Strength needs no such caution: it scales the game's force without reading wheel position,
-# so there is no loop to close and nothing to self-excite.
+# CONSTRAINT: capped below live_tune's 2.0 on purpose. Spring and damper close a loop around
+# the wheel and hunt at too much gain, and a slider is easier to move carelessly than a config
+# file is to edit. See GAMES.md. Strength closes no loop and needs no such caution.
 FEEL = [
     ("spring", "Spring", 0.0, 1.0,
      "pulls back to centre, harder the further off you are"),
     ("damper", "Damper", 0.0, 1.0,
-     "resists how fast you turn -- this is what keeps the spring steady"),
+     "resists how fast you turn: this is what keeps the spring steady"),
     ("friction", "Friction", 0.0, 1.0,
      "constant drag whenever the wheel moves: weight, not centring"),
 ]
@@ -100,8 +75,8 @@ PD_NOTE = (
     "Spring and Damper are a pair. The spring does the centring; the damper stops it "
     "overshooting and hunting. Raise them together.\n\n"
     "If you know control theory: this is a PD controller. Spring is the proportional term "
-    "(force from HOW FAR off centre the wheel is) and Damper is the derivative term (force "
-    "from HOW FAST it is moving). A P term alone, in a loop with lag, oscillates -- the D "
+    "(force from how far off centre the wheel is) and Damper is the derivative term (force "
+    "from how fast it is moving). A P term alone, in a loop with lag, oscillates. The D "
     "term is what makes it settle. It is the same reason raising strength on its own can "
     "make the wheel hunt."
 )
@@ -109,7 +84,7 @@ PD_NOTE = (
 
 # --------------------------------------------------------------------------- shared section
 
-# Watching a shared section must never CREATE one. See ShimView.
+# CONSTRAINT: watching a shared section must never create one. See ShimView.
 FILE_MAP_READ = 0x0004
 _k32 = ctypes.WinDLL("kernel32", use_last_error=True)
 _k32.OpenFileMappingW.restype = ctypes.c_void_p
@@ -124,31 +99,19 @@ _k32.GetTickCount64.restype = ctypes.c_ulonglong
 
 class ShimView(object):
     """
-    READ-ONLY view of the shim's shared section. It observes; it owns nothing.
+    Read-only view of the shim's shared section. It observes; it owns nothing.
 
-    It does NOT use IpcMotorSink, and that is not a style preference. `IpcMotorSink.open()`
-    stamps the bridge heartbeat, and the shim treats that stamp as "the bridge is alive" --
-    so a GUI that opened one would make the shim hold the motor on behalf of a bridge that is
-    not running. The struct layout is still taken from IpcMotorSink rather than copied, so
-    there is one definition of the wire format and it stays matched to shim/ipc.h.
+    CONSTRAINT: must not create the section. OpenFileMappingW fails when there is nothing to
+    open; mmap(-1) invents one, as PAGE_READONLY, and every later writer then fails with
+    WinError 87. See docs/development.md#the-window.
 
-    IT ALSO MUST NOT CREATE THE SECTION, WHICH IS THE HARDER HALF. This class used to call
-    `mmap.mmap(-1, size, tagname=NAME, access=ACCESS_READ)`. With fileno -1 that CREATES the
-    mapping when none exists -- and creates it PAGE_READONLY. Every later writer then fails:
-    the bridge died on `OSError [WinError 87]` a second after starting, and the shim logged
-    `ipc: MapViewOfFile failed, err=87` from inside the game. The game ran with no wheel input
-    at all, and the GUI cheerfully reported "Bridge running" while showing `not running`.
-
-    It only bit once the GUI became the thing that starts the bridge, because whoever touches
-    the section first creates it, and pressing Start guarantees that is the GUI.
-
-    So: OpenFileMappingW, which FAILS when there is nothing to open, instead of mmap, which
-    invents one. Opened and closed per read, so a dead bridge's section is not held alive by
-    the window that was only ever meant to watch it.
+    CONSTRAINT: must not use IpcMotorSink. Its open() stamps the bridge heartbeat, which makes
+    the shim hold the motor for a bridge that is not running. The struct layout is still taken
+    from IpcMotorSink so the wire format has one definition, matched to shim/ipc.h.
     """
 
     def read(self):
-        """(shim_alive, shim_state, bridge_alive) -- all False/None when nothing is running."""
+        """(shim_alive, shim_state, bridge_alive). All False or None when nothing runs."""
         blob = self._snapshot()
         if blob is None:
             return (False, IpcMotorSink.STATE_NONE, False)
@@ -190,28 +153,57 @@ class ShimView(object):
         """Nothing is held open between reads, so there is nothing to release."""
 
 
+def bundle_version():
+    """The bundle's version, or None in a repo checkout, where nothing writes the file."""
+    try:
+        with open(os.path.join(ROOT, "VERSION.txt"), encoding="utf-8") as fh:
+            return fh.readline().strip() or None
+    except OSError:
+        return None
+
+
+def last_log_line():
+    """
+    Why the newest bridge run gave up, or None if it did not say.
+
+    The bridge writes one `exit.fatal` event before returning non-zero, and that is the only
+    thing read here. Guessing from the last console line does not work: a failed run still
+    releases the motor on the way out, so the final line is housekeeping and the diagnosis is
+    several lines above it.
+    """
+    try:
+        logs = [os.path.join(LOGS, n) for n in os.listdir(LOGS)
+                if n.startswith("vjoy_bridge_") and n.endswith(".log")]
+        if not logs:
+            return None
+        with open(max(logs, key=os.path.getmtime), encoding="utf-8",
+                  errors="replace") as fh:
+            for line in fh:
+                if "exit.fatal" in line and "reason=" in line:
+                    return line.split("reason=", 1)[1].strip()
+    except Exception:
+        pass                           # a missing reason must never break the window
+    return None
+
+
 def is_steam_game(exe_path, game=None):
     """
     Does this game come up through the Steam client rather than from the exe we start?
 
     games.json is asked first, because a game can be a Steam title while sitting outside the
-    default library. The path check is the fallback that works for titles nobody has written
-    an entry for yet -- which is most of them.
+    default library. The path check is the fallback for titles with no entry yet.
     """
     if game is not None and game.get("launch"):
         return game["launch"] == "steam"
     return os.sep + "steamapps" + os.sep in exe_path.replace("/", os.sep).lower()
 
 
-# vJoy device 1 is what the bridge feeds, and these are the axes GAMES.md tells people to
-# enable. HID usage codes, from the vJoy SDK.
+# The device the bridge feeds, and the axes docs/vjoy.md says to enable. HID usage codes.
 VJOY_DEVICE = 1
 VJOY_AXES = (("X", 0x30), ("Y", 0x31), ("Z", 0x32), ("Rx", 0x33), ("Ry", 0x34))
 
-# 2.2.0 is the floor. Below it, concurrent effects share force-feedback block index 1, so a
-# game sending spring plus damper plus texture has them collapse into one. That failure is
-# SILENT: it passes a one-effect-at-a-time test and only shows up in a real game, as bad feel.
-# See requirements.txt and the vJoy fork notes.
+# CONSTRAINT: 2.2.0 is the floor. Below it concurrent effects share block index 1 and collapse
+# into one, silently. See docs/vjoy.md.
 VJOY_MIN_VERSION = 0x0220
 
 VJOY_DOWNLOAD = "https://github.com/BrunnerInnovation/vJoy"
@@ -243,12 +235,11 @@ def vjoy_version_text(raw):
 
 def vjoy_check():
     """
-    (ok, badge, title, guidance) for vJoy device 1, WITHOUT acquiring it.
+    (ok, badge, title, guidance) for vJoy device 1, without acquiring it.
 
-    Acquiring would fight the bridge for the device, so every call here is a query. This is
-    the first-run failure everybody hits, so it reports WHAT TO DO rather than a status code.
-    Checks run worst-first and stop at the first real problem, because a missing driver makes
-    every later answer meaningless.
+    CONSTRAINT: query only. Acquiring would fight the bridge for the device. Checks run worst
+    first and stop at the first real problem, because a missing driver makes every later
+    answer meaningless.
     """
     dll, sdk = _vjoy_dll()
     if sdk is None:
@@ -326,7 +317,7 @@ def vjoy_check():
                                              ", ".join(missing)))
 
     where = "ours" if st == VJD_STAT_OWN else "free"
-    return (True, "OK -- device 1 %s, v%s" % (where, vjoy_version_text(raw)), None, None)
+    return (True, "OK, device 1 %s, v%s" % (where, vjoy_version_text(raw)), None, None)
 
 
 # --------------------------------------------------------------------------- game notes
@@ -357,19 +348,19 @@ class GameNotes(object):
             if not exe_path:
                 return "Pick a game exe and anything known about it appears here."
             return ("No notes for %s yet.\n\n"
-                    "That does not mean it will not work -- it means nobody has written it "
+                    "That does not mean it will not work, only that nobody has written it "
                     "up. If you get it running, GAMES.md has a template, and the entry "
                     "belongs in games.json." % os.path.basename(exe_path))
 
-        out = ["%s -- %s" % (game["name"], game.get("summary", ""))]
+        out = ["%s: %s" % (game["name"], game.get("summary", ""))]
         if game.get("verified"):
             out.append("Last verified %s." % game["verified"])
         if game.get("setup_required"):
             out.append("")
-            out.append("NEEDS SETUP BEFORE IT WORKS. See %s." % game.get("docs", "GAMES.md"))
+            out.append("Needs setup before it works. See %s." % game.get("docs", "GAMES.md"))
         if game.get("sends_ffb") is False:
             out.append("")
-            out.append("This game sends no force feedback of its own -- Spring and Damper "
+            out.append("This game sends no force feedback of its own. Spring and Damper "
                        "below are how you get centring here.")
         for q in game.get("quirks") or []:
             out.append("")
@@ -386,16 +377,20 @@ class App(object):
         self.notes = GameNotes()
         self.view = ShimView()
         self.proc = None
-        # Start time and whether the bridge was EVER seen alive, so a bridge that dies during
-        # startup can be reported. play.ps1 outlives it -- it goes on waiting for the game --
-        # so its exit code says nothing about the bridge underneath.
+        # Whether the bridge was ever seen alive, so one that dies at startup is reported.
+        # play.ps1 outlives it, so its exit code says nothing about the bridge underneath.
         self.started_at = None
         self.bridge_seen = False
         self.warned_no_bridge = False
+        # Set when a stop has been asked for and not yet happened. See _stop.
+        self.stop_deadline = None
         self.tune = self._load_tune()
         self.game = tk.StringVar(value=self._load_setting("game", ""))
 
-        root.title("WH33LH4X")
+        # A plain title is the repo checkout, a version is the bundle. Which install a
+        # screenshot came from stops being a question.
+        version = bundle_version()
+        root.title(("WH33LH4X %s" % version) if version else "WH33LH4X")
         root.minsize(620, 640)
         main = ttk.Frame(root, padding=10)
         main.pack(fill="both", expand=True)
@@ -423,12 +418,26 @@ class App(object):
         ttk.Entry(row, textvariable=self.game).pack(side="left", fill="x", expand=True)
         ttk.Button(row, text="Browse...", command=self._browse).pack(side="left", padx=(6, 0))
 
-        row2 = ttk.Frame(box)
-        row2.pack(fill="x", pady=(8, 0))
-        self.start_btn = ttk.Button(row2, text="Start", command=self._start)
+        # Writes a path into the entry above, which stays the one thing _start reads.
+        self.recent_row = ttk.Frame(box)
+        ttk.Label(self.recent_row, text="Recent:").pack(side="left")
+        self.recent_pick = tk.StringVar()
+        self.recent_box = ttk.Combobox(self.recent_row, textvariable=self.recent_pick,
+                                       state="readonly", width=40)
+        self.recent_box.pack(side="left", padx=(6, 0))
+        self.recent_box.bind("<<ComboboxSelected>>", self._pick_recent)
+
+        self.buttons_row = ttk.Frame(box)
+        self.buttons_row.pack(fill="x", pady=(8, 0))
+        self.start_btn = ttk.Button(self.buttons_row, text="Start", command=self._start)
         self.start_btn.pack(side="left")
-        self.stop_btn = ttk.Button(row2, text="Stop", command=self._stop, state="disabled")
+        self.stop_btn = ttk.Button(self.buttons_row, text="Stop", command=self._stop,
+                                   state="disabled")
         self.stop_btn.pack(side="left", padx=(6, 0))
+
+        # After the buttons exist: showing the row later puts it back above them, and
+        # before= needs something to be before.
+        self._refresh_recent()
 
     def _build_status(self, parent):
         box = ttk.LabelFrame(parent, text="Status", padding=8)
@@ -442,8 +451,7 @@ class App(object):
             ttk.Label(row, textvariable=var).pack(side="left")
             self.badges[key] = var
             if key == "vjoy":
-                # Shown only when the check finds something. A permanent button beside a
-                # healthy badge is just noise.
+                # Shown only when the check finds something.
                 self.vjoy_fix = ttk.Button(row, text="How do I fix this?", width=18,
                                            command=self._vjoy_help)
                 self.vjoy_problem = None
@@ -461,9 +469,8 @@ class App(object):
         box.pack(fill="x", pady=(10, 0))
         self.feel_vars = {}
 
-        # Strength first, and set apart: it scales the game's own force, while the three below
-        # add force the game never sent. Putting them in one undivided list implies they are
-        # the same kind of knob.
+        # Strength is set apart: it scales the game's own force, while the three below add
+        # force the game never sent.
         self._feel_row(box, STRENGTH)
         ttk.Separator(box, orient="horizontal").pack(fill="x", pady=6)
         ttk.Label(box, text="Added force the game is not sending:",
@@ -479,6 +486,53 @@ class App(object):
                    ).pack(anchor="w", pady=(4, 0))
 
     # -- behaviour -----------------------------------------------------------
+
+    # -- the recent list -----------------------------------------------------
+
+    def _recent_label(self, path):
+        """What to call a remembered game. Its real name when games.json knows the exe."""
+        game = self.notes.find(path)
+        if game:
+            return game["name"]
+        return os.path.basename(path)
+
+    def _refresh_recent(self):
+        """
+        Rebuild the dropdown from the stored paths, and hide it when it has nothing to add.
+
+        A dropdown holding one item is a control that cannot do anything, so it only appears
+        once there is a second game to switch to.
+        """
+        paths = [p for p in self._load_setting("recent", []) if isinstance(p, str)]
+        labels = [self._recent_label(p) for p in paths]
+        # Two installs of the same game, or two unknown exes with the same filename, would
+        # otherwise be one label appearing twice with no way to tell which is which.
+        # Counted against a copy: renaming in place would drop the count for the entries not
+        # reached yet, so the third install of a game would keep the ambiguous label.
+        seen = list(labels)
+        for i, label in enumerate(labels):
+            if seen.count(label) > 1:
+                labels[i] = "%s  (%s)" % (label, os.path.basename(os.path.dirname(paths[i])))
+        self.recent_paths = dict(zip(labels, paths))
+        self.recent_box.configure(values=labels)
+        if len(labels) > 1:
+            self.recent_row.pack(fill="x", pady=(6, 0), before=self.buttons_row)
+        else:
+            self.recent_row.pack_forget()
+
+    def _pick_recent(self, _event=None):
+        path = self.recent_paths.get(self.recent_pick.get())
+        if path:
+            self.game.set(path)
+            self._save_setting("game", path)
+            self._refresh_notes()
+
+    def _remember(self, path):
+        """Move a game to the front of the recent list. Called on Start, not on Browse."""
+        paths = [p for p in self._load_setting("recent", []) if isinstance(p, str)]
+        paths = [p for p in paths if p.lower() != path.lower()]
+        self._save_setting("recent", ([path] + paths)[:RECENT_MAX])
+        self._refresh_recent()
 
     def _browse(self):
         path = filedialog.askopenfilename(title="Pick the game executable",
@@ -497,8 +551,14 @@ class App(object):
 
     def _start(self):
         exe = self.game.get().strip()
-        if not exe or not os.path.isfile(exe):
+        if not exe:
             self._say("Pick a game executable first.")
+            return
+        if not os.path.isfile(exe):
+            # Remembered games go stale: uninstalled, moved, or on a drive that is not awake.
+            # The list keeps the entry, because dropping a game because an external disk was
+            # asleep would be worse than a message saying where it was.
+            self._say("That file is not there any more: %s" % exe)
             return
 
         game = self.notes.find(exe)
@@ -510,11 +570,9 @@ class App(object):
         # state in its Status panel, so a console adds a second window and no information.
         cmd = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ps,
                "-Game", exe, "-Quiet"]
-        # STEAM DRM RELAUNCHES THE GAME THROUGH THE CLIENT, so the exe we start exits at once
-        # and the real game appears as a different process. Launching it ourselves therefore
-        # looks like the game quitting instantly and play.ps1 correctly tears everything down.
-        # -NoLaunch is play.ps1's answer: deploy the shim, start the bridge, then WAIT for the
-        # process to show up however it was started. GAMES.md has said so all along.
+        # CONSTRAINT: Steam DRM relaunches the game through the client, so a directly started
+        # exe exits at once and reads as the game quitting. -NoLaunch deploys the shim, starts
+        # the bridge, then waits for the process however it was started. See GAMES.md.
         if steam:
             cmd.append("-NoLaunch")
         try:
@@ -529,36 +587,62 @@ class App(object):
 
         self.start_btn.configure(state="disabled")
         self.stop_btn.configure(state="normal")
+        # Remembered here rather than in _browse, so browsing to the wrong exe never fills the
+        # list with things that were never played. RRRE64.exe against RRREWebBrowser.exe is
+        # exactly that mistake.
+        self._remember(exe)
 
         if not steam:
             self._say("Started. play.ps1 deploys the shim and launches the game.")
             return
         if appid:
-            # We can press the button for them: the client is what has to start the game, but
-            # nothing says a person has to be the one to ask it.
+            # The client has to start the game, but nobody has to be the one to ask it.
             try:
                 os.startfile("steam://rungameid/%d" % appid)   # noqa: S606
-                # Say what was REQUESTED, never what is true -- the badges above are the only
-                # things reading real state. This line used to claim "Bridge running" while the
-                # badge beside it said "not running", and the badge was the honest one.
-                self._say("Asked Steam to launch the game. play.ps1 is starting the bridge "
-                          "-- watch the Bridge badge.")
+                # CONSTRAINT: say what was requested, never what is true. The badges above
+                # are the only things reading real state.
+                self._say("Asked Steam to launch the game. play.ps1 is starting the "
+                          "bridge. Watch the Bridge badge.")
             except Exception as exc:
                 self._say("Could not ask Steam to launch it (%s). Start it from Steam "
                           "yourself." % exc)
         else:
-            self._say("START THE GAME FROM STEAM NOW -- play.ps1 waits up to 10 minutes.")
+            self._say("Start the game from Steam now. play.ps1 waits up to 10 minutes.")
 
     def _stop(self):
-        if self.proc is not None and self.proc.poll() is None:
-            # terminate() lets play.ps1's finally block run, which is what removes the shim
-            # from the game folder and restores any dinput8.dll it moved aside.
-            self.proc.terminate()
-            self._say("Stopping -- play.ps1 is cleaning up the game folder.")
-        self._ended()
+        """
+        Ask play.ps1 to stop, and kill it only if asking does not work.
+
+        CONSTRAINT: do not terminate() first. That is TerminateProcess on Windows, so
+        PowerShell never unwinds and its finally block never runs, leaving a bridge holding
+        vJoy and a dinput8.dll in the game folder. See docs/development.md#the-window.
+        """
+        if self.proc is None or self.proc.poll() is not None:
+            self._ended()
+            return
+        self._request_stop()
+        # Waiting here would freeze the window. _poll runs four times a second and already
+        # notices the process ending, so it does the waiting.
+        self.stop_deadline = time.monotonic() + STOP_GRACE
+        self.stop_btn.configure(state="disabled")
+        self._say("Stopping. play.ps1 is cleaning up the game folder.")
+
+    def _request_stop(self):
+        """Touch the file play.ps1 polls for. Returns whether it worked."""
+        try:
+            with open(STOP_REQUEST, "w", encoding="utf-8") as fh:
+                fh.write("stop\n")
+            return True
+        except Exception:
+            return False               # killing is the fallback for exactly this
 
     def _ended(self):
         self.proc = None
+        self.stop_deadline = None
+        try:
+            os.remove(STOP_REQUEST)
+        except OSError:
+            pass
         self.start_btn.configure(state="normal")
         self.stop_btn.configure(state="disabled")
 
@@ -594,7 +678,7 @@ class App(object):
         elif spring > 0.0:
             self.feel_hint.set("A spring is weakest near centre, and this wheel has spots "
                                "there it will not move at any usable force. Expect it to "
-                               "stop just short -- that is the hardware, not the setting.")
+                               "stop just short. That is the hardware, not the setting.")
         else:
             self.feel_hint.set("")
 
@@ -648,12 +732,27 @@ class App(object):
         elif (self.proc is not None and not self.bridge_seen and not self.warned_no_bridge
               and self.started_at is not None
               and time.monotonic() - self.started_at > BRIDGE_GRACE):
-            # play.ps1 survives a bridge that died at startup, so nothing else here would ever
-            # notice. Without this the window sits looking healthy while the game gets no wheel
-            # input -- exactly how the read-only-section bug in ShimView stayed invisible.
+            # play.ps1 survives a bridge that died at startup, so nothing else notices, and
+            # the window sits looking healthy while the game gets no wheel input.
             self.warned_no_bridge = True
-            self._say("The bridge has not come up after %d seconds -- the game will get no "
-                      "wheel input. Check the newest log in logs\." % int(BRIDGE_GRACE))
+            # Quote the log rather than pointing at it. The bridge always says why it gave up,
+            # in a console nobody can see, in a file nobody opens. "vJoy device 1 is busy"
+            # sitting on screen is the difference between five seconds and a lost test run.
+            reason = last_log_line()
+            if reason:
+                self._say("The bridge did not start: %s" % reason)
+            else:
+                self._say("The bridge has not come up after %d seconds. The game will get no "
+                          "wheel input. Check the newest log in logs." % int(BRIDGE_GRACE))
+
+        if (self.stop_deadline is not None and self.proc is not None
+                and time.monotonic() > self.stop_deadline):
+            # Asking did not work. Kill it, and say what that leaves behind rather than
+            # reporting a clean stop that did not happen.
+            self.stop_deadline = None
+            self.proc.terminate()
+            self._say("play.ps1 did not stop when asked, so it was killed. The shim may "
+                      "still be in the game folder.")
         self.root.after(POLL_MS, self._poll)
 
     def _vjoy_help(self):
@@ -716,8 +815,17 @@ class App(object):
             pass
 
     def _quit(self):
+        # Unlike the Stop button, there is no poll loop left to finish the job: the window is
+        # going away. So this one waits, and closing takes a few seconds when a game was
+        # running. That is the right trade against leaving a bridge on vJoy and a dinput8.dll
+        # in somebody's game folder, which is what closing this window used to do.
         if self.proc is not None and self.proc.poll() is None:
-            self._stop()
+            self._request_stop()
+            try:
+                self.proc.wait(timeout=STOP_GRACE)
+            except Exception:
+                self.proc.terminate()
+            self._ended()
         self.view.close()
         self.root.destroy()
 

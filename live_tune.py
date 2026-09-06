@@ -1,29 +1,16 @@
 """
-live_tune.py -- tuning values that can change while a game is running.
+live_tune.py: tuning values that can change while a game is running.
 
-WHY THIS EXISTS
----------------
-Force feedback is judged by feel, and feel cannot be judged from a changelog. Every value in
-this project used to be a CLI argument baked into an object at startup, so trying a different
-strength meant: quit the game, restart the bridge, relaunch the game, drive back to the corner
-that felt wrong. Two minutes per adjustment, and by the time you arrived you were comparing
-against a memory rather than against the previous lap.
+Force feedback is judged by feel, and a value baked in at startup costs a game restart and a
+drive back to the corner per adjustment. These live in a JSON file the bridge re-reads while
+it runs, so a change is felt mid-corner.
 
-So these live in a JSON file that the bridge re-reads while it runs. Someone can be mid-corner
-when a value changes and feel the difference immediately, which is the only way to tell 0.55
-from 0.65 -- the difference is real and no amount of reasoning will find it.
+CONSTRAINT: strength scales the force value itself, never the IPC gain field. WGI latches gain
+when the effect loads, so writing it mid-session looks like it works and changes nothing. See
+motor_sink.WgiMotorSink.
 
-WHAT IT DELIBERATELY DOES NOT DO
---------------------------------
-It does not use the IPC gain field. The shim reads that exactly once, when it loads the WGI
-effect, because WGI latches gain at load time (see the note in motor_sink.WgiMotorSink).
-Writing
-it mid-session looks like it works and changes nothing -- which is very likely why raising the
-in-game strength slider appeared to do nothing. Live strength therefore SCALES THE FORCE VALUE
-itself, before it is ever handed to a sink.
-
-It also never raises. A game is running; a typo in a JSON file must not take the wheel down.
-Anything unparseable leaves the previous values in place and is reported once.
+CONSTRAINT: never raise. A game is running, and a typo in a JSON file must not take the wheel
+down. Anything unparseable leaves the previous values in place and is reported once.
 """
 
 import json
@@ -38,7 +25,7 @@ DEFAULTS = {
     "invert": False,        # flip the game's force direction (see the note in apply())
     # How to read the game's direction field: "sin" for a true polar angle, "span" for a
     # steering axis encoded linearly across part of the circle. DiRT 4 needs "span". Games
-    # differ, and the wrong one costs the sign entirely -- see ffb_render.direction_x.
+    # differ, and the wrong one costs the sign entirely. See ffb_render.direction_x.
     "dir_mode": "sin",
     "max_force": 0.6,       # ceiling; the wheel is geared strongly enough that 1.0 is a lot
     "min_force": 0.0,       # floor on non-zero output, to beat the motor's own stiction
@@ -212,10 +199,10 @@ class LiveTune(object):
            correct the game's direction convention if we guessed it backwards; the synthetic
            terms are computed from measured wheel motion and are correctly signed by
            construction. Inverting those would turn the spring from something that opposes
-           displacement into something that amplifies it -- positive feedback that drives the
+           displacement into something that amplifies it: positive feedback that drives the
            wheel to its end stop and holds it there.
-        3. Synthetic spring and damper are ADDED. DiRT 4 sends neither -- it sends one constant
-           force and nothing else -- so if the game's own centring feels thin there is nothing
+        3. Synthetic spring and damper are added. DiRT 4 sends neither, only one constant
+           force, so if the game's own centring feels thin there is nothing
            to turn up in the game. These fill that gap from real wheel position and velocity.
         4. `max_force` clamps the sum, once, at the end. Clamping per term would quietly change
            the mix rather than limiting it.
@@ -236,7 +223,7 @@ class LiveTune(object):
                 out += -state.velocity * damper
             if friction:
                 # Not -sign(velocity) * gain written out again. ffb_render already holds the
-                # law that was fitted to this wheel, DEAD BAND INCLUDED -- and the dead band
+                # law that was fitted to this wheel, dead band included, and the dead band
                 # is the whole difference between drag and a buzz against a wheel at rest.
                 out += render.condition_force(
                     "friction", render.legacy_condition_params("friction", friction), state)
@@ -253,12 +240,12 @@ class ButtonTuner(object):
     """
     Adjust tuning from the wheel's own buttons, because nothing else can reach us.
 
-    While a game runs it owns the foreground and therefore the keyboard -- that gate is the
+    While a game runs it owns the foreground and therefore the keyboard. That gate is the
     reason this whole project exists. The wheel is the one input device whose state we read
     directly, over the same shared section the shim publishes position through.
 
     ONE HONEST LIMITATION: there is no display in the car. Stepping a value gives immediate
-    physical feedback -- that is the entire point -- but which parameter is selected does not,
+    physical feedback, which is the entire point, but which parameter is selected does not,
     so cycling is a blind mode change. Hence the order in STEPS: strength is first and is what
     a single up/down pair adjusts if `btn_next` is never assigned. Every change is printed and
     logged, so what happened is recoverable afterwards even when it was not obvious then.
@@ -282,7 +269,7 @@ class ButtonTuner(object):
         return bit
 
     def pressed(self, buttons, name):
-        """True on the RISING edge only -- a held button must not repeat 100 times a second."""
+        """True on the rising edge only: a held button must not repeat 100 times a second."""
         bit = self._bit(name)
         if bit <= 0:
             return False
@@ -294,7 +281,7 @@ class ButtonTuner(object):
         Feed the current bitfield. Returns a description of what changed, or None.
 
         Nothing is applied unless a button is actually assigned, so an unconfigured wheel
-        cannot adjust anything by accident -- which matters, because these are buttons the
+        cannot adjust anything by accident, which matters, because these are buttons the
         game is very likely using for something of its own.
         """
         if buttons == self.last:

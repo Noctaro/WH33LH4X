@@ -4,13 +4,13 @@
     "'needs setup' flag and the quirks the GUI shows when you pick a game exe.",
     "",
     "GAMES.md holds the long-form write-up and stays hand-written prose. Its 'Status at a",
-    "glance' table is GENERATED FROM HERE by packaging/gen_games_table.py -- so the short",
+    "glance' table is GENERATED FROM HERE by packaging/gen_games_table.py, so the short",
     "version lives in exactly one place and cannot drift from the GUI.",
     "",
     "'exe' is matched case-insensitively against the file you pick. Leave it empty for a game",
     "nobody has run yet: an entry with no exe still appears in the table, it just never matches.",
     "",
-    "'sends_ffb' is true / false / null, and null means UNKNOWN. Do not guess it -- the GUI",
+    "'sends_ffb' is true / false / null, and null means UNKNOWN. Do not guess it: the GUI",
     "shows nothing at all for null, which is the honest display."
   ],
   "games": [
@@ -18,45 +18,55 @@
       "name": "DiRT 4",
       "exe": ["dirt4.exe"],
       "status": "playable",
-      "summary": "Steering, pedals and force feedback all work -- the wheel loads up in a corner and pulls back to centre.",
+      "summary": "Steering, pedals and force feedback all work: the wheel loads up in a corner and pulls back to centre.",
       "setup_required": true,
-      "setup_summary": "Yes -- vJoy must be registered as a wheel",
+      "setup_summary": "Yes, vJoy must be registered as a wheel",
       "sends_ffb": true,
       "verified": "2026-08-26",
       "docs": "GAMES.md#dirt-4",
       "launch": "steam",
       "steam_appid": 421020,
       "quirks": [
-        "Steam DRM relaunches the game through the client, so launching dirt4.exe directly does not work -- the exe you started exits immediately and the real game comes up as a different process. The bridge has to be running first and then wait for it.",
-        "vJoy must be registered as a wheel in the game's device_defines.xml. Without it DiRT 4 sends unsigned magnitude with no usable direction: the wheel pulls one way and never centres, while kerbs and gravel still feel correct -- which is what makes it easy to misdiagnose.",
-        "Steering is declared in an action map XML so a fresh install has working steering without touching the settings screen. Rebinding it in the game's own UI also works, once vJoy is registered as a wheel -- re-tested 2026-08-26. The device-drop this quirk used to describe was a symptom of the unregistered device.",
+        "Steam DRM relaunches the game through the client, so launching dirt4.exe directly does not work: the exe you started exits immediately and the real game comes up as a different process. The bridge has to be running first and then wait for it.",
+        "vJoy must be registered as a wheel in the game's device_defines.xml. Without it DiRT 4 sends unsigned magnitude with no usable direction: the wheel pulls one way and never centres, while kerbs and gravel still feel correct, which is what makes it easy to misdiagnose.",
+        "Steering is declared in an action map XML so a fresh install has working steering without touching the settings screen. Rebinding it in the game's own UI also works, once vJoy is registered as a wheel, re-tested 2026-08-26. The device-drop this quirk used to describe was a symptom of the unregistered device.",
         "Steam's 'Verify integrity of game files' removes both files, and so does a game update. Expect to reapply them.",
         "invert must stay true. Measured: DiRT 4's force points the SAME way as the steering angle, so applied unchanged it is positive feedback and the wheel runs away into the corner."
       ]
     },
     {
       "name": "RaceRoom Racing Experience",
-      "exe": [],
-      "status": "untested",
-      "summary": "Nobody has tried it yet.",
-      "setup_required": null,
-      "setup_summary": "Unknown",
-      "sends_ffb": null,
-      "verified": null,
+      "exe": ["rrrewebbrowser.exe"],
+      "status": "playable",
+      "summary": "Steering, pedals and force feedback all work, with no file to edit first.",
+      "setup_required": false,
+      "setup_summary": "No, just bind steering in the game",
+      "sends_ffb": true,
+      "verified": "2026-08-27",
       "docs": "GAMES.md#raceroom-racing-experience",
-      "quirks": []
+      "quirks": [
+        "Pick RRREWebBrowser.exe, in the game's Game folder. RRRE64.exe is the obvious choice and it is the wrong one: tried first, and the game would not let steering be assigned. The launcher stays resident for the whole session, which also matters because play.ps1 watches the name you picked and pulls the shim back out ten seconds after that process disappears.",
+        "RaceRoom asks for effects it never uses. It opens one constant force on block 1 and six sine effects on blocks 2 to 7, then stops all seven and restarts only the constant one. The sines are never started, and this wheel's firmware is silent on periodics anyway.",
+        "It sends duration 0xFFFF, the HID PID code for 'until I say stop', where DiRT 4 sends 0. We read that as a literal 65.535 seconds and expired the effect mid-lap, so force died until a menu made the game restart it. Fixed 2026-08-27."
+      ]
     },
     {
-      "name": "Automobilista 2",
-      "exe": [],
-      "status": "untested",
-      "summary": "Nobody has tried it yet.",
-      "setup_required": null,
-      "setup_summary": "Unknown",
-      "sends_ffb": null,
-      "verified": null,
-      "docs": "GAMES.md#automobilista-2",
-      "quirks": []
+      "name": "Automobilista 2 Demo",
+      "exe": ["ams2demoavx.exe", "ams2demo.exe"],
+      "status": "playable",
+      "summary": "Steering, pedals and force feedback all work, but the game adds a centre deadzone of its own and lets throttle bleed into steering.",
+      "setup_required": true,
+      "setup_summary": "Yes, set Controller Damping to 0",
+      "sends_ffb": true,
+      "verified": "2026-08-27",
+      "docs": "GAMES.md#automobilista-2-demo",
+      "quirks": [
+        "Set Controller Damping to 0 in Options > Controls > Configuration. At 100, which is where the Custom Wheel preset can leave it, steering is completely dead on track while the menus, calibration, pedals and force feedback all look perfect. This is the first thing to check and it is not obvious from any symptom.",
+        "Throttle bleeds into steering, and the game applies a centre deadzone that calibration does not show. Neither is ours: measured 2026-08-27, the steering fed to vJoy equals the wheel position exactly, with no throttle term, at every position. AMS2 treats a wheel it does not recognise as a gamepad and applies gamepad filtering, which is speed dependent. Reiza's own forum thread on this ran from 2020 to 2021 and reached no fix.",
+        "Speed Sensitivity 0 is correct for a wheel, so it is not worth changing. Steam Input, deleting the Documents folder, Return to Defaults and the over-rotate calibration trick were all tried and changed nothing.",
+        "There are two exes and the launcher picks by CPU support. AMS2DemoAVX.exe is the one that was tested.",
+        "It sends one constant force plus sine effects it never starts at gain 0, with duration 0xFFFF, the same infinite sentinel RaceRoom uses."
+      ]
     }
   ]
 }

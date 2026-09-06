@@ -1,9 +1,9 @@
 r"""
-gen_games_table.py -- rewrite GAMES.md's "Status at a glance" table from games.json.
+gen_games_table.py: rewrite GAMES.md's "Status at a glance" table from games.json.
 
 WHY THIS EXISTS
 ---------------
-The same three facts -- what works, whether setup is needed, when it was last checked -- were
+The same three facts, what works, whether setup is needed and when it was last checked, were
 about to live in two places: GAMES.md for people, games.json for the GUI. Two copies of a fact
 drift, and this project has already been bitten by that more than once: a breakaway figure that
 was wrong in GAMES.md, a stiction constant that was never measured, a memory entry describing a
@@ -54,7 +54,7 @@ def render(games):
     rows = ["| Game | Status | Needs setup? | Verified |", "|---|---|---|---|"]
     for g in games:
         badge = BADGES.get(g["status"], g["status"])
-        status = badge if g["status"] == "untested" else "%s -- %s" % (badge, g["summary"])
+        status = badge if g["status"] == "untested" else "%s: %s" % (badge, g["summary"])
         rows.append("| [%s](%s) | %s | %s | %s |" % (
             g["name"], anchor(g.get("docs"), g["name"]), status,
             g.get("setup_summary") or "Unknown", g.get("verified") or "—"))

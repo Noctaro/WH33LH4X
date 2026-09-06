@@ -117,6 +117,13 @@ Before any of that works:
 $deployed = $null
 $bridgeProc = $null
 $procName = $null
+# How the GUI asks this script to stop. Killing the process instead skips the finally block
+# below, which is what leaves a bridge holding vJoy and a dinput8.dll sitting in a game
+# folder. Touching a file lets the wait loop fall out of the try on its own, so everything
+# unwinds the way an ordinary exit does. Removed on the way in so a stale one cannot make
+# the next run quit on the spot.
+$stopFile = Join-Path $repo 'stop.request'
+Remove-Item $stopFile -Force -ErrorAction SilentlyContinue
 # Set together when we move another tool's proxy aside; used only by the finally block. Kept
 # separate from $deployed, which gets nulled on failure paths -- an orphaned backup that never
 # came back would be the worst outcome here.
@@ -255,7 +262,9 @@ try {
         # someone to log in, and under -NoLaunch a person has to go and click the thing. Short
         # once we have seen it, so a real quit cleans up promptly.
         $deadline = (Get-Date).AddSeconds($wait)
+        $stopped = $false
         while ((Get-Date) -lt $deadline) {
+            if (Test-Path $stopFile) { Write-Host "stop requested"; $stopped = $true; break }
             if (@(Get-Process -Name $procName -ErrorAction SilentlyContinue).Count -gt 0) {
                 if (-not $running) {
                     $running = $true
@@ -265,17 +274,23 @@ try {
             }
             Start-Sleep -Seconds 2
         }
-        if (-not $running) {
+        # Not when the stop was asked for: "never saw the game" is true then, and reads as a
+        # fault report on a shutdown that went exactly as intended.
+        if (-not $running -and -not $stopped) {
             Write-Warning "Never saw a process named '$procName' within $wait s -- cleaning up."
         }
     } else {
         Write-Host ""
         Write-Host "Bridge is running. Launch the game whenever you like."
         Write-Host "Press Ctrl+C here when you are done."
-        while ($true) { Start-Sleep -Seconds 3600 }
+        # Polled rather than one long sleep, so a stop request is acted on in seconds instead
+        # of whenever the hour happens to be up.
+        while (-not (Test-Path $stopFile)) { Start-Sleep -Seconds 2 }
+        Write-Host "stop requested"
     }
 }
 finally {
+    Remove-Item $stopFile -Force -ErrorAction SilentlyContinue
     if ($bridgeProc -and -not $bridgeProc.HasExited) {
         Write-Host "stopping the bridge"
         try { $bridgeProc.CloseMainWindow() | Out-Null } catch {}

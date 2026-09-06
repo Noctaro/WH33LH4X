@@ -1,32 +1,18 @@
 """
-Per-wheel calibration profile -- measure the signs once, save them, reuse them forever.
+Per-wheel calibration profile: measure the signs once, save them, reuse them forever.
 
-WHY THIS EXISTS
----------------
-A "resist" effect and an "assist" effect differ by one sign. Get it wrong and the wheel
-adds force to the direction you are already turning and runs away to the end stop -- which
-is what this wheel's firmware condition effects (spring/damper/inertia/friction) do, under
-every coefficient convention we tried. The firmware evidently does not honour the
-documented sign at all.
+A resist effect and an assist effect differ by one sign, and this firmware does not honour
+the documented sign under any convention tried. So the only fact a closed loop needs is
+measured instead: when Vector3(+x) is commanded, which way does reading.wheel move? Call that
+sign k. See run_software_condition.
 
-So stop asking the firmware. The only fact a closed loop actually needs is:
-
-    when we push with Vector3(+x), which way does reading.wheel move?
-
-Call that sign k. It is the ONLY thing that has to be measured -- notably NOT "which way
-is physically right", which no program can know and no control law needs. Push, watch the
-wheel's own reading, record k, save it. See run_software_condition() for the use.
-
-A closed loop cannot run away with you the way the firmware conditions do: the force is
+A closed loop cannot run away the way the firmware conditions do, because the force is
 derived from the motion it opposes, so a wrong sign makes it inert rather than violent.
 
-THE TRAP THAT COST US A ROUND
------------------------------
-Position readings are foreground-gated exactly like force output. A terminal is a separate
-process, so ANY prompt that waits on Enter hands foreground away and makes every
-subsequent reading come back 0.0. Calibration therefore never blocks on input: manual
-steps are timed windows with a countdown, and the pump window is re-grabbed continuously
-while sampling.
+CONSTRAINT: never block on input. Position readings are foreground gated, a terminal is a
+separate process, and any prompt waiting on Enter makes every later reading come back 0.0.
+Manual steps are timed windows with a countdown. See
+docs/hardware.md#the-foreground-owns-the-motor.
 """
 
 import json
@@ -97,7 +83,7 @@ def save_profile(key, entry):
 
 def describe_profile(entry):
     if not entry:
-        return ["  no saved calibration for this device -- press 'k' to measure it"]
+        return ["  no saved calibration for this device. Press 'k' to measure it"]
     k = entry.get("force_to_reading_sign", 0)
     lines = [
         "  calibrated : %s" % entry.get("calibrated", "?"),
@@ -150,9 +136,9 @@ def recover(session, why):
     """
     Put the motor back into the state it has at session start.
 
-    Releasing a hold appears to be able to leave the motor accepting effects -- load
-    Succeeded, state Running -- while producing no torque at all. Resetting and
-    re-enabling restores the known-good state that a fresh session has.
+    Releasing a hold can leave the motor accepting effects while producing no torque, with
+    load Succeeded and state Running. Resetting and re-enabling restores a known good
+    state.
     """
     log.event("recover.begin", why=why)
     motor_state(session, "before recover")
@@ -184,21 +170,12 @@ class free_wheel(object):
     """
     Context manager that makes the wheel light enough to turn by hand.
 
-    At rest the firmware applies its own very stiff auto-centering, which fights you and
-    swamps any manual movement you are trying to measure. Claiming the motor -- even with
-    a ZERO-magnitude effect -- suspends it, so the wheel goes loose.
+    At rest the firmware applies a stiff auto-centering that swamps any manual movement
+    being measured. Claiming the motor, even with a zero magnitude effect, suspends it.
 
-    Releasing the effect does NOT hand the stock centering back, though this used to say
-    it did. Measured 2026-08-26 (evidence/centring_test.py): unload and reset both
-    returned True and the wheel stayed exactly as slack as it had been while the effect
-    was held.
-
-    What actually returns the motor to the firmware is LOSING THE FOREGROUND. Alt-tab out
-    of a running game and the centring spring comes back; alt-tab in and force resumes.
-    That is why the measurement above saw no difference between its two blocks: the probe
-    window held the foreground for both. __exit__ still drops the effect, because leaving
-    one loaded is worse, but do not expect the wheel to stiffen again while this process
-    is still in front.
+    CONSTRAINT: releasing the effect does not hand the stock centering back. Only losing the
+    foreground does. __exit__ still drops the effect, but the wheel stays slack while this
+    process is in front. See docs/hardware.md#the-foreground-owns-the-motor.
     """
 
     def __init__(self, session, seconds):
@@ -248,7 +225,7 @@ def _sample_span(session, seconds, note):
     while time.monotonic() < end_time:
         session.grab_foreground()
         value = session.read_wheel()
-        # Every sample goes to the log even though only one a second is printed -- the
+        # Every sample goes to the log even though only one a second is printed. The
         # shape of the signal is what tells a dead reading from a stiff wheel.
         log.event("span.sample", reading=value if value is not None else float("nan"),
                   fg=session.is_foreground())
@@ -273,13 +250,12 @@ def _wait_for_centre(session, tolerance=0.25, steady=1.0, timeout=25.0):
     """
     Block until the wheel is resting near the middle of its travel.
 
-    Nothing downstream can measure anything from an end stop: the reading clamps at
-    +-1.000 there, so a push into the stop and a motor producing no torque at all look
-    exactly alike. Requiring a centred start makes the next measurement conclusive either
-    way. Caller should hold the motor (see free_wheel) so the wheel is light to move.
+    CONSTRAINT: nothing can be measured from an end stop. The reading clamps at +-1.000
+    there, so a push into the stop and a motor producing no torque look alike.
 
-    Waits for the reading to STAY inside the tolerance rather than merely pass through it,
-    so a wheel swinging past centre does not count.
+    Waits for the reading to stay inside the tolerance rather than pass through it, so a
+    wheel swinging past centre does not count. The caller should hold the motor, see
+    free_wheel, so the wheel is light to move.
     """
     log.event("centre.begin", tolerance=tolerance, timeout=timeout)
     deadline = time.monotonic() + timeout
@@ -332,17 +308,12 @@ def _push_and_watch(session, magnitude, seconds):
     """
     Apply a constant force and report how far the wheel's own reading travelled.
 
-    Returns (delta, error). delta is signed in reading units; the wheel may hit its end
-    stop partway through, which is fine -- we only need the direction and a clear
-    magnitude, not a linear response.
+    Returns (delta, error). delta is signed in reading units, and the wheel may hit its end
+    stop partway through, which is fine: only the direction is needed.
 
-    Two details that are easy to get wrong and both look like "the wheel didn't move":
-
-    * master_gain is latched when the effect is LOADED, so it is set here rather than
-      inherited from whatever the session last used.
-    * between effects the firmware's stiff auto-centering returns, and the push has to
-      overcome it from a standing start -- so calibration deliberately uses a strong
-      magnitude. It is brief and bounded.
+    CONSTRAINT: master_gain is latched when the effect loads, so it is set here rather than
+    inherited. The firmware's auto-centering returns between effects and the push has to
+    overcome it from a standing start, so a strong magnitude is used deliberately.
     """
     try:
         session.motor.master_gain = 1.0
@@ -377,7 +348,7 @@ def _push_and_watch(session, magnitude, seconds):
             return None, "no position reading available"
         if abs(start) > 0.97:
             # Against a stop the reading is clamped. A push AWAY from it still measures
-            # fine, so this is recorded rather than treated as a failure -- only the very
+            # fine, so this is recorded rather than treated as a failure. Only the very
             # first push has to start clear of the stops, and measure_force_sign checks
             # that before it begins.
             log.event("push.at_stop", start=start, magnitude=magnitude)
@@ -422,13 +393,12 @@ def measure_force_sign(session, magnitude=0.85, seconds=1.6):
     Pushes both ways and subtracts. Doing both directions makes this robust to starting
     against an end stop, where one of the two pushes cannot move at all.
     """
-    # The first push must have room to move. From an end stop the reading is clamped at
-    # +-1.000, so pushing into it registers nothing whether the motor is working or dead --
-    # that exact false negative is what made an earlier run look like total motor failure.
+    # CONSTRAINT: the first push needs room. From an end stop the reading clamps at +-1.000,
+    # so pushing into it registers nothing whether the motor works or is dead.
     start = session.read_wheel()
     if start is not None and abs(start) > 0.9:
         return None, ("wheel is resting against an end stop (reading %+.3f).\n"
-                      "      Nothing can be measured from there -- centre it and retry."
+                      "      Nothing can be measured from there. Centre it and retry."
                       % start)
 
     # Two passes each way. The first push starts against the firmware's centering from
@@ -462,12 +432,11 @@ def measure_force_sign(session, magnitude=0.85, seconds=1.6):
 
 def measure_live_update(session, magnitude=0.55, seconds=1.1):
     """
-    Does set_parameters affect an ALREADY RUNNING effect, or is it latched at load time
-    the way master_gain is?
+    Does set_parameters affect a running effect, or is it latched at load like master_gain?
 
-    This decides whether software-computed effects are possible at all. Fully automatic:
-    start a push one way, rewrite the magnitude to the opposite sign mid-flight, and see
-    whether the wheel reverses.
+    This decides whether software computed effects are possible at all. Automatic: push one
+    way, rewrite the magnitude to the opposite sign mid-flight, see whether the wheel
+    reverses.
     """
     effect = ff.ConstantForceEffect()
     effect.set_parameters(Vector3(magnitude, 0.0, 0.0), timedelta(seconds=4 * seconds))
@@ -519,8 +488,8 @@ def measure_live_update(session, magnitude=0.55, seconds=1.1):
 # ---------------------------------------------------------------------------
 
 def _countdown(session, prefix, seconds=3):
-    # Re-grabs foreground throughout: printing does not steal it, but anything the user
-    # clicks during the pause would, and that silently zeroes readings and torque alike.
+    # Re-grabs foreground throughout: anything clicked during the pause would take it, and
+    # that silently zeroes readings and torque alike.
     for n in range(seconds, 0, -1):
         session.grab_foreground()
         print("    %s %d..." % (prefix, n), flush=True)
@@ -539,31 +508,31 @@ def calibrate(session):
     print("=" * 72)
     print("  CALIBRATION")
     print("=" * 72)
-    print("  Do NOT click on the terminal or any other window during this -- readings")
+    print("  Do not click on the terminal or any other window during this. Readings")
     print("  and force output both stop the moment this process loses foreground.")
 
     if session.read_wheel() is None:
         print("  No wheel position reading available (RacingWheel not exposed).")
-        print("  Calibration needs it -- it is how the wheel's own movement is measured.")
+        print("  Calibration needs it: it is how the wheel's own movement is measured.")
         return None
 
     profile = {"device": session.device_name}
 
     # --- Step 1: does the position reading track the wheel at all? -----------
-    # Not a direction test -- direction is measured in step 2. This only establishes that
+    # Not a direction test, direction is measured in step 2. This only establishes that
     # the reading is live, because if it is not, steps 2 and 3 would silently produce
     # confident nonsense.
     print()
-    print("  STEP 1 of 3 -- force direction  (measured, not asked)")
+    print("  STEP 1 of 3: force direction  (measured, not asked)")
     print()
     print("  This runs FIRST and on an untouched motor, deliberately. Claiming and then")
     print("  releasing the motor has been observed to leave it accepting effects while")
-    print("  producing no torque -- load Succeeded, state Running, wheel dead. So the one")
+    print("  producing no torque: load Succeeded, state Running, wheel dead. So the one")
     print("  measurement that needs real torque happens before anything else touches it.")
     print()
     print("  The wheel should be centred by its own failsafe spring already.")
     print("  >> HANDS OFF THE WHEEL. It will be pushed each way and may reach its")
-    print("     end stop. That is expected and harmless -- just keep hands clear.")
+    print("     end stop. That is expected and harmless, just keep hands clear.")
 
     motor_state(session, "calibration start")
     resting = session.read_wheel()
@@ -592,7 +561,7 @@ def calibrate(session):
 
     # --- Step 2: can a running effect be rewritten? --------------------------
     print()
-    print("  STEP 2 of 3 -- live parameter updates  (measured, not asked)")
+    print("  STEP 2 of 3: live parameter updates  (measured, not asked)")
     print("  Decides whether software-computed effects are possible at all.")
     print("  >> STILL HANDS OFF.")
     _countdown(session, "starting in", 3)
@@ -608,11 +577,10 @@ def calibrate(session):
               % ("WORKS" if live else "IGNORED (latched at load, like master_gain)"))
 
     # --- Step 3: how much of the reading range does the wheel actually use? --
-    # Informational only, and last on purpose: it is the step that holds the motor open,
-    # and holding the motor is what appears to leave it unable to produce torque. Nothing
-    # that needs real force runs after this.
+    # Informational, and last on purpose: it holds the motor open, which is what appears to
+    # leave it unable to produce torque. Nothing needing real force runs after this.
     print()
-    print("  STEP 3 of 3 -- reading range  (optional, nothing depends on it)")
+    print("  STEP 3 of 3: reading range  (optional, nothing depends on it)")
     print("  The wheel goes LOOSE now. Turn it fully each way.")
     _countdown(session, "get ready to turn in", 3)
     print()
@@ -625,7 +593,7 @@ def calibrate(session):
         profile["reading_span"] = high - low
         print("    reading moved %+.3f .. %+.3f" % (low, high))
     else:
-        print("    reading did not move much -- skipped, nothing depends on it")
+        print("    reading did not move much, skipped, nothing depends on it")
 
     _settle(session)
     print()
@@ -639,14 +607,13 @@ def calibrate(session):
 
 SOFTWARE_CONDITIONS = ["spring", "damper", "friction", "inertia"]
 
-# How hard each condition pushes, per unit of whatever it reacts to. These are NOT
-# arbitrary: they were fitted to logged ticks from this wheel, where hand-turning produces
+# CONSTRAINT: fitted to logged ticks from this wheel, not chosen. Hand-turning produces
 # |velocity| around 0.3 reading-units/sec (peaks near 1.0) and |acceleration| in the low
 # tens. The original guesses (velocity/8, acceleration/60) commanded about 1% of full
-# torque at normal turning speed -- present in the logs, imperceptible in the hands.
+# torque at normal turning speed: present in the logs, imperceptible in the hands.
 #
 # Each is scaled by the menu magnitude afterwards, then clamped to +-1.0, so raising one
-# costs nothing at the extremes -- it only decides how quickly the effect reaches full.
+# costs nothing at the extremes: it only decides how quickly the effect reaches full.
 CONDITION_GAINS = {
     "spring": 2.0,      # per unit of displacement: half-lock -> nearly full force
     "damper": 1.0,      # per unit of velocity: brisk turning -> full force
@@ -663,7 +630,7 @@ def run_software_condition(session, kind, profile, magnitude, duration, rate_hz=
     derived from the motion it opposes, so unlike the firmware's condition effects this
     physically cannot run away with you.
 
-    Requires profile["live_update"] -- without it, rewriting a running effect does nothing.
+    Requires profile["live_update"]. Without it, rewriting a running effect does nothing.
     """
     if kind not in SOFTWARE_CONDITIONS:
         raise ValueError("unknown condition %r" % kind)
@@ -686,9 +653,9 @@ def run_software_condition(session, kind, profile, magnitude, duration, rate_hz=
     effect.set_parameters(Vector3(0.0, 0.0, 0.0), timedelta(seconds=duration + 2.0))
 
     print()
-    print("  SOFTWARE %s -- %s" % (kind.upper(), render.CONDITION_HELP[kind]))
+    print("  SOFTWARE %s: %s" % (kind.upper(), render.CONDITION_HELP[kind]))
     print("  computed here at %.0f Hz from the wheel's own position" % rate_hz)
-    print("  strength %.2f, %.0fs. HOLD AND TURN -- it only reacts to movement."
+    print("  strength %.2f, %.0fs. HOLD AND TURN, it only reacts to movement."
           % (magnitude, duration))
 
     try:
@@ -767,7 +734,7 @@ def run_software_condition(session, kind, profile, magnitude, duration, rate_hz=
             previous_time = now
 
         effect.stop()
-        print("  done -- peak commanded force %.2f" % peak)
+        print("  done, peak commanded force %.2f" % peak)
         if peak < 0.02:
             print("  (the wheel barely moved, so almost no force was called for --")
             print("   these only react to movement, so turn it during the run)")
