@@ -1,19 +1,13 @@
 """
-dinput_abi.py -- ctypes transcription of the DirectInput 8 API surface needed for a
-force-feedback probe.
+dinput_abi.py: ctypes transcription of the DirectInput 8 API surface needed for a force
+feedback probe.
 
-Transcribed from the Windows SDK header
+DirectInput is COM with plain vtables, so ctypes can call it by indexing into the vtable.
+Every index, struct layout, constant and GUID was read out of the Windows SDK dinput.h rather
+than recalled.
 
-    C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.26100.0\\um\\dinput.h
-
-Same approach as gameinput_abi.py: DirectInput is COM with plain vtables, so ctypes can
-call it by indexing into the vtable. Every index, struct layout, constant and GUID below
-was read out of that header rather than recalled.
-
-Unlike GameInput there is only one version of this API to worry about -- DirectInput 8
-has been frozen for two decades. The catch is elsewhere: playing an effect requires
-exclusive access, which requires a real window handle, and requires a data format to be
-set first. Both are handled in dinput_probe.py.
+CONSTRAINT: playing an effect needs exclusive access, which needs a real window handle, and a
+data format must be set first. Both are handled in dinput_probe.py.
 """
 
 import ctypes
@@ -273,7 +267,7 @@ class DIEFFECT(Structure):
         ("dwFlags", c_uint32),
         ("dwDuration", c_uint32),           # microseconds
         ("dwSamplePeriod", c_uint32),
-        ("dwGain", c_uint32),               # 0..10000 -- our torque limiter
+        ("dwGain", c_uint32),               # 0..10000, the torque limiter
         ("dwTriggerButton", c_uint32),
         ("dwTriggerRepeatInterval", c_uint32),
         ("cAxes", c_uint32),
@@ -494,7 +488,7 @@ def create_direct_input(dll_path="dinput8.dll"):
     `dll_path` exists so the shim proxy can be tested: pass an absolute path to
     `shim/build/dinput8.dll` and everything downstream runs through the proxy instead of the
     system DLL, which is the only way to prove the proxy is transparent without launching a
-    game. Pass an absolute path when you mean the proxy -- a bare name searches the
+    game. Pass an absolute path when the proxy is meant: a bare name searches the
     application directory first, and that is exactly the ambiguity being tested.
     """
     dll = ctypes.WinDLL(dll_path)
@@ -519,13 +513,13 @@ def make_axis_data_format(axis_count=6):
     Build a minimal DIDATAFORMAT of N absolute axes.
 
     SetDataFormat must be called before Acquire, and Acquire is required before an effect
-    can be downloaded to the device -- even though this probe never reads device state.
+    can be downloaded to the device, even though this probe never reads device state.
     A NULL pguid with DIDFT_AXIS|DIDFT_ANYINSTANCE matches any axis the device has, which
     avoids having to reproduce the 164-entry c_dfDIJoystick2 table (that symbol lives in
     dinput8.lib, not in the DLL, so ctypes cannot borrow it).
 
     N MUST NOT EXCEED THE AXES THE DEVICE ACTUALLY HAS. Every entry has to match a real
-    object or SetDataFormat fails wholesale with E_INVALIDARG -- there is no partial match.
+    object or SetDataFormat fails wholesale with E_INVALIDARG. There is no partial match.
     The default is 6 because that is the classic DIJOYSTATE set (X Y Z RX RY RZ) and the
     most any plain HID joystick is guaranteed to carry; the old default of 8 could not
     succeed on vJoy, which presents exactly 6 axes to DirectInput. Prefer
@@ -557,8 +551,8 @@ def negotiate_axis_data_format(device, max_axes=6):
 
     SetDataFormat is all-or-nothing: one unmatched entry fails the whole call with
     E_INVALIDARG, which says nothing about how many axes would have worked. Since force
-    feedback needs a data format only so that Acquire will succeed -- the effect itself
-    binds to one axis -- the sensible move is to negotiate downward rather than hard-code a
+    feedback needs a data format only so that Acquire will succeed, since the effect itself
+    binds to one axis, the sensible move is to negotiate downward rather than hard-code a
     count and be wrong on the next device.
 
     Returns (fmt, objects, axis_count). Keep the first two alive for as long as the device
@@ -616,7 +610,7 @@ def ensure_hwnd():
     """
     Return an HWND usable for SetCooperativeLevel, creating our own hidden one.
 
-    DirectInput refuses exclusive access -- and therefore all force feedback -- without a
+    DirectInput refuses exclusive access, and therefore all force feedback, without a
     real top-level window.
 
     WE DELIBERATELY DO NOT USE THE CONSOLE WINDOW, even when there is one. Under Windows
@@ -655,7 +649,7 @@ def ensure_hwnd():
     cls.hInstance = hinst
     cls.lpszClassName = "WH33LH4X_DInputHost"
     # A non-zero atom means registered; failure is usually "already registered" from a
-    # previous call in the same process, which is fine -- CreateWindowExW will still find
+    # previous call in the same process, which is fine: CreateWindowExW will still find
     # the class. Any other failure surfaces as a NULL window below.
     _user32.RegisterClassW(byref(cls))
     cls._keepalive = _hidden_wndproc

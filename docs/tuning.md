@@ -23,6 +23,50 @@ to restart anything to try a value.
 values are recorded per title in [GAMES.md](../GAMES.md) rather than being something to
 experiment with.
 
+## How dir_mode reads a game's direction field
+
+A force arrives with a magnitude and a direction, and games disagree about which of the two
+carries the sign. Getting this wrong rectifies the output: the wheel pulls one way and never
+centres, while kerbs and gravel still feel correct, which is what makes it hard to spot.
+
+| Mode | Reads the field as |
+|---|---|
+| `sin` | A true polar angle, taking the X component. Correct for a game that points forces around a full circle |
+| `span` | A steering axis across the 90 to 180 degree quarter circle, interpolating between the ends |
+| `sign` | The same two directions with no interpolation, so nothing nulls out halfway |
+
+### What was measured
+
+Sending cartesian +X through DirectInput to vJoy arrives as `DirX=8191`, a quarter of 32768, so
+the field is a full circle in 32768 steps and +X sits at 90 degrees. Sending -X arrives as 8191
+as well, because DirectInput normalises a single axis cartesian vector and the sign cannot
+survive that. **For a cartesian sender the sign travels in the magnitude**, and `+3000` and
+`-3000` round trip exactly.
+
+That is not the only convention. A game may send a positive magnitude and point it with a polar
+angle, flipping two angles to mean left and right. DiRT 4 does this, and not at 0 and 180 as
+expected but between **90 and 180**. Measured over one session:
+
+```
+8191  (90 deg)  x11780      <- one direction
+16383 (180 deg) x2990       <- the other
+12287 (135 deg) x29, then a long tail of ones and twos
+```
+
+Those two values are about 99% of every packet, and the 1253 others are transient sweeps
+between them, which is why the field first looked like a continuous axis. Both dominant values
+are non-negative under sine, since sin(90) is +1 and sin(180) is 0, so **a polar reading
+rectifies this game no matter how carefully the boundary is handled**. The quarter circle
+contains no negative sine to find.
+
+Hence a mode rather than a fix: both conventions are real and one wheel meets both. It is read
+live from `tune.json`, so a game that resends its direction every tick switches over within
+milliseconds. The alternative was a relaunch per guess, and each guess costs a game load and a
+drive back to the corner.
+
+`span` polarity was measured, not chosen. With the other sign, force correlated **+0.365** with
+steering angle, pushing deeper into the turn instead of back out of it.
+
 ## The gain stage the software cannot see
 
 The wheel holds a force feedback strength setting of its own, in the **HORI FFB RWD-Devicemanager

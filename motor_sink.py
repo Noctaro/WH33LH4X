@@ -1,39 +1,17 @@
 """
-motor_sink.py -- the one place that actually touches the wheel's motor.
+motor_sink.py: the one place that touches the wheel's motor.
 
-Everything else in the bridge computes a number: a single signed force for the steering
-axis, -1.0 (full one way) to +1.0 (full the other). This module is what turns that number
-into torque, and it is deliberately the ONLY module that knows how.
+Everything else computes a number, a single signed force for the steering axis, -1.0 to +1.0.
+This module turns that number into torque and is the only module that knows how.
 
-WHY THIS EXISTS AS ITS OWN LAYER
---------------------------------
-Windows.Gaming.Input force output is FOREGROUND-GATED. Measured 2026-08-23 with an A->B->A
-test: force present at 100% foreground, gone at 0%, back at 100%, nothing else changing.
-During real gameplay the GAME owns the foreground, permanently -- so a background bridge
-process cannot drive this motor at all. That is not a bug we can fix in Python; it moves the
-final write into some other process.
+CONSTRAINT: WGI force output and position reads are both foreground gated, so a background
+process cannot drive this motor. IpcMotorSink is the answer: a dinput8.dll proxy loads inside
+the game, calls WGI from there, and takes its force from a shared section. See
+docs/hardware.md#the-foreground-owns-the-motor.
 
-GameInput was the one API that could have dodged it (it has a background focus policy that
-WGI lacks) and it is out: both the inbox v0 runtime and the v3 redist report
-`forceFeedbackMotorCount = 0` for this GIP wheel, with the struct layout check passing.
-
-The fix landed as `IpcMotorSink`: a `dinput8.dll` proxy loads inside the game, calls WGI from
-there -- where foreground is satisfied by definition -- and takes its commanded force from a
-shared section. Confirmed on hardware 2026-08-23, force felt in Dirt 4. The entire rest of the
-bridge -- effect decoding, condition rendering, summing, the input feeder -- never had to know.
-That is what the two-method interface bought.
-
-POSITION READING IS ALSO GATED. An earlier version of this note said it was not, on the
-strength of a measurement that could not tell tracking from values gathered across focus
-transitions; the same data showed 65% of background samples at exactly 0.000 against 0% while
-foregrounded. So feeding vJoy's axes from a background process does not work either, and that
-half is still open -- see the plan. Do not build on the assumption that reading is free.
-
-SAFETY
-------
-Every implementation clamps to `max_force` before commanding anything, and `close()` is
-expected to leave the motor released. The user runs this hands-on with a wheel strong enough
-to whip itself to full lock.
+CONSTRAINT: every implementation clamps to max_force before commanding anything, and close()
+leaves the motor released. This runs hands-on with a wheel strong enough to whip itself to
+full lock.
 """
 
 import ctypes
@@ -60,10 +38,9 @@ class MotorSink(object):
     """
     Accepts a steering-axis force, -1.0 to +1.0.
 
-    Implementations must tolerate being called at bridge rate (~100 Hz) from one thread,
-    and must never raise into the caller: a sink that has failed reports `healthy == False`
-    and goes quiet, because a bridge that crashes mid-corner is worse than one that goes
-    limp.
+    CONSTRAINT: never raise into the caller. A failed sink reports healthy == False and goes
+    quiet, because a bridge that crashes mid-corner is worse than one that goes limp. Called
+    at bridge rate, about 100 Hz, from one thread.
     """
 
     name = "none"
@@ -84,17 +61,10 @@ class MotorSink(object):
         """
         Say "still here" without commanding anything. Called every tick, unconditionally.
 
-        Only the IPC sink has anything to do here, and for it this is not optional. The shim
-        watches a heartbeat to decide whether we are alive, and it stamps that heartbeat in
-        `set_force` -- which the bridge only reaches when a wheel reading arrived. A menu, a
-        loading screen, or any pause in readings therefore looked like the bridge dying, and
-        the shim RELEASED THE MOTOR and re-claimed it on the next reading.
-
-        That churn is what makes the wheel go silent: claiming and releasing this motor
-        repeatedly leaves it accepting effects and producing no torque, with the effect still
-        reporting Running. Correct force, loaded effect, dead wheel -- and nothing in any log
-        looks wrong. `evidence/revive_test.py` silences this motor on demand and records
-        what brings it back.
+        CONSTRAINT: not optional for the IPC sink. The shim watches this heartbeat, and
+        stamping it only in set_force made a menu or loading screen look like the bridge
+        dying, so the shim released and re-claimed the motor until it went silent. See
+        docs/hardware.md#the-foreground-owns-the-motor.
         """
 
     def close(self):
@@ -106,25 +76,18 @@ class MotorSink(object):
 
 class WgiMotorSink(MotorSink):
     """
-    Windows.Gaming.Input: hold ONE ConstantForceEffect open and rewrite its magnitude.
+    Windows.Gaming.Input: hold one ConstantForceEffect open and rewrite its magnitude.
 
-    This is the technique the whole project rests on. The firmware honours constant force
-    and ramp natively and is silent on periodics, so every other effect -- including all four
-    conditions -- is synthesised by rewriting this one effect's magnitude at ~100 Hz.
-    `set_parameters` does live-update a running effect; that was verified by reversing a push
-    mid-flight and watching the wheel turn around.
+    The firmware honours constant force and ramp natively and is silent on periodics, so every
+    other effect is synthesised by rewriting this one effect's magnitude at about 100 Hz. See
+    docs/hardware.md#effect-support.
 
-    Two traps encoded here, both of which fail silently:
+    CONSTRAINT: master_gain is latched when the effect loads, so it is applied before
+    load_effect_async and there is no set_gain. Changing gain means reloading, and reloading
+    silences this motor after about two cycles.
 
-      * `master_gain` is LATCHED WHEN THE EFFECT IS LOADED. Setting it under a running
-        effect does nothing, so gain is applied before `load_effect_async`. There is
-        deliberately NO set_gain here: changing gain means reloading the effect, and measured
-        2026-08-25, releasing and reloading silences this motor after about two cycles. Pick
-        the gain at open and use `tune.json` `strength` as the live control instead.
-      * Force output is foreground-gated. This sink does NOT chase the foreground; that is
-        the caller's business and, in the real bridge, impossible anyway. It exposes
-        `foreground_hint` so the bridge can say WHY the wheel went quiet instead of leaving
-        the user guessing.
+    CONSTRAINT: this sink does not chase the foreground. It exposes foreground_hint so the
+    bridge can say why the wheel went quiet.
     """
 
     name = "wgi"
@@ -147,28 +110,19 @@ class WgiMotorSink(MotorSink):
         """
         Load and start the effect. Separate from __init__ so failure is reportable.
 
-        The effect is created with a very long duration rather than an infinite one: WGI
-        has no 'forever', and an effect that expires mid-session would go silent in a way
-        that looks exactly like the foreground gate. An hour outlasts any session; the
-        bridge reloads if it ever runs longer.
+        WGI has no infinite duration, so the effect is created with an hour, which outlasts
+        any session. An effect that expired mid-session would look exactly like the
+        foreground gate.
         """
         import winrt.windows.gaming.input.forcefeedback as ff
         from winrt.windows.foundation.numerics import Vector3
         self._vector3 = Vector3
         self._ff = ff
 
-        # RESET AND ENABLE BEFORE LOADING, ALWAYS.
-        #
-        # A motor that was previously held and then released -- or that lost the foreground
-        # while holding an effect -- is left ACCEPTING EFFECTS WHILE PRODUCING NO TORQUE.
-        # Load returns Succeeded, state reads Running, writes succeed, and the wheel does not
-        # move. Waiting never fixes it. Loading onto that corpse is indistinguishable from
-        # hardware with enormous stiction, which is exactly how it was misread once.
-        #
-        # wgi_probe.py has always called try_enable_async at startup and wheel_profile.recover
-        # does the full sequence, which is why those two work on a motor this sink cannot
-        # drive. Doing it here means no caller has to remember -- the same reasoning that put
-        # the reset inside the shim's wgi_release_effect.
+        # CONSTRAINT: reset and enable before loading, always. A motor that was held and
+        # released, or that lost the foreground while holding an effect, accepts effects and
+        # produces no torque: load succeeds, state reads Running, the wheel does not move.
+        # See docs/hardware.md#the-foreground-owns-the-motor.
         for name, call in (("reset", lambda: self.motor.try_reset_async()),
                            ("enable", lambda: self.motor.try_enable_async())):
             try:
@@ -259,7 +213,7 @@ class WgiMotorSink(MotorSink):
                 return True
             except Exception as exc:
                 self.failures += 1
-                # One bad write is not fatal -- the wheel can be mid-reset. A run of them is.
+                # One bad write is not fatal, the wheel can be mid-reset. A run of them is.
                 if self.failures > 50:
                     self.healthy = False
                     log.event("sink.unhealthy", failures=self.failures, error=repr(exc))
@@ -286,9 +240,8 @@ class _ShimReading(object):
         self.brake = brake
         self.clutch = clutch
         self.handbrake = handbrake
-        # Not part of RacingWheelReading's axis set, and deliberately not fed to vJoy -- the
-        # game already has its own path to these buttons. This copy exists so the bridge can be
-        # driven from the wheel while a game owns the foreground and every keystroke with it.
+        # Not fed to vJoy: the game has its own path to these buttons. This copy lets the
+        # bridge be driven from the wheel while a game owns the foreground and the keyboard.
         self.buttons = buttons
 
 
@@ -296,18 +249,15 @@ class IpcMotorSink(MotorSink):
     """
     Publish force to the shim running inside the game, which applies it through WGI.
 
-    This is the sink that actually works during gameplay. `WgiMotorSink` drives the motor from
-    THIS process, which only produces torque while our own window is in front -- fine for the
-    diagnostics, useless with a game running. The shim is in the game's process, so foreground
-    is satisfied by definition.
+    The sink that works during gameplay. WgiMotorSink drives the motor from this process,
+    which only produces torque while this window is in front: fine for diagnostics, useless
+    with a game running. The shim runs inside the game, so foreground is satisfied.
 
-    The wire format is a fixed 48-byte shared section, defined in shim/ipc.h. It is frozen:
-    change one side and you change both, or the shim reads garbage floats and turns them
-    straight into torque. `_STRUCT` below and the C struct describe the same bytes.
+    CONSTRAINT: the wire format is a fixed 48-byte shared section defined in shim/ipc.h.
+    Change one side and both must change, or the shim turns garbage floats into torque.
 
-    Liveness runs both ways, and it has to. `set_force(0.0)` and "the bridge crashed" are the
-    same float, and they must behave differently -- the first is obeyed, the second has to make
-    the shim let go of the motor. So each side stamps a heartbeat the other checks.
+    CONSTRAINT: liveness runs both ways. set_force(0.0) and a crashed bridge are the same
+    float and must behave differently, so each side stamps a heartbeat the other checks.
     """
 
     name = "ipc"
@@ -338,9 +288,8 @@ class IpcMotorSink(MotorSink):
 
     def open(self):
         size = self._STRUCT.size
-        # tagname makes this a NAMED section rather than an anonymous one, which is the whole
-        # point -- the shim opens the same name from inside the game. Whoever gets there first
-        # creates it; the other attaches.
+        # tagname makes this a named section, which is the point: the shim opens the same
+        # name from inside the game. Whoever gets there first creates it.
         self._mm = mmap.mmap(-1, size, tagname=self._NAME)
         magic, version = struct.unpack_from("<II", self._mm, 0)
         if magic != self._MAGIC or version != self._VERSION:
@@ -386,11 +335,9 @@ class IpcMotorSink(MotorSink):
         """
         The wheel reading the shim published, or None.
 
-        This exists because position reading is foreground-gated exactly like force output.
-        A background bridge reads zeros while a game is in front, so vJoy's axes never move,
-        so the game cannot bind steering -- and a game that cannot bind steering never sends
-        force feedback either. The input half is a precondition for the output half, not a
-        convenience.
+        Position reading is foreground gated exactly like force output, so a background
+        bridge reads zeros while a game is in front, vJoy's axes never move, and the game
+        cannot bind steering. The input half is a precondition for the output half.
 
         Returns an object with .wheel/.throttle/.brake/.clutch/.handbrake so it can stand in
         for a WGI RacingWheelReading without the caller caring which one it got.
@@ -407,7 +354,7 @@ class IpcMotorSink(MotorSink):
         return _ShimReading(wheel, throttle, brake, clutch, handbrake, buttons)
 
     def shim_state(self):
-        """(state, alive) as last published by the shim -- for reporting, not control flow."""
+        """(state, alive) as last published by the shim. For reporting, not control flow."""
         if self._mm is None:
             return (self.STATE_NONE, False)
         shim_tick, state = struct.unpack_from("<QI", self._mm, 24)
@@ -442,9 +389,8 @@ class RateLimiter(object):
     """
     Paces the bridge loop and reports what rate it actually achieved.
 
-    Commanded force is meaningless without knowing how often it was refreshed -- a spring
-    updated at 20 Hz feels like notches, not a spring -- so the achieved rate is measured
-    rather than assumed to equal the requested one.
+    The achieved rate is measured rather than assumed: a spring updated at 20 Hz feels like
+    notches, not a spring.
     """
 
     def __init__(self, hz):

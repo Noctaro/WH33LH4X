@@ -4,7 +4,7 @@ Session logging: everything the probe printed, plus the dense data it did not pr
 WHY
 ---
 Force-feedback problems are diagnosed from timing and from signals that scroll past too
-fast to read -- position samples arriving 50x a second, exactly when foreground was lost,
+fast to read: position samples arriving 50x a second, exactly when foreground was lost,
 which effect was loaded when the wheel stopped responding. The console shows a throttled
 summary because a human has to read it live; the log gets everything.
 
@@ -84,7 +84,7 @@ def start(directory=LOG_DIR, prefix="wgi_probe"):
     Begin logging. Returns the log path, or None if it could not be opened.
 
     `prefix` names the file so a session can be told apart from the others in logs/ at a
-    glance -- the FFB bridge spike writes vjoy_ffb_* rather than pretending to be a
+    glance: the force feedback spike writes vjoy_ffb_* rather than pretending to be a
     wgi_probe run.
     """
     global _file, _start_time, _path, _saved_stdout, _saved_stderr
@@ -103,7 +103,7 @@ def start(directory=LOG_DIR, prefix="wgi_probe"):
         return None
 
     _start_time = time.monotonic()
-    _file.write("# %s session log -- %s\n"
+    _file.write("# %s session log, %s\n"
                 % (prefix, datetime.now().isoformat(timespec="seconds")))
     _file.write("# channel '|' = console output, '.' = structured event\n")
     _file.write("# python %s\n" % sys.version.replace("\n", " "))
@@ -142,7 +142,7 @@ def path():
 
 def event(name, **fields):
     """
-    Record a structured line in the log only -- never on the console.
+    Record a structured line in the log only, never on the console.
 
     Floats are formatted with a sign and three decimals, because nearly every value here
     is a signed -1..1 reading or force and the sign is usually the point.

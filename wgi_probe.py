@@ -1,49 +1,22 @@
 """
-wgi_probe.py -- Drive this wheel's force-feedback motor through Windows.Gaming.Input.
+wgi_probe.py: drive the wheel's force feedback motor through Windows.Gaming.Input.
 
-THIS IS THE ONE THAT WORKS.
+The tool everything else was discovered with. DirectInput and GameInput both route PC force
+feedback through the USB PID HID class and this wheel publishes no PID collection, so neither
+reaches the motor. WGI comes from the GIP driver instead. See evidence/README.md.
 
-Companion to probe.py (GameInput), dinput_probe.py (DirectInput 8) and hid_probe.py (raw
-HID descriptors). Those three found nothing, for a good reason: DirectInput and GameInput
-both route PC force feedback through the USB PID HID class, and hid_probe.py proved this
-wheel publishes no PID collection at all. Windows.Gaming.Input is a different stack -- its
-ForceFeedbackMotor comes from the GIP driver for Xbox-licensed devices -- and it reaches
-the motor that the other two cannot see.
+CONSTRAINT: needs a message pump. WGI delivers device arrival through the Win32 message loop,
+and a console process has none, so the device lists stay empty and the wheel looks absent.
+This creates its own window on a background thread and pumps it.
 
-Confirmed on a Hori Force Feedback Racing Wheel DLX (VID 0x0F0D, PID 0x015C, Xbox mode):
+CONSTRAINT: the wheel must be in Xbox mode. PC mode has no force feedback interface at all.
 
-    force_feedback_motors : 1
-    is_enabled            : True
-    supported_axes        : X
-    RacingWheel.wheel_motor present, max_wheel_angle 900, clutch + handbrake
+Gain and magnitude multiply, motor level by effect level, and default to 0.35 x 0.30, about
+10% of what the wheel can produce. Both adjust live from the menu with g and m.
 
-TWO THINGS THAT MAKE THIS WORK
-------------------------------
-1. A MESSAGE PUMP. Windows.Gaming.Input delivers device-arrival notifications through the
-   Win32 message loop. A console process has none -- the console window belongs to
-   conhost.exe, not to Python -- so the device lists stay permanently empty and it looks
-   like the wheel is not there. This tool creates its own window on a background thread
-   and pumps it. That single detail is the difference between "no devices" and success.
-
-2. XBOX MODE. The wheel must be in Xbox mode (PID 0x015C). In PC mode it is a plain HID
-   device with no force-feedback interface anywhere.
-
-ABOUT THAT "LOOSE" FEELING
---------------------------
-At idle this wheel applies its own firmware auto-centering -- the strong spring you feel
-normally. The moment an effect takes the motor, that firmware behaviour is SUSPENDED and
-your effect owns the wheel. So a gentle effect feels *looser* than the resting wheel, not
-stronger. That is what taking control feels like. Use 'r' in the menu to release the motor
-and let the firmware spring come back, so you can feel the difference on demand.
-
-INTENSITY
----------
-Two limiters multiply together:
-
-    master gain (motor level, 0.0-1.0)  x  magnitude (effect level, 0.0-1.0)
-
-Defaults are 0.35 x 0.30, i.e. about 10% of what the wheel can produce -- deliberately
-gentle for a first run. Both are adjustable live from the menu ('g' and 'm').
+Releasing the motor restores the firmware's own centring spring, which is stronger than most
+effects, so a gentle effect feels looser than the resting wheel. See
+docs/hardware.md#the-foreground-owns-the-motor.
 
 Usage:
     python wgi_probe.py                 # detect, report, then interactive menu
@@ -75,20 +48,16 @@ import wheel_profile as wp
 
 HORI_VENDOR_ID = 0x0F0D
 
-# vJoy's own virtual device -- root\VID_1234&PID_BEAD, i.e. VENDOR_N_ID / PRODUCT_N_ID from
-# vJoy's public.h. It shows up under whatever product name it was configured with ("Forza
-# EmuWheel" on this machine), reports 0 force-feedback motors, and being a root-enumerated
-# software device it enumerates FASTER than the real wheel does over USB. Recognised here so
-# it can be named in the report and never mistaken for the hardware.
+# vJoy's own virtual device, VENDOR_N_ID and PRODUCT_N_ID from vJoy's public.h. It reports 0
+# force feedback motors and, being root enumerated, appears faster than the real wheel does
+# over USB. Recognised so it is never mistaken for the hardware.
 VJOY_VENDOR_ID = 0x1234
 VJOY_PRODUCT_ID = 0xBEAD
 
 # How long to keep listening after the FIRST device shows up.
 #
-# This exists because of a measured race: the vJoy virtual device enumerated at t=0.047s and
-# the real HORI wheel at t=0.094s, but detection returned at t=0.078s -- so the tool reported
-# "no force-feedback motor" while the wheel was plugged in the whole time. Returning on the
-# first non-empty poll is simply wrong when more than one device exists.
+# CONSTRAINT: do not return on the first non-empty poll. The virtual device enumerates
+# before the real wheel, so detection can finish before the hardware appears.
 DEVICE_SETTLE_SECONDS = 2.0
 
 
@@ -191,9 +160,8 @@ class PumpThread(threading.Thread):
             0, "STATIC", "FFB probe (leave me open)", WS_OVERLAPPEDWINDOW,
             CW_USEDEFAULT, CW_USEDEFAULT, 460, 120, None, None, None, None)
         if self.hwnd:
-            # The window must be shown AND brought to the foreground. Windows.Gaming.Input
-            # only populates its device lists for a foregrounded process -- showing the
-            # window without activating it is not enough, enumeration stays empty.
+            # CONSTRAINT: shown and foregrounded. WGI only populates its device lists for a
+            # foregrounded process, and showing without activating leaves them empty.
             user32.ShowWindow(self.hwnd, SW_SHOW)
             self.ensure_foreground()
         self.ready.set()
@@ -213,12 +181,9 @@ class PumpThread(threading.Thread):
         """
         Assert foreground, and report honestly when Windows refuses.
 
-        SetForegroundWindow is not guaranteed: Windows blocks foreground steals from a
-        process that does not currently own focus. Whether it succeeds depends on what had
-        focus when the tool was launched, so the failure is intermittent by nature -- and
-        because enumeration AND force output are both foreground-gated, a silent refusal
-        looks exactly like absent hardware. The old code called it once and ignored the
-        result, which is why detection worked "sometimes".
+        CONSTRAINT: check the result. SetForegroundWindow is not guaranteed, Windows blocks
+        steals from a process that does not own focus, and because enumeration and force are
+        both gated a silent refusal looks exactly like absent hardware.
         """
         if not self.hwnd:
             return False
@@ -229,7 +194,7 @@ class PumpThread(threading.Thread):
         if not ok and not self._warned_foreground:
             self._warned_foreground = True
             print("  NOTE: Windows refused to foreground the probe window."
-                  " Click the 'FFB probe' window once -- until then the wheel may not")
+                  " Click the 'FFB probe' window once. Until then the wheel may not")
             print("        enumerate and force output will be silent.")
             log.event("foreground.refused")
         return ok
@@ -238,11 +203,9 @@ class PumpThread(threading.Thread):
         """
         Put the window away while keeping the message pump running.
 
-        Only safe once nothing in this process still needs Windows.Gaming.Input. Enumeration,
-        force output and position reads are all foreground-gated, and a hidden window cannot
-        hold the foreground -- so calling this early silently breaks all three. The bridge
-        calls it only after the shim reports itself live, which is the point WGI stops being
-        used in this process at all.
+        CONSTRAINT: only once nothing here still needs WGI. Enumeration, force and position
+        reads are all foreground gated and a hidden window cannot hold the foreground, so
+        calling this early silently breaks all three.
         """
         if self.hwnd:
             user32.ShowWindow(self.hwnd, SW_HIDE)
@@ -259,16 +222,12 @@ class ArrivalWatch:
     """
     Subscribes to the device-arrival events.
 
-    This is NOT optional bookkeeping, and polling the static collections alone is not
-    equivalent. Windows.Gaming.Input populates `raw_game_controllers` / `racing_wheels` in
-    response to arrival notifications dispatched through the message pump; a process that
-    never registers a handler may simply never see them, so a poll-only loop finds the
-    wheel sometimes and misses it other times with the device plugged in the whole time.
-    That was the intermittent-detection bug.
+    CONSTRAINT: polling the static collections is not equivalent. WGI populates them in
+    response to arrival notifications dispatched through the message pump, and a process that
+    registers no handler may never see them.
 
-    The handler objects are kept alive deliberately -- if they are garbage collected the
-    subscription dies with them and the symptom returns, intermittently, which is a
-    genuinely horrible thing to debug.
+    CONSTRAINT: the handler objects are kept alive. Garbage collecting one kills the
+    subscription with it, intermittently.
     """
 
     def __init__(self):
@@ -291,13 +250,13 @@ class ArrivalWatch:
             try:
                 handler = self._on_added(kind)
                 token = getattr(cls, adder)(handler)
-                # Keep BOTH alive: the delegate and the token.
+                # Keep both alive: the delegate and the token.
                 self._handlers.append(handler)
                 self._tokens.append((cls, adder, token))
                 log.event("device.subscribed", kind=kind)
             except Exception as exc:
-                # Not fatal -- polling still runs underneath. But say so, because it
-                # downgrades detection to the unreliable path.
+                # Not fatal, polling still runs underneath, but it downgrades detection
+                # to the unreliable path.
                 print("  WARNING: could not subscribe to %s arrivals: %s" % (kind, exc))
                 log.event("device.subscribe_failed", kind=kind, error=str(exc))
 
@@ -310,17 +269,15 @@ def wait_for_devices(timeout_seconds, pump=None):
     last = None
     first_seen = None
     while time.monotonic() < deadline:
-        # Re-assert foreground while waiting. Enumeration is foreground-gated, and the
-        # initial grab at startup can be refused by Windows depending on which process
-        # held focus when the tool launched -- another source of "sometimes".
+        # Re-assert foreground while waiting. Enumeration is gated, and the initial grab
+        # can be refused depending on which process held focus at launch.
         if pump is not None:
             pump.ensure_foreground()
         raw = list(gi.RawGameController.raw_game_controllers)
         wheels = list(gi.RacingWheel.racing_wheels)
 
-        # vJoy does not start the settle clock. It is root-enumerated and always wins the
-        # race, so treating it as "a device arrived" would burn the settle window on the
-        # decoy and abandon the remaining timeout while the real wheel is still coming up.
+        # CONSTRAINT: vJoy does not start the settle clock. It always wins the race, and
+        # would burn the settle window while the real wheel is still coming up.
         real = [c for c in raw if not _is_vjoy_controller(c)]
 
         if real or wheels:
@@ -329,9 +286,8 @@ def wait_for_devices(timeout_seconds, pump=None):
                 first_seen = now
                 log.event("detect.first_device", raw=len(raw), wheels=len(wheels))
 
-            # Stop as soon as something with an actual motor is present -- that is the
-            # device we came for. Otherwise keep listening: a motorless device (vJoy) may
-            # simply have got here first.
+            # Stop once something with a real motor is present. Otherwise keep listening:
+            # a motorless device may simply have got here first.
             if has_motor(raw, wheels):
                 print("  Detected %d raw controller(s), %d racing wheel(s)."
                       % (len(raw), len(wheels)))
@@ -340,10 +296,10 @@ def wait_for_devices(timeout_seconds, pump=None):
             waited = now - first_seen
             if waited >= DEVICE_SETTLE_SECONDS:
                 print("  Detected %d raw controller(s), %d racing wheel(s)"
-                      " -- none with a force-feedback motor." % (len(raw), len(wheels)))
+                      ", none with a force feedback motor." % (len(raw), len(wheels)))
                 return raw, wheels
             if last != "settling":
-                print("    device seen but no motor yet -- waiting %.0fs for slower"
+                print("    device seen but no motor yet, waiting %.0fs for slower"
                       " hardware..." % DEVICE_SETTLE_SECONDS, flush=True)
                 last = "settling"
             time.sleep(0.05)
@@ -351,7 +307,7 @@ def wait_for_devices(timeout_seconds, pump=None):
 
         remaining = int(deadline - time.monotonic())
         if remaining != last and remaining % 5 == 0:
-            note = " (only the vJoy virtual device so far -- ignoring it)" if raw else ""
+            note = " (only the vJoy virtual device so far, ignoring it)" if raw else ""
             print("    nothing yet... %ds left (press a wheel button)%s"
                   % (remaining, note), flush=True)
             last = remaining
@@ -366,13 +322,9 @@ def has_motor(raw, wheels):
     """
     True once a device with a real force-feedback motor is present.
 
-    vJoy MUST be excluded here, not just in report(). vJoy's virtual device does expose a
-    WGI force-feedback motor, so a naive motor check is satisfied by the decoy and detection
-    returns before the real wheel -- which is slower, being actual USB hardware -- has
-    arrived. Measured in logs/wgi_probe_20260822_233138.log: vJoy at t=0.047 with a motor,
-    detection returned at t=0.110, the racing-wheel arrival fired at t=0.094 and was thrown
-    away. Same race as before the settle window was added, just re-entered through a
-    different door.
+    CONSTRAINT: vJoy must be excluded here, not just in report(). Its virtual device does
+    expose a WGI force feedback motor, so a naive check is satisfied by the decoy and
+    detection returns before the real wheel, which is slower, has arrived.
     """
     for c in raw:
         try:
@@ -409,7 +361,7 @@ def report(raw, wheels):
                  c.axis_count, c.button_count, c.switch_count))
         print("       force_feedback_motors : %d" % len(motors))
         if virtual:
-            print("       (vJoy virtual device, not hardware -- ignored for FFB)")
+            print("       (vJoy virtual device, not hardware, ignored for FFB)")
         if c.hardware_vendor_id == HORI_VENDOR_ID:
             print("       >>> HORI device <<<")
 
@@ -528,14 +480,14 @@ CONDITION_SIGNS = [
 # Per-effect, from the measurements above. "c" overrides every kind at once for
 # experiments; None means "use the measured default for this kind".
 CONDITION_SIGN_FOR = {
-    ff.ConditionForceEffectKind.SPRING: 0,    # A -- centres on either, keep the documented one
-    ff.ConditionForceEffectKind.DAMPER: 0,    # A -- B drives it into the end stop
-    ff.ConditionForceEffectKind.INERTIA: 0,   # A -- passive on both, no reason to differ
-    ff.ConditionForceEffectKind.FRICTION: 1,  # B -- A drives it into the end stop
+    ff.ConditionForceEffectKind.SPRING: 0,    # A: centres on either, keep the documented one
+    ff.ConditionForceEffectKind.DAMPER: 0,    # A: B drives it into the end stop
+    ff.ConditionForceEffectKind.INERTIA: 0,   # A: passive on both, no reason to differ
+    ff.ConditionForceEffectKind.FRICTION: 1,  # B: A drives it into the end stop
 }
 CONDITION_SIGN = None
 
-# Broken firmware effects are hidden from the menu by default -- see EFFECTS below.
+# Broken firmware effects are hidden from the menu by default. See EFFECTS below.
 SHOW_BROKEN = False
 
 
@@ -544,23 +496,13 @@ def _condition(kind, magnitude, label):
     # (direction, positiveCoefficient, negativeCoefficient,
     #  maxPositiveMagnitude, maxNegativeMagnitude, deadZone, bias)
     #
-    # Sign convention here is NOT DirectInput's, and Microsoft's own C++ sample is
-    # misleading: it passes -1.0 for negativeCoefficient and -0.3 for maxNegativeMagnitude,
-    # but the runtime rejects negative max magnitudes outright with E_INVALIDARG, and the
-    # reference text says maxNegativeMagnitude "Range is from 0 to 1.0".
+    # CONSTRAINT: this sign convention is not DirectInput's, and Microsoft's own C++ sample
+    # is wrong about it. Both coefficients are positive for a spring that resists
+    # displacement, and max magnitudes are positive in every convention because the runtime
+    # rejects a negative one with E_INVALIDARG.
     #
-    # The Remarks settle the coefficients: the illustration of a normal condition effect
-    # has "all coefficient values are positive", and a negative coefficient "will cause
-    # the force to go negative ... effectively, reversing the direction of the force",
-    # which is explicitly not recommended. So BOTH coefficients are positive for a spring
-    # that resists displacement.
-    #
-    # coefficient = SLOPE (how fast force builds as you move away from centre)
-    # max magnitude = CLAMP (both positive, 0..1)
-    # Keep the slope at full and scale strength via the clamp.
-    #
-    # The max magnitudes stay POSITIVE in every convention -- that is not a sign choice,
-    # the runtime rejects a negative one with E_INVALIDARG regardless.
+    # coefficient is the slope, max magnitude is the clamp. Keep the slope at full and scale
+    # strength with the clamp. See docs/hardware.md#effect-support.
     which = CONDITION_SIGN if CONDITION_SIGN is not None else CONDITION_SIGN_FOR.get(kind, 0)
     sign_name, dir_x, pos_c, neg_c = CONDITION_SIGNS[which]
     e.set_parameters(Vector3(dir_x, 0.0, 0.0),
@@ -573,7 +515,7 @@ def _condition(kind, magnitude, label):
 # Three behavioural classes, because how you TEST them differs completely:
 #
 #   "push"      unidirectional. Pins a free wheel to the end stop. Hold it firmly.
-#   "wave"      symmetric, zero average force. Will NOT pin the wheel -- a free wheel
+#   "wave"      symmetric, zero average force. Will not pin the wheel. A free wheel
 #               visibly rocks back and forth instead. Let it move; that is the clearest
 #               signal. Held rigidly these feel like faint pressure and are easy to miss.
 #   "condition" reactive. No force at all unless the wheel is moving. Hold and turn.
@@ -585,10 +527,9 @@ def _condition(kind, magnitude, label):
 #   "inverted"  produces force that ADDS to your motion instead of resisting it. Worse
 #               than silent: actively wrong, and it fights you.
 #
-# Only "works" effects are listed in the menu by default -- offering nine broken entries
-# to a first-time user buries the two real ones. They all still RUN if typed by number,
-# because reproducing these results is the whole point of the tool, and the numbering
-# stays fixed at 1-11 so logs and notes from earlier sessions still line up.
+# Only "works" effects are listed by default: nine broken entries bury the real ones. All of
+# them still run if typed by number, and the numbering stays fixed at 1-11 so older logs and
+# notes still line up.
 #
 # label, builder(magnitude, duration, frequency) -> (effect, description), class, verdict
 EFFECTS = [
@@ -610,10 +551,10 @@ EFFECTS = [
     ("Spring", lambda m, d, f: _condition(ff.ConditionForceEffectKind.SPRING, m,
                                           "pulls back to centre"), "condition", "works"),
     ("Damper", lambda m, d, f: _condition(ff.ConditionForceEffectKind.DAMPER, m,
-                                          "resists speed -- turn fast vs slow"),
+                                          "resists speed: turn fast vs slow"),
      "condition", "works"),
     ("Inertia", lambda m, d, f: _condition(ff.ConditionForceEffectKind.INERTIA, m,
-                                           "resists acceleration -- heavy to start turning"),
+                                           "resists acceleration: heavy to start turning"),
      "condition", "coarse"),
     ("Friction", lambda m, d, f: _condition(ff.ConditionForceEffectKind.FRICTION, m,
                                             "constant drag whenever the wheel moves"),
@@ -623,25 +564,22 @@ EFFECTS = [
 VERDICT_TAGS = {
     "works": "",
     "silent": "  [silent on this firmware]",
-    "inverted": "  [INVERTED -- adds to your motion]",
-    # Produces force, but not the force it advertises. Passive on both signs -- it never
-    # runs away -- and it is definitely doing something: held against a silent effect that
-    # occupies the motor identically, only this one feels notchy. But cogging is not
-    # acceleration resistance, which should be a smooth weight at the start of a turn and
-    # free once moving. Safe to run, not usable as inertia.
-    "coarse": "  [produces force, but notchy -- not acceleration resistance]",
+    "inverted": "  [inverted: adds to your motion]",
+    # Produces force, but not the force it advertises: notchy rather than a smooth weight at
+    # the start of a turn. Passive on both signs, so safe to run, but not usable as inertia.
+    "coarse": "  [produces force, but notchy, not acceleration resistance]",
 }
 
 HOW_TO_FEEL = {
     "push": ["HOLD THE WHEEL FIRMLY. This pushes one direction; let go and it",
              "will spin to the end stop and pin there."],
     "wave": ["LET THE WHEEL GO (or hold very loosely) AND WATCH IT.",
-             "This wave is symmetric, so its average force is zero -- it will NOT",
-             "pin the wheel, it should visibly ROCK it left and right. Gripping",
+             "This wave is symmetric, so its average force is zero. It will not",
+             "pin the wheel, it should visibly rock it left and right. Gripping",
              "hard masks it into a faint buzz."],
-    "condition": ["HOLD AND TURN THE WHEEL. This one only reacts to movement --",
+    "condition": ["HOLD AND TURN THE WHEEL. This one only reacts to movement:",
                   "it produces no force at all while the wheel is still.",
-                  "KEEP HOLD OF IT: if the sign convention is wrong the force ADDS to",
+                  "KEEP HOLD OF IT. If the sign convention is wrong the force adds to",
                   "your movement instead of resisting it, and the wheel runs away to",
                   "the end stop. That is a reversed-sign result, not a firmware limit."],
 }
@@ -694,7 +632,7 @@ class Session:
         is reported for context only, and the verdict comes from the released phase.
         """
         if len(samples) < 10:
-            print("  (no usable position trace -- %d samples)" % len(samples))
+            print("  (no usable position trace, %d samples)" % len(samples))
             log.event("motion.none", effect=label, samples=len(samples))
             return
 
@@ -710,17 +648,15 @@ class Session:
                   % (span, self._peak_speed(active)))
 
         if len(freed) < 10:
-            print("          released phase too short to judge -- no verdict")
+            print("          released phase too short to judge, no verdict")
             log.event("motion.summary", effect=label, verdict="no-release-phase",
                       samples=len(samples))
             return
 
-        # Anchor on where the hand ACTUALLY left the wheel, not on where the prompt was
-        # printed. Nobody releases on zero reaction time, and the prompt can land mid-swing:
-        # measured once at +0.028 while the real release was 0.4s later at +0.245, which
-        # turned a textbook centring trace into "coasted". The release is the last outward
-        # extreme -- after it, nothing pushes the wheel outward again unless the effect does.
-        # Only the first half is searched, so there is always motion left to observe.
+        # CONSTRAINT: anchor on where the hand left the wheel, not where the prompt printed.
+        # The prompt can land mid-swing. The release is the last outward extreme, since
+        # nothing pushes the wheel outward again unless the effect does. Only the first half
+        # is searched, so there is always motion left to observe.
         whole_freed = freed
         head = freed[:max(2, len(freed) // 2)]
         anchor = max(range(len(head)), key=lambda i: abs(head[i][1]))
@@ -735,13 +671,10 @@ class Session:
               " stop)" % (start_pos, freed[0][0], end_pos, drift))
         print("          peak speed after release %.2f/s, final %.2f/s" % (peak, end_speed))
 
-        # Coast numbers, measured over the WHOLE released window rather than from the
-        # anchor. These are what compare a dissipative effect against a silent one: run the
-        # same flick under a silent effect (a periodic -- it holds the motor but produces no
-        # torque here) and under the damper. Shorter coast under the damper is the damper
-        # working, measured rather than felt. The anchor is deliberately not used: on a
-        # flick the wheel is released while moving fast and travels further out afterwards,
-        # so the furthest point is the END of the coast, not the start of it.
+        # Coast numbers, over the whole released window rather than from the anchor: on a
+        # flick the wheel is released while moving fast, so the furthest point is the end of
+        # the coast. Shorter coast under a damper than under a silent effect is the damper
+        # working, measured rather than felt.
         coast_travel = max(p for _t, p in whole_freed) - min(p for _t, p in whole_freed)
         stopped_at = None
         for (t0, p0), (t1, p1) in zip(whole_freed, whole_freed[1:]):
@@ -754,15 +687,12 @@ class Session:
 
         # Withhold the verdict when the released window was clearly not hands-off.
         #
-        # This firmware drives a free wheel at up to about 2 reading-units/sec at the gains
-        # used here. Anything far above that is a hand, or a reading discontinuity. Measured:
-        # a sine effect -- silent, incapable of moving anything -- scored "CENTRING" at a
-        # peak of 20/s purely because the flick landed inside the window the tool believed
-        # was unattended. A verdict from a contaminated window is worse than no verdict,
-        # because it looks like evidence.
+        # This firmware drives a free wheel at about 2 units/sec at these gains, so anything
+        # far above that is a hand or a reading discontinuity. A verdict from a contaminated
+        # window is worse than no verdict, because it looks like evidence.
         HAND_SPEED = 5.0
         if peak > HAND_SPEED:
-            print("          >>> NO VERDICT -- peak %.1f/s is far above what this firmware"
+            print("          >>> NO VERDICT: peak %.1f/s is far above what this firmware"
                   % peak)
             print("              can drive on its own. The wheel was still being handled")
             print("              (or the reading jumped). Hands OFF before the prompt.")
@@ -772,41 +702,32 @@ class Session:
 
         # Interpretation, in the order the cases can be told apart.
         #
-        # Runaway is decisive: nothing passive can drive a released wheel outward at
-        # sustained speed. Centring is equally decisive the other way, but only a spring
-        # should do it -- a damper, friction or inertia that pulls to centre is a spring
-        # wearing the wrong name. Everything else is "stayed put", which is correct for the
-        # three dissipative effects and indistinguishable from doing nothing at all -- the
-        # released phase cannot separate a working damper from a silent one, only the
-        # active-phase feel can.
-        # Still moving at the end is the decisive test, and it beats drift.
+        # Runaway is decisive: nothing passive drives a released wheel outward at sustained
+        # speed. Centring is equally decisive, but only a spring should do it. Everything
+        # else is "stayed put", which the released phase cannot separate from doing nothing.
         #
-        # A passive effect dissipates: whatever the wheel was doing when the hand left, it
-        # ends at rest. Only an effect injecting energy keeps it going indefinitely. Drift
-        # was the original signal and it is unreliable -- measured on friction, the wheel
-        # ran to full lock, bounced off the mechanical stop and came back across centre, so
-        # the displacement was NEGATIVE and scored "centring" on a textbook runaway.
-        # Hitting the stop is the same story: nothing passive reaches it from a standstill.
-        # "Reached the end stop" has to mean DROVE there, not "was already parked there".
-        # A wheel left against the stop at the end of the active phase sits at 0.999 for the
-        # whole released window; without the travel guard that scored as a runaway on a sine
-        # effect, which cannot move anything at all. Requiring real travel first also costs
-        # nothing on a true runaway -- friction on sign A covered 1.127 getting there.
+        # CONSTRAINT: judge on still moving at the end, not on drift. A passive effect
+        # dissipates and ends at rest. Drift scored a textbook runaway as centring, because
+        # the wheel bounced off the stop and came back across centre.
+        #
+        # CONSTRAINT: reaching the end stop must mean drove there. A wheel parked against the
+        # stop sits at 0.999 for the whole window, which scored as a runaway on a silent
+        # effect until real travel was required first.
         hit_stop = (coast_travel > 0.25
                     and max(abs(p) for _t, p in whole_freed) >= 0.98)
         if end_speed > self.MOVING_SPEED or hit_stop:
             verdict = "runaway"
-            print("          >>> RUNAWAY -- %s"
+            print("          >>> RUNAWAY: %s"
                   % ("drove itself into the end stop." if hit_stop
                      else "still moving %.2f/s when the window ended." % end_speed))
             print("              Nothing passive can do this. The sign is INVERTED.")
         elif drift < -0.05:
             verdict = "centring"
-            print("          >>> CENTRING -- returned toward centre on its own.")
+            print("          >>> CENTRING: returned toward centre on its own.")
             print("              Correct for a spring; wrong for damper/friction/inertia.")
         elif peak < self.MOVING_SPEED:
             verdict = "held"
-            print("          >>> HELD STILL -- no self-driven motion.")
+            print("          >>> HELD STILL: no self-driven motion.")
             print("              Correct for damper/friction/inertia; a spring should have")
             print("              pulled back, so for a spring this means silent or dead.")
         else:
@@ -815,7 +736,7 @@ class Session:
             print("              Consistent with a dissipative effect, or with none at all.")
 
         if abs(start_pos) < 0.10:
-            print("          NOTE: released near centre (%+.3f) -- a spring has almost"
+            print("          NOTE: released near centre (%+.3f), where a spring has almost"
                   " nothing" % start_pos)
             print("                to pull against there. Release further out to be sure.")
 
@@ -859,7 +780,7 @@ class Session:
         """A paused motor silently swallows every effect."""
         try:
             if self.motor.are_effects_paused:
-                print("  motor reports effects PAUSED -- resuming")
+                print("  motor reports effects paused, resuming")
                 self.motor.resume_all_effects()
         except Exception as exc:
             print("  could not check/resume paused state: %s" % exc)
@@ -876,7 +797,7 @@ class Session:
 
     def run_effect(self, index):
         label, builder, kind, verdict = EFFECTS[index]
-        # duration 0 means "a long look" -- 15s. It deliberately does NOT wait on Enter,
+        # duration 0 means a long look, 15s. It does not wait on Enter,
         # because pressing Enter needs console focus, and taking console focus kills the
         # force output we are trying to feel.
         duration = 15.0 if self.duration <= 0 else self.duration
@@ -888,7 +809,7 @@ class Session:
 
         print()
         rule()
-        print("  %s -- %s" % (label.upper(), description))
+        print("  %s: %s" % (label.upper(), description))
         if verdict != "works":
             # Say so up front. Otherwise a silent wheel reads as "the tool is broken"
             # rather than "this is the documented result being reproduced".
@@ -921,7 +842,7 @@ class Session:
         try:
             self.unpause()
             self.grab_foreground()
-            print("  (bringing the probe window to the foreground -- DO NOT click away,")
+            print("  (bringing the probe window to the foreground. Do not click away,")
             print("   force output stops when this process is not in front)")
 
             for n in (3, 2, 1):
@@ -939,21 +860,13 @@ class Session:
 
             # Sample the wheel while the effect holds the motor.
             #
-            # Without this the log records only that the effect ran, which is why the
-            # condition verdicts had to be judged by feel -- and feel is how the wrong
-            # verdicts got recorded in the first place. Position over time is the only
-            # evidence available: the force the firmware commands cannot be read back, but
-            # a correct spring, damper, friction or inertia can only remove energy or pull
-            # toward centre. None of them can make the wheel speed up on its own, so
-            # "does it accelerate the hand" is answerable from position alone.
-            # The hold is split into an ACTIVE phase and a RELEASED phase.
+            # Position over time is the only evidence available: commanded force cannot be
+            # read back, but no correct condition effect can make the wheel speed up on its
+            # own, so "does it accelerate" is answerable from position alone.
             #
-            # Only the released phase carries a verdict. While a hand is driving the wheel
-            # the motion is whatever the hand imposes -- a steady back-and-forth spends half
-            # its ticks accelerating and half decelerating no matter what the motor does, so
-            # no statistic taken over that phase can separate a working effect from an
-            # inverted one. With the hand off, the wheel moves only under the effect, and
-            # the question becomes trivial: passive effects cannot speed it up.
+            # CONSTRAINT: only the released phase carries a verdict. While a hand drives the
+            # wheel the motion is whatever the hand imposes, and no statistic over that phase
+            # separates a working effect from an inverted one.
             release_at = max(1.5, duration - 3.0)
             released = False
             samples = []
@@ -969,7 +882,7 @@ class Session:
                 if not released and now - start >= release_at:
                     released = True
                     print()
-                    print("  >>>>>>  LET GO NOW -- hands OFF until FORCE OFF  <<<<<<",
+                    print("  >>>>>>  LET GO NOW, hands OFF until FORCE OFF  <<<<<<",
                           flush=True)
                 if now >= next_tick:
                     # Keep re-asserting foreground, and show whether we actually hold it.
@@ -991,8 +904,8 @@ class Session:
             print("  >>>>>>  FORCE OFF <<<<<<")
             self.report_motion(samples, label, release_at)
             print()
-            print("  (The wheel may feel LOOSE now rather than snapping back -- while we")
-            print("   hold the motor the firmware auto-centering stays suspended. Use 'r'")
+            print("  (The wheel may feel loose now rather than snapping back. While the")
+            print("   motor is held the firmware auto-centering stays suspended. Use 'r'")
             print("   to release the motor and get the stock centering spring back.)")
         except KeyboardInterrupt:
             print("\n  Interrupted.")
@@ -1013,7 +926,7 @@ class Session:
         One fully independent shot: set gain, build, LOAD, start, hold, stop, unload.
 
         Reloading per step is the whole point. master_gain is latched by the driver when
-        an effect is LOADED -- changing it under a running effect does nothing, which is
+        an effect is loaded. Changing it under a running effect does nothing, which is
         what made the original single-load sweep useless.
         """
         try:
@@ -1063,7 +976,7 @@ class Session:
         rule()
         print("  %s" % title)
         print("  %s" % explanation)
-        print("  Each step is a SEPARATE load -- gain is latched at load time.")
+        print("  Each step is a separate load: gain is latched at load time.")
         self.grab_foreground()
         for n in (3, 2, 1):
             print("    %d..." % n, flush=True)
@@ -1082,7 +995,7 @@ class Session:
         steps = [(s / 10.0, 1.0, "master_gain %.1f  (magnitude 1.0)" % (s / 10.0))
                  for s in range(1, 11)]
         self._stepped(
-            "GAIN SWEEP -- master_gain 0.1 -> 1.0, magnitude fixed at 1.0",
+            "GAIN SWEEP: master_gain 0.1 -> 1.0, magnitude fixed at 1.0",
             "If every step feels identical, the firmware ignores master_gain.",
             steps)
 
@@ -1090,7 +1003,7 @@ class Session:
         steps = [(1.0, s / 10.0, "magnitude %.1f  (gain 1.0)" % (s / 10.0))
                  for s in range(1, 11)]
         self._stepped(
-            "MAGNITUDE SWEEP -- effect magnitude 0.1 -> 1.0, gain fixed at 1.0",
+            "MAGNITUDE SWEEP: effect magnitude 0.1 -> 1.0, gain fixed at 1.0",
             "If every step feels identical, the firmware ignores the effect magnitude too.",
             steps)
 
@@ -1100,7 +1013,7 @@ class Session:
             steps.append((1.0, 1.0, "push RIGHT (+1.0)"))
             steps.append((1.0, -1.0, "push LEFT  (-1.0)"))
         self._stepped(
-            "DIRECTION TEST -- alternating +1.0 / -1.0 at full strength",
+            "DIRECTION TEST: alternating +1.0 / -1.0 at full strength",
             "If direction alternates, the wheel IS reading the force vector.",
             steps, seconds=2.0)
 
@@ -1131,7 +1044,7 @@ class Session:
 
         print()
         rule()
-        print("  SOFTWARE-SYNTHESISED %s -- %.2f Hz, %.0f%% amplitude, %.0f updates/sec"
+        print("  SOFTWARE-SYNTHESISED %s: %.2f Hz, %.0f%% amplitude, %.0f updates/sec"
               % (shape.upper(), freq, amp * 100, rate))
         print("  One constant-force effect, magnitude rewritten in a loop to trace the wave.")
         print("  >> LET THE WHEEL GO AND WATCH IT. It should rock left and right.")
@@ -1260,19 +1173,19 @@ def menu(session):
     # (magnitude, duration, frequency) and have no session object to read a setting from.
     global CONDITION_SIGN, SHOW_BROKEN
     while True:
-        rule("INTERACTIVE -- effects on demand")
+        rule("INTERACTIVE: effects on demand")
         fg = session.is_foreground()
         print("  gain=%.2f  magnitude=%.2f  ->  %.0f%% of full torque      duration=%.1fs"
               % (session.gain, session.magnitude, session.effective() * 100,
                  15.0 if session.duration <= 0 else session.duration))
         if fg is False:
-            print("  (probe window is not in front right now -- effects re-grab it on start)")
+            print("  (probe window is not in front right now, effects re-grab it on start)")
         if session.profile:
             print("  calibrated: force->reading %+d, live updates %s"
                   % (session.profile["force_to_reading_sign"],
                      "yes" if session.profile.get("live_update") else "no"))
         else:
-            print("  NOT CALIBRATED -- press 'k'. Software effects need it.")
+            print("  NOT CALIBRATED. Press 'k'. Software effects need it.")
 
         tags = {"push": "(hold firmly)", "wave": "(let it go, watch it rock)",
                 "condition": "(hold AND turn)"}
@@ -1285,10 +1198,10 @@ def menu(session):
                 continue
             print("   %2d) %-16s %s%s" % (i, label, tags[kind], VERDICT_TAGS[verdict]))
         if hidden:
-            print("       (%d more the firmware ignores or inverts -- 'b' to show;"
+            print("       (%d more the firmware ignores or inverts, 'b' to show;"
                   " they still run if typed)" % hidden)
         print()
-        print("  SOFTWARE EFFECTS  (computed here from constant force -- need calibration)")
+        print("  SOFTWARE EFFECTS  (computed here from constant force, need calibration)")
         print("    y) sine        z) square")
         print("    1s) spring     2s) damper      3s) friction    4s) inertia")
         print()
@@ -1335,7 +1248,7 @@ def menu(session):
                 print("  Not saved.")
                 continue
             session.profile = wp.save_profile(session.key, measured)
-            print("  Saved to %s -- it will be reused automatically from now on."
+            print("  Saved to %s. It will be reused automatically from now on."
                   % wp.PROFILE_PATH)
             for line in wp.describe_profile(session.profile):
                 print(line)
@@ -1421,7 +1334,7 @@ def parse_args():
     p.add_argument("--gain", type=float, default=1.0,
                    help="master gain 0.0-1.0, set before each load (default 1.0)")
     p.add_argument("--magnitude", type=float, default=0.30,
-                   help="effect magnitude 0.0-1.0 -- the intensity control (default 0.30)")
+                   help="effect magnitude 0.0-1.0, the intensity control (default 0.30)")
     p.add_argument("--duration", type=float, default=6.0,
                    help="seconds per effect, 0 = hold until Enter (default 6)")
     p.add_argument("--wait", type=float, default=30.0, help="detection timeout (default 30)")
@@ -1455,7 +1368,7 @@ def main():
     if not pump.hwnd:
         print("  WARNING: no message-pump window; enumeration will probably stay empty.")
     else:
-        print("  Message pump running (small window opened -- just leave it alone).")
+        print("  Message pump running (small window opened, just leave it alone).")
 
     session = None
     try:
@@ -1491,7 +1404,7 @@ def main():
         for line in wp.describe_profile(session.profile):
             print(line)
         if session.read_wheel() is None:
-            print("  NOTE: no wheel position reading -- calibration is unavailable.")
+            print("  NOTE: no wheel position reading, calibration is unavailable.")
 
         try:
             enabled = session.sync(motor.try_enable_async())
@@ -1502,7 +1415,7 @@ def main():
 
         print()
         print("  NOTE: while an effect holds the motor, the wheel's own auto-centering is")
-        print("  suspended -- so a gentle effect feels LOOSER than the resting wheel. That")
+        print("  suspended, so a gentle effect feels looser than the resting wheel. That")
         print("  is what control feels like. Press 'r' any time to hand the motor back.")
 
         menu(session)

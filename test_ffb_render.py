@@ -1,11 +1,11 @@
 r"""
-test_ffb_render.py -- proves the control laws still do what they used to.
+test_ffb_render.py: proves the control laws still do what they used to.
 
 WHY THIS EXISTS
 ---------------
 `ffb_render.py` was extracted from `wheel_profile.run_software_condition` so that a game's
 coefficients could drive the same laws. Those laws were fitted against logged ticks from this
-wheel, so **any change in what they output is a bug, not a tuning opportunity** -- and the
+wheel, so any change in what they output is a bug, not a tuning opportunity, and the
 only other way to check is to have someone hold the wheel and report a feeling, which is
 exactly the kind of evidence that produced three wrong verdicts earlier in this project.
 
@@ -14,7 +14,7 @@ spring's centre offset to all four conditions, biasing damper, friction and iner
 about that is visible by reading the code, and by feel it would have been "the damper seems
 a bit odd".
 
-No test framework -- this is one file with no dependencies:
+No test framework. One file with no dependencies:
 
     .\.venv\Scripts\python.exe test_ffb_render.py
 """
@@ -84,7 +84,7 @@ def test_matches_legacy():
 
 def test_friction_is_a_step():
     """
-    Friction must be flat drag, not proportional -- that is what distinguishes it from a
+    Friction must be flat drag, not proportional. That is what distinguishes it from a
     damper. It is built from a very steep coefficient rather than its own branch, so this
     checks the approximation really does behave like a step.
     """
@@ -129,7 +129,7 @@ def test_saturation_and_sign():
     ok &= check("negative side clamps to -0.6", abs(p.force(-1.0) + 0.6) < 1e-9)
 
     # The property that makes software conditions physically unable to run away: force
-    # always opposes the signal. The firmware's own conditions do NOT have this -- two of
+    # always opposes the signal. The firmware's own conditions do not have this: two of
     # them were measured driving the wheel into the end stop.
     spring = R.legacy_condition_params("spring", 2.0)
     right = R.condition_force("spring", spring, FakeState(0.5, 0.0, 0.0))
@@ -170,7 +170,7 @@ def test_direction_sign():
 
     DiRT 4 sends a positive magnitude and points it with a polar angle, flipping 0 <-> 180
     degrees for left and right. Both are zeros of sin, and the old degeneracy guard returned
-    +1.0 for each -- so every force came out in the same direction. The wheel could not centre
+    +1.0 for each, so every force came out in the same direction. The wheel could not centre
     (a centring force must change sign across centre) and pulled permanently to one side.
 
     It survived a whole session of play because rectification is INAUDIBLE on symmetric
@@ -182,7 +182,7 @@ def test_direction_sign():
     south = R.direction_x(16384)                 # 180 degrees
     ok = check("0 and 180 degrees are opposite (%+.2f vs %+.2f)" % (north, south),
                north * south < 0)
-    ok &= check("neither is zero -- a zero would silence a one-axis wheel",
+    ok &= check("neither is zero, a zero would silence a one-axis wheel",
                 abs(north) > 0.05 and abs(south) > 0.05)
 
     # Cartesian senders land on 8191, where sin is 1.0 and the guard is never reached.
@@ -205,7 +205,7 @@ def test_direction_sign():
             left, right = R.direction_x(8191), R.direction_x(16383)
             ok &= check("%s: 90 and 180 deg are opposite (%+.2f vs %+.2f)"
                         % (mode, left, right), left * right < 0)
-            ok &= check("%s: 90 deg is positive -- the polarity measured in the car" % mode,
+            ok &= check("%s: 90 deg is positive, the polarity measured in the car" % mode,
                         left > 0)
             ok &= check("%s: neither end is zero" % mode,
                         abs(left) > 0.5 and abs(right) > 0.5)
@@ -225,7 +225,7 @@ def test_direction_sign():
         R.DIRECTION_MODE = "sin"
 
     still_rectified = all(R.direction_x(d) >= 0 for d in range(8191, 16384, 64))
-    ok &= check("sin mode over that same range IS rectified -- the bug, pinned down",
+    ok &= check("sin mode over that same range IS rectified: the bug, pinned down",
                 still_rectified)
     return ok
 
@@ -271,16 +271,39 @@ def test_wheel_state():
     return ok
 
 
+def test_infinite_duration():
+    """0xFFFF is a sentinel, not a 65.535 second effect."""
+    print("\ninfinite duration sentinel")
+    ok = check("0 stays infinite", R.duration_seconds(0) == 0.0)
+    ok &= check("2500 -> 2.5s", abs(R.duration_seconds(2500) - 2.5) < 1e-9)
+    ok &= check("0xFFFF -> infinite", R.duration_seconds(0xFFFF) == 0.0)
+
+    # The bug this test exists for: an effect the game means to run forever, expiring
+    # 65 seconds into a stint and staying silent until a menu restarted it.
+    forever = R.Effect(1)
+    forever.kind = "constant"
+    forever.duration = R.duration_seconds(0xFFFF)
+    forever.start(0.0)
+    ok &= check("still running after 10 minutes", not forever.expired(600.0))
+
+    timed = R.Effect(2)
+    timed.kind = "constant"
+    timed.duration = R.duration_seconds(2000)
+    timed.start(0.0)
+    ok &= check("a real 2s duration still expires", timed.expired(3.0))
+    return ok
+
+
 def main():
     print("ffb_render control-law checks")
     results = [test_matches_legacy(), test_friction_is_a_step(), test_di_conversion(),
                test_saturation_and_sign(), test_periodics(), test_direction_sign(),
-               test_envelope(), test_wheel_state()]
+               test_envelope(), test_wheel_state(), test_infinite_duration()]
     print()
     if all(results):
         print("ALL CHECKS PASSED")
         return 0
-    print(">>> FAILURES ABOVE -- the laws changed behaviour. Do not ship this.")
+    print(">>> FAILURES ABOVE. The laws changed behaviour, do not ship this.")
     return 1
 
 

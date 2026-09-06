@@ -80,6 +80,104 @@ dense per-tick data (position, velocity, commanded force, foreground state, effe
 is not printed live. Flushed per line, so `Ctrl+C` still leaves a complete log. Pass `--no-log`
 to disable it.
 
+## The window
+
+`gui.py` is deliberately small: pick a game, start and stop it, three status badges, per-game
+notes and the feel sliders. A setup wizard, a per-game installer and a live force meter were
+all planned and cut. They can be added once something proves inadequate, which is a better
+reason to build them than a plan written before anyone used it.
+
+### Why tkinter and not a web UI
+
+The alternative was Edge in app mode talking to a local HTTP server. That costs zero download,
+but it opens a listening socket, in a tool whose central problem is convincing Windows and a
+suspicious user that an unsigned `dinput8.dll` is not malware. It also means two processes, two
+languages, and a lifecycle where closing the window does not stop the server.
+
+tkinter is not in the embeddable runtime, so the bundle vendors tcl/tk: measured at +2.5 MB
+zipped, and the three binaries (`tcl86t.dll`, `tk86t.dll`, `_tkinter.pyd`) are signed by the
+Python Software Foundation. One process, one language, no port. It looks dated, and that was
+accepted.
+
+### Why it shells out to play.ps1
+
+`play.ps1` deploys the shim, backs up a foreign `dinput8.dll`, starts the bridge, watches for
+the game process and cleans up on every exit path including Ctrl+C. It is verified on hardware.
+Porting it to Python is worth doing eventually, since one launcher is better than two, but a
+rewrite whose only test is "play DiRT 4 and see" should not also be the thing carrying a new UI.
+
+Stopping it is a **stop file**, not a kill. `Popen.terminate()` is `TerminateProcess` on
+Windows, so PowerShell never unwinds and its `finally` block never runs. That block is what
+kills the bridge and takes the shim back out of the game folder, so killing the child leaves a
+bridge holding vJoy invisibly and an unsigned DLL in somebody's game directory. The window
+touches a file `play.ps1` polls for, and kills only if that is ignored.
+
+### Watching the shared section
+
+`ShimView` reads the shim's shared memory and must not create it. It used to call
+`mmap.mmap(-1, size, tagname=NAME, access=ACCESS_READ)`, and with fileno -1 that **creates** the
+mapping when none exists, as PAGE_READONLY. Every later writer then fails: the bridge died on
+`OSError [WinError 87]` a second after starting, the shim logged
+`ipc: MapViewOfFile failed, err=87` from inside the game, and the window reported a running
+bridge while the badge beside it said otherwise.
+
+It only bit once the window became the thing that starts the bridge, because whoever touches
+the section first creates it. `OpenFileMappingW` fails when there is nothing to open, which is
+the behaviour wanted. It is opened and closed per read, so a dead bridge's section is not held
+alive by the window that was only meant to watch it.
+
+## ffb_render
+
+The arithmetic half of the bridge. It exists as its own module because
+`wheel_profile.run_software_condition` implements the same laws with the strengths baked in as
+`CONDITION_GAINS`, fitted to this wheel for a menu where one effect is picked at one magnitude.
+A game does not work that way: it sends its own coefficients, saturations and dead bands,
+several effects at once, and expects them summed. The laws are lifted here and parameterised,
+and `wheel_profile` delegates.
+
+### Units
+
+Everything inside is normalised:
+
+| Quantity | Units |
+|---|---|
+| position, velocity, acceleration | reading units and reading units per second, as `RacingWheel.get_current_reading().wheel` produces them, -1.0 to +1.0 across full lock |
+| coefficients, saturations, dead bands | fractions, not DirectInput's 0..10000 integers |
+| output force | -1.0 to +1.0 |
+
+DirectInput's integers are converted once, at the boundary, by `ConditionParams.from_di`.
+Keeping DI units out of the interior is deliberate: the alternative is dividing by 10000 in a
+dozen places and eventually forgetting one, which is a factor of 10000 error that presents as
+"force feedback does nothing".
+
+Coefficients are **not** clamped to DirectInput's range, because the software conditions in
+`wheel_profile` legitimately use a spring gain of 2.0, measured rather than guessed. Saturation
+still bounds the result, so an out of range coefficient only decides how quickly an effect
+reaches full force.
+
+### Velocity smoothing
+
+Differentiating a quantised reading about 100 times a second is noisy, and that noise reaches
+the motor as audible chatter. `WheelState.VELOCITY_SMOOTHING` is an exponential factor fitted
+against logged ticks from this wheel: 1.0 is raw and makes inertia pure hash, lower is smoother
+but lags the wheel.
+
+### Parity with the old laws
+
+`legacy_condition_params` reproduces `wheel_profile.CONDITION_GAINS` exactly, so the menu's
+software conditions feel identical. Any change in feel there is a bug rather than a tuning
+opportunity, and `test_ffb_render.py` compares the two over a sweep.
+
+Friction is the odd one. The old law was direction only, a flat gain outside a velocity dead
+band with no proportionality, which is expressible here as a very steep coefficient saturating
+immediately. Same output, no special case in the formula.
+
+One deliberate difference: at exactly the dead band edge the old law is already at full drag,
+because its test was `abs(v) < 0.05`, while this returns 0 there and full drag an epsilon
+beyond. The transition is 1e-6 wide, the function is discontinuous at that point either way,
+and a velocity landing on exactly 0.05 has measure zero. Documented rather than special cased,
+because a `friction` branch in the formula would have to be maintained forever to buy nothing.
+
 ## What is where
 
 Every script's flags and a one-line description of each are in [COMMANDS.md](../COMMANDS.md).

@@ -3,7 +3,7 @@ Host the shim outside a game, so its WGI layer can be exercised without launchin
 
 WHY THIS IS NOT JUST test_proxy.py
 
-`test_proxy.py` checks the proxy is transparent and exits in under a second -- which kills the
+`test_proxy.py` checks the proxy is transparent and exits in under a second, which kills the
 worker thread long before it has finished enumerating. And a bare console process is the wrong
 shape anyway: Windows.Gaming.Input populates its device lists in response to arrival
 notifications dispatched through a message loop, and only for a foregrounded process. A console
@@ -12,7 +12,7 @@ empty forever and it looks exactly like absent hardware.
 
 So this does what a game does: opens a real window, foregrounds it, pumps its messages, and
 stays alive. Reusing `PumpThread` from wgi_probe.py rather than writing a second one, because
-that class already encodes the traps -- SW_SHOW rather than SW_SHOWNOACTIVATE, and reporting
+that class already encodes the traps: SW_SHOW rather than SW_SHOWNOACTIVATE, and reporting
 honestly when Windows refuses to give us the foreground.
 
 This is a diagnostic harness. Passing here is necessary, not sufficient: the real bar is the
@@ -63,7 +63,7 @@ def main():
     print("  config:   %s  (selftest=%s)" % (CFG, "1" if selftest else "0"))
     if selftest:
         print()
-        print("  SELF-TEST IS ON -- the shim will take the motor and drive it.")
+        print("  SELF-TEST IS ON: the shim will take the motor and drive it.")
         print("  HANDS ON THE WHEEL.")
     print()
 
@@ -88,7 +88,7 @@ def main():
         wait_for_devices(10.0, pump)
         print("  Python enumeration done; the C worker polls next.")
 
-    # Loading the DLL is not enough -- the worker starts on the first DirectInput8Create,
+    # Loading the DLL is not enough: the worker starts on the first DirectInput8Create,
     # deliberately, because starting threads from DllMain risks the loader lock.
     proxy = ctypes.WinDLL(PROXY)
     import dinput_abi as di
@@ -99,8 +99,8 @@ def main():
     sink = None
     if args.drive:
         # Exercise the full IPC path without a game: this process publishes force exactly the
-        # way vjoy_bridge.py will, and the shim's worker -- in this same process, but reaching
-        # the motor through WGI -- follows it. If the wheel moves here, the only thing left
+        # way vjoy_bridge.py will, and the shim's worker, in this same process but reaching
+        # the motor through WGI, follows it. If the wheel moves here, the only thing left
         # between this and a game is which process the shim is loaded into.
         from motor_sink import IpcMotorSink
         sink = IpcMotorSink(max_force=1.0, gain=1.0).open()
