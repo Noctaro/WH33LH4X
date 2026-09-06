@@ -181,21 +181,6 @@ static void ensure_real(void)
  * for nothing; slower would smear the detail the renderer works to produce. */
 #define BRIDGE_TICK_MS     10
 
-/*
- * How long the game must have been out of the foreground before the effect is rebuilt on the
- * way back.
- *
- * Windows.Gaming.Input gates force output on foreground, and losing it does not merely mute
- * us: the firmware TAKES THE MOTOR BACK -- you can feel the wheel fall back to its own spring
- * at the transition. The effect we are holding is dead by the time focus returns, still
- * reporting Running and driving nothing, and it never recovers on its own.
- *
- * Rebuilding costs a reset and a load, each of which waits on an async call, so it is not
- * free enough to do on every flicker of focus. A brief blip does not lose the motor; a real
- * alt-tab does.
- */
-#define FOCUS_REBUILD_MS   750
-
 static BOOL  g_cfg_selftest;
 static volatile LONG g_stop;
 static HANDLE g_worker;
@@ -275,35 +260,15 @@ static void selftest_loop(wgi_motor *m)
 /*
  * Follow the bridge: apply whatever force it publishes, for as long as it is alive.
  *
- * The effect is loaded once, when a bridge first appears, and HELD until the game exits. An
- * earlier version released it whenever the bridge went quiet, so as not to hold a motor
- * nothing was driving. That is what killed the wheel: unloading and reloading leaves this
- * motor accepting effects and producing no torque, and the only cure is restarting the game.
- *
- * When the bridge goes quiet we command zero instead, which is what the release was really
- * for -- the wheel goes limp and stays available. Nothing else in the game competes for this
- * motor anyway: DiRT reaches the wheel through vJoy, not Windows.Gaming.Input.
+ * The effect is loaded when a bridge appears and released when it goes away, rather than held
+ * for the life of the game. Holding the motor while nothing is driving it is precisely the
+ * state that leaves the wheel dead for every other application.
  */
-/* Is this process the one in the foreground? WGI only produces torque for that process. */
-static BOOL have_focus(void)
-{
-    DWORD pid = 0;
-    HWND  fg = GetForegroundWindow();
-
-    if (!fg)
-        return FALSE;
-    GetWindowThreadProcessId(fg, &pid);
-    return pid == GetCurrentProcessId();
-}
-
 static void bridge_loop(wgi_motor *m, wh_ipc *ipc)
 {
-    BOOL   loaded = FALSE;
-    BOOL   quiet = FALSE;       /* logged the transition, so it is not repeated per tick */
-    BOOL   focused = TRUE;
-    UINT64 lost_focus_at = 0;
-    float  gain = 1.0f;
-    DWORD  reported = 0;
+    BOOL  loaded = FALSE;
+    float gain = 1.0f;
+    DWORD reported = 0;
 
     shim_log("ipc: waiting for the bridge");
 
@@ -321,42 +286,6 @@ static void bridge_loop(wgi_motor *m, wh_ipc *ipc)
         have = wgi_read(m, &r.wheel, &r.throttle, &r.brake, &r.clutch, &r.handbrake,
                         &r.buttons, &r.shifter_gear);
 
-        /*
-         * THE MOTOR DOES NOT SURVIVE LOSING THE FOREGROUND.
-         *
-         * While another window is in front, WGI produces no torque and the firmware reclaims
-         * the motor -- the wheel visibly falls back to its own spring. What we are holding
-         * afterwards is a corpse: it still reports Running, it still accepts magnitudes, and
-         * the wheel never moves again. No amount of waiting brings it back.
-         *
-         * So rebuild it on the way in. This is the one place where releasing is right, and it
-         * is safe now that wgi_release_effect resets the motor as it goes.
-         */
-        if (!have_focus()) {
-            if (focused) {
-                focused = FALSE;
-                lost_focus_at = GetTickCount64();
-            }
-        } else if (!focused) {
-            UINT64 away = GetTickCount64() - lost_focus_at;
-            focused = TRUE;
-            if (loaded && away >= FOCUS_REBUILD_MS) {
-                shim_log("focus: back after %llu ms away -- rebuilding the effect "
-                         "(the firmware had the motor)", (unsigned long long)away);
-                wgi_release_effect(m);
-                loaded = FALSE;     /* reloaded below, on the next live-bridge tick */
-            } else {
-                /*
-                 * Logged even though nothing was done. The motor does not always die when
-                 * focus is lost -- short absences have been observed recovering on their own
-                 * -- so the threshold above is a guess, and these lines are what will tell us
-                 * where the real boundary sits. Focus changes are rare enough to log freely.
-                 */
-                shim_log("focus: back after %llu ms away -- kept the effect",
-                         (unsigned long long)away);
-            }
-        }
-
         if (wh_ipc_bridge_alive(ipc)) {
             if (!loaded) {
                 gain = ipc->block->gain;
@@ -369,35 +298,15 @@ static void bridge_loop(wgi_motor *m, wh_ipc *ipc)
                 loaded = TRUE;
                 shim_log("ipc: bridge is live, effect loaded (gain %.2f)", (double)gain);
             }
-            if (quiet) {
-                quiet = FALSE;
-                shim_log("ipc: bridge is back");
-            }
             wgi_set_force(m, ipc->block->force);
             wh_ipc_publish(ipc, WH_STATE_ACTIVE, have ? &r : NULL);
         } else if (loaded) {
-            /*
-             * The bridge stopped stamping. Command ZERO and KEEP THE MOTOR.
-             *
-             * This used to release the effect here, on the theory that holding a motor nothing
-             * is driving is antisocial. It is far worse than antisocial: unloading and later
-             * reloading leaves this motor accepting effects while producing no torque, so the
-             * wheel dies silently and only restarting the game revives it. That happened 46
-             * times in one evening of play, and every symptom pointed elsewhere -- the bridge
-             * was commanding correct force into a motor that had stopped listening.
-             *
-             * Zero force achieves what the release was for. A limp wheel is the right answer
-             * to a dead bridge; a permanently dead one is not. The effect is released properly,
-             * with a reset, when the game exits.
-             */
-            if (!quiet) {
-                quiet = TRUE;
-                shim_log("ipc: bridge went quiet (%llu ms stale, motor enabled=%d) "
-                         "-- holding the motor at zero",
-                         (unsigned long long)wh_ipc_bridge_staleness_ms(ipc),
-                         (int)wgi_motor_enabled(m));
-            }
+            /* The bridge stopped stamping. Zero the force and give the motor back rather
+             * than leaving the last commanded value pulling forever. */
+            shim_log("ipc: bridge went quiet -- releasing the motor");
             wgi_set_force(m, 0.0f);
+            wgi_release_effect(m);
+            loaded = FALSE;
             wh_ipc_publish(ipc, WH_STATE_MOTOR, have ? &r : NULL);
         } else {
             wh_ipc_publish(ipc, WH_STATE_MOTOR, have ? &r : NULL);

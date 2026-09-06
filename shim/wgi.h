@@ -7,7 +7,8 @@
  * measured as one. The arming sequence was reproduced byte-for-byte, verified programmatically
  * against a capture, sent from inside a focused game with zero write errors, and the motor
  * never moved. Identical bytes, different result: the driver distinguishes clients by something
- * other than what they send. See .claude/memory/gip-force-packet-format.md. Do not retry it.
+ * other than what they send. See evidence/README.md, and evidence/gip_protocol.py for
+ * the decoded wire format. Do not retry it.
  *
  * WGI itself does drive this motor -- reliably, every time -- but only for a process that is in
  * the foreground. That is the entire reason this code lives in a dinput8.dll proxy: the game is
@@ -68,14 +69,5 @@ void wgi_close(wgi_motor *m);
 
 /* For the W1 spike: what did we find? Written into the shim log by wgi_open. */
 BOOL wgi_have_motor(const wgi_motor *m);
-
-/*
- * The motor's own IsEnabled flag. For LOGGING a dead-motor diagnosis, not for control flow.
- *
- * A motor that has been left dead by an unload without a reset still reports its effects as
- * Running, so nothing on the effect side reveals the state. This is the one flag that might,
- * so it is worth recording whenever something looks wrong.
- */
-BOOL wgi_motor_enabled(const wgi_motor *m);
 
 #endif /* WH33LH4X_WGI_H */

@@ -2,10 +2,14 @@
 <!--
   vJoy virtual wheel, fed by the WH33LH4X bridge (vjoy_bridge.py).
 
-  Steering is declared here rather than bound in the game's UI, because binding the second
-  half of the axis in the menu drops the device ("Steuerungsgeraet geaendert"). The engine
-  wants left and right as the two halves of ONE axis, which is what the lower/upper pair
-  below says, so declaring it skips the binding flow entirely.
+  Steering is declared here so a fresh install has working steering without going near the
+  settings screen. The engine wants left and right as the two halves of ONE axis, which is
+  what the lower/upper pair below says.
+
+  This comment used to say the menu could not do it at all -- binding the second half dropped
+  the device ("Steuerungsgeraet geaendert"). That was the device being unregistered, not the
+  menu: with the device_defines.xml entry in place, rebinding from the game's own UI works
+  (re-tested 2026-08-26).
 
   Axis assignment comes from vjoy_bridge.AXIS_MAP:
     di_x_axis           steering   (bidirectional, centred)

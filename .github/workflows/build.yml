@@ -1,0 +1,166 @@
+# Build pipeline for WH33LH4X.
+#
+# Purpose: make every commit produce the same artifacts the same way, on a machine that is
+# not the author's. This repo's shim is built by a portable zig toolchain that lives outside
+# the tree (tools/zig is excluded), so until now a fresh clone could not build it at all and
+# the only dinput8.dll in existence was one person's local file. That is the gap this closes.
+#
+# It is deliberately NOT a release pipeline. Nothing here signs, tags or publishes. Signing
+# comes later and needs a prior public release to exist first -- SignPath Foundation, the free
+# option for open-source projects, will not accept a project with no release history.
+
+name: build
+
+on:
+  push:
+    branches: [main, 'feature/**']
+    # Prose cannot change what gets built, so it should not cost a Windows build. Deliberately
+    # NOT applied to pull_request: a merge is validated in full, whatever it touched.
+    paths-ignore: ['**.md', 'docs/**']
+  pull_request:
+  workflow_dispatch:
+
+# A run that has already been superseded is answering a question nobody is asking any more.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  # Artifact attestations are how this project makes a verifiable claim without paying for a
+  # code signing certificate: they bind the built zip to the commit and workflow that produced
+  # it, signed through Sigstore, and anyone can check it with
+  #     gh attestation verify WH33LH4X-windows-x64.zip --repo Noctaro/WH33LH4X
+  # These two are inert while the attestation step below is skipped.
+  id-token: write
+  attestations: write
+
+jobs:
+  checks:
+    name: lint and control-law checks
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - name: Install pinned dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install ruff==0.15.6
+
+      - name: Ruff
+        run: ruff check .
+
+      # ffb_render.py holds control laws fitted against logged ticks from the real wheel, so a
+      # change in what they output is a bug rather than a tuning opportunity. This is the only
+      # check in the project that does not need the hardware present.
+      - name: Control-law checks
+        run: python test_ffb_render.py
+
+  shim:
+    name: build dinput8.dll
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Pinned to a stable release. The author's machine builds with 0.17.0-dev, so this is the
+      # first time the shim is compiled by a stable zig -- if it breaks, that is the finding.
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      # build.ps1 finds zig on PATH when tools/zig is absent, which is the case here. It also
+      # needs a Windows SDK for the MIDL-generated WinRT headers; the runner image ships one.
+      - name: Build shim
+        shell: pwsh
+        run: ./shim/build.ps1
+
+      - name: Report what was built
+        shell: pwsh
+        run: |
+          Get-Item shim/build/dinput8.dll | Format-List Name, Length, LastWriteTime
+          (Get-FileHash shim/build/dinput8.dll -Algorithm SHA256).Hash
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dinput8-dll
+          path: shim/build/dinput8.dll
+          if-no-files-found: error
+
+  bundle:
+    name: assemble bundle
+    runs-on: windows-latest
+    needs: [checks, shim]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: dinput8-dll
+          path: shim/build/
+
+      # build_bundle.ps1 caches the embeddable CPython zip in dist\.cache and skips the
+      # download when it is already there, so restoring that folder is all this needs. Keyed on
+      # the pinned Python version: a version bump misses the cache and re-downloads, which is
+      # the correct behaviour.
+      - name: Cache embeddable Python
+        uses: actions/cache@v6
+        with:
+          path: dist/.cache
+          key: embeddable-python-3.11.9
+
+      - uses: actions/cache@v6
+        with:
+          path: ~/AppData/Local/pip/Cache
+          key: pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: pip-
+
+      - name: Build bundle
+        shell: pwsh
+        run: ./packaging/build_bundle.ps1
+
+      # THE test for this job. The embeddable distribution ignores site-packages, and winrt is
+      # a PEP 420 namespace package that seven separate wheels contribute into. If the ._pth
+      # rewrite or the single-pass vendoring were wrong, this is where it shows -- and it is
+      # much cheaper to learn here than from a user whose download will not start.
+      - name: Verify the bundled runtime imports
+        shell: pwsh
+        run: |
+          ./dist/WH33LH4X/python/python.exe -c "import winrt.windows.gaming.input.forcefeedback, pyvjoy, typing_extensions; print('imports OK')"
+          if ($LASTEXITCODE -ne 0) { throw "bundled runtime cannot import its own dependencies" }
+
+      - name: Checksums
+        shell: pwsh
+        run: |
+          Get-FileHash dist/WH33LH4X-windows-x64.zip -Algorithm SHA256 |
+            ForEach-Object { "{0}  {1}" -f $_.Hash.ToLower(), (Split-Path $_.Path -Leaf) } |
+            Set-Content dist/SHA256SUMS.txt -Encoding ASCII
+          Get-Content dist/SHA256SUMS.txt
+
+      # SKIPPED WHILE THIS REPO IS PRIVATE, ON PURPOSE. GitHub artifact attestations are a
+      # public-repository feature on Free, Pro and Team plans; on a user-owned private repo the
+      # API refuses with "Feature not available for user-owned private repositories" and fails
+      # the job -- which is exactly how run 32782325837 died. The step is gated rather than
+      # deleted so it starts working by itself the day the repo is published, with nothing to
+      # remember. If the context is ever missing the expression is falsy, so the failure mode
+      # is a skipped step rather than a red build.
+      - uses: actions/attest-build-provenance@v2
+        if: ${{ !github.event.repository.private }}
+        with:
+          subject-path: dist/WH33LH4X-windows-x64.zip
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wh33lh4x-bundle
+          path: |
+            dist/WH33LH4X-windows-x64.zip
+            dist/SHA256SUMS.txt
+          if-no-files-found: error

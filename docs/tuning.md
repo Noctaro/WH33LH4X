@@ -1,0 +1,61 @@
+# Tuning
+
+The four sliders in the window cover what most people want to change, and
+[the README](../README.md#tuning) describes them. This page is everything else.
+
+All of it lives in `tune.json`, next to the scripts. **The bridge re-reads that file while it
+runs**, so a saved change reaches the wheel within half a second, mid corner. You do not have
+to restart anything to try a value.
+
+## Every key
+
+| Key | What it does |
+|---|---|
+| `strength` | Multiplies the game's force. This, not the WGI gain, is the working volume knob: WGI latches gain when the effect loads, so writing it mid-session does nothing. The window's Strength slider caps at `1.00`; this file does not |
+| `invert` | Flips the game's force direction. Games disagree about whether a force's sign lives in its magnitude or its direction angle |
+| `dir_mode` | How a force's direction angle is turned into a signed value. Per game |
+| `max_force` | Ceiling on commanded force. Live, unlike `--gain` |
+| `min_force` | Floor on non-zero output, so small forces still overcome the motor's own stiction instead of vanishing |
+| `spring`, `damper`, `friction` | Synthetic centring, damping and drag, computed from real wheel position. For games that send none, and DiRT 4 sends a single constant force and nothing else. `0` is off |
+| `btn_down`, `btn_up`, `btn_next` | Wheel buttons that adjust tuning mid corner, as 1-based bit numbers. A game owns the foreground and the keyboard with it, so the wheel is the only device that can still reach the bridge. Run it, press buttons, and each new bitfield is printed |
+
+`invert` and `dir_mode` are properties of the **game**, not of your taste, so their known good
+values are recorded per title in [GAMES.md](../GAMES.md) rather than being something to
+experiment with.
+
+## The gain stage the software cannot see
+
+The wheel holds a force feedback strength setting of its own, in the **HORI FFB RWD-Devicemanager
+für Xbox Series X Series S** app from the Microsoft Store. It is the HORI app that can talk to
+the wheel in Xbox mode; the other HORI apps cannot. **It is driven with the wheel itself and
+does not respond to keyboard or mouse**, which is confusing the first time you open it.
+
+Nothing in this project can read or change that setting, and it sits above everything in
+`tune.json`. Measured 2026-08-26: at a fixed commanded force of `0.30`, the wheel travelled
+**0.099** at strength 8, **0.029** at strength 1, and **0.106** back at 8 again. About 3.5x,
+from identical software settings.
+
+So if two machines feel different with the same `tune.json`, that is the first place to look.
+Note what yours is set to before changing anything here.
+
+## Reading back what actually happened
+
+After a session:
+
+```powershell
+.\python\python.exe tune_report.py        # newest bridge log
+```
+
+It reports which effects the game sent, whether output ever went negative, and the correlation
+between steering angle and force.
+
+**That last number is the objective test for centring.** Force must *oppose* steering angle, and
+a wheel whose output never changes sign cannot centre no matter how it is tuned. A rectified
+output once survived a full session described as "bumps and gravel feel ok", because
+rectification is inaudible on symmetric effects. Only arithmetic on a log caught it.
+
+## Where the numbers came from
+
+`min_force` comes from `stiction_test.py`, which measures the smallest force that moves the
+wheel at all. The values that work for DiRT 4, and the measurements behind them, are in
+[GAMES.md](../GAMES.md).

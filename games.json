@@ -1,0 +1,62 @@
+{
+  "_comment": [
+    "Per-game notes, as DATA. This file is the source of truth for the summary line, the",
+    "'needs setup' flag and the quirks the GUI shows when you pick a game exe.",
+    "",
+    "GAMES.md holds the long-form write-up and stays hand-written prose. Its 'Status at a",
+    "glance' table is GENERATED FROM HERE by packaging/gen_games_table.py -- so the short",
+    "version lives in exactly one place and cannot drift from the GUI.",
+    "",
+    "'exe' is matched case-insensitively against the file you pick. Leave it empty for a game",
+    "nobody has run yet: an entry with no exe still appears in the table, it just never matches.",
+    "",
+    "'sends_ffb' is true / false / null, and null means UNKNOWN. Do not guess it -- the GUI",
+    "shows nothing at all for null, which is the honest display."
+  ],
+  "games": [
+    {
+      "name": "DiRT 4",
+      "exe": ["dirt4.exe"],
+      "status": "playable",
+      "summary": "Steering, pedals and force feedback all work -- the wheel loads up in a corner and pulls back to centre.",
+      "setup_required": true,
+      "setup_summary": "Yes -- vJoy must be registered as a wheel",
+      "sends_ffb": true,
+      "verified": "2026-08-26",
+      "docs": "GAMES.md#dirt-4",
+      "launch": "steam",
+      "steam_appid": 421020,
+      "quirks": [
+        "Steam DRM relaunches the game through the client, so launching dirt4.exe directly does not work -- the exe you started exits immediately and the real game comes up as a different process. The bridge has to be running first and then wait for it.",
+        "vJoy must be registered as a wheel in the game's device_defines.xml. Without it DiRT 4 sends unsigned magnitude with no usable direction: the wheel pulls one way and never centres, while kerbs and gravel still feel correct -- which is what makes it easy to misdiagnose.",
+        "Steering is declared in an action map XML so a fresh install has working steering without touching the settings screen. Rebinding it in the game's own UI also works, once vJoy is registered as a wheel -- re-tested 2026-08-26. The device-drop this quirk used to describe was a symptom of the unregistered device.",
+        "Steam's 'Verify integrity of game files' removes both files, and so does a game update. Expect to reapply them.",
+        "invert must stay true. Measured: DiRT 4's force points the SAME way as the steering angle, so applied unchanged it is positive feedback and the wheel runs away into the corner."
+      ]
+    },
+    {
+      "name": "RaceRoom Racing Experience",
+      "exe": [],
+      "status": "untested",
+      "summary": "Nobody has tried it yet.",
+      "setup_required": null,
+      "setup_summary": "Unknown",
+      "sends_ffb": null,
+      "verified": null,
+      "docs": "GAMES.md#raceroom-racing-experience",
+      "quirks": []
+    },
+    {
+      "name": "Automobilista 2",
+      "exe": [],
+      "status": "untested",
+      "summary": "Nobody has tried it yet.",
+      "setup_required": null,
+      "setup_summary": "Unknown",
+      "sends_ffb": null,
+      "verified": null,
+      "docs": "GAMES.md#automobilista-2",
+      "quirks": []
+    }
+  ]
+}

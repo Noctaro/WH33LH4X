@@ -8,8 +8,7 @@
  *     ConstantForceEffect -> SetParameters -> LoadEffectAsync -> Start
  *     then rewrite magnitude with SetParameters for the life of the session
  *
- * THREE TRAPS ENCODED HERE, ALL OF WHICH FAIL SILENTLY (see
- * .claude/memory/wgi-forcefeedback-api-gotchas.md):
+ * THREE TRAPS ENCODED HERE, ALL OF WHICH FAIL SILENTLY:
  *
  *  1. master_gain is LATCHED AT LOAD. Setting it under a running effect does nothing, so it is
  *     applied before LoadEffectAsync.
@@ -357,17 +356,6 @@ BOOL wgi_have_motor(const wgi_motor *m)
     return m != NULL && m->motor != NULL;
 }
 
-BOOL wgi_motor_enabled(const wgi_motor *m)
-{
-    boolean enabled = 0;
-
-    if (!m || !m->motor)
-        return FALSE;
-    if (FAILED(m->motor->lpVtbl->get_IsEnabled(m->motor, &enabled)))
-        return FALSE;
-    return enabled ? TRUE : FALSE;
-}
-
 /* ------------------------------------------------------------------ effect */
 
 BOOL wgi_load_effect(wgi_motor *m, float gain)
@@ -517,42 +505,24 @@ void wgi_release_effect(wgi_motor *m)
         m->effect = NULL;
     }
     m->have_last = FALSE;
-
-    /*
-     * RESET AFTER UNLOADING, ALWAYS. Unloading an effect without this leaves the motor
-     * accepting effects and producing no torque: the next load succeeds, the effect reports
-     * Running, and the wheel never moves again until the process exits. It is indistinguishable
-     * from a hardware fault, and it cost an evening of tuning a wheel that could not respond.
-     *
-     * This used to live in wgi_close alone, so the one caller that ran repeatedly during play
-     * -- releasing whenever the bridge went quiet -- was the one that skipped it. Doing it here
-     * makes the function safe for every caller instead of something each must remember.
-     */
-    if (m->motor) {
-        IInspectable *op = NULL;
-        if (SUCCEEDED(m->motor->lpVtbl->TryResetAsync(m->motor,
-                (__FIAsyncOperation_1_boolean **)&op)) && op) {
-            await_async(op, 2000);
-            op->lpVtbl->Release(op);
-        }
-        op = NULL;
-        /* Reset can leave the motor disabled; the two are documented as a pair. */
-        if (SUCCEEDED(m->motor->lpVtbl->TryEnableAsync(m->motor,
-                (__FIAsyncOperation_1_boolean **)&op)) && op) {
-            await_async(op, 2000);
-            op->lpVtbl->Release(op);
-        }
-    }
 }
 
 void wgi_close(wgi_motor *m)
 {
     if (!m)
         return;
-    /* Resets as part of releasing now -- see the note in wgi_release_effect. */
     wgi_release_effect(m);
-    if (m->motor)
+    if (m->motor) {
+        /* Resetting matters: releasing a held motor can otherwise leave it accepting effects
+         * while producing no torque, which looks identical to a hardware fault. */
+        IInspectable *op = NULL;
+        if (SUCCEEDED(m->motor->lpVtbl->TryResetAsync(m->motor,
+                (__FIAsyncOperation_1_boolean **)&op)) && op) {
+            await_async(op, 2000);
+            op->lpVtbl->Release(op);
+        }
         m->motor->lpVtbl->Release(m->motor);
+    }
     if (m->wheel)
         m->wheel->lpVtbl->Release(m->wheel);
     shim_log("wgi: closed (%lu writes, %lu failure(s))", m->writes, m->failures);

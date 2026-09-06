@@ -1,0 +1,29 @@
+# Runtime dependencies, pinned. Install with:
+#     .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+#
+# THE PINS ARE LOAD-BEARING, not hygiene.
+#
+# pyvjoyffb bundles its own vJoyInterface.dll and loads that copy rather than whatever is on
+# PATH. In 0.4 that DLL is byte-identical (SHA-256) to the Brunner 2.2.2.0 build, which is the
+# only generation that reports a real force-feedback effect block index. If a later release
+# swaps it for a 2.1.9-era DLL, every concurrent effect collapses onto block index 1 and the
+# bridge misreads a game's spring, damper and texture as one effect. That failure is silent:
+# it passes a one-effect-at-a-time test and only shows up in a real game, as bad feel.
+#
+# Both DLL copies report FileVersion 0.0.0, so nothing can detect the swap from file metadata.
+# GetvJoyVersion() at runtime is the only check that works. Do not unpin without running
+# that check against the DLL actually installed on the machine.
+pyvjoyffb==0.4
+
+# WinRT projections. Pinned as a set — winrt-runtime and the namespace packages are built
+# together and mixing versions is not supported upstream.
+winrt-runtime==3.2.1
+winrt-Windows.Foundation==3.2.1
+winrt-Windows.Foundation.Collections==3.2.1
+winrt-Windows.Foundation.Numerics==3.2.1
+winrt-Windows.Gaming.Input==3.2.1
+winrt-Windows.Gaming.Input.ForceFeedback==3.2.1
+winrt-Windows.Devices.Power==3.2.1
+
+# Pulled in by the WinRT projections; pinned so a resolver change cannot move it underneath us.
+typing_extensions==4.16.0

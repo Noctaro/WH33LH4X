@@ -1,0 +1,29 @@
+# Build output, toolchains and caches. Anything specific to one machine stays out of here and
+# lives in .git\info\exclude instead, which is local to a clone and never committed.
+
+# --- build output ---------------------------------------------------------
+dist/
+shim/build/
+*.obj
+*.lib
+*.exp
+*.pdb
+
+# --- toolchains fetched by the build --------------------------------------
+tools/
+zig-*-windows-*/
+zig-*.zip
+
+# --- environments and caches ----------------------------------------------
+.venv/
+__pycache__/
+.ruff_cache/
+
+# --- session output -------------------------------------------------------
+# wheel_profile.json is a calibration keyed to one wheel's VID:PID. Committing it would hand
+# the next person a measurement taken on hardware they do not have.
+wheel_profile.json
+logs/
+
+# --- editors --------------------------------------------------------------
+.vscode/

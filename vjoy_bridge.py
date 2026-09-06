@@ -566,7 +566,7 @@ def parse_args():
     p.add_argument("--tune", default=os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                                   "tune.json"),
                    help="live tuning file, re-read while running (default: tune.json next to "
-                        "this script). Edit it mid-corner; changes apply within half a second.")
+                        "this script). Edit mid-corner; changes apply within half a second.")
     p.add_argument("--no-log", action="store_true")
     return p.parse_args()
 
@@ -755,6 +755,8 @@ def main():
         last_buttons = 0
         next_print = 0.0
         last_foreground = 0.0
+        # The probe window earns its place only until the shim takes over. See below.
+        probe_hidden = False
         stop_at = time.monotonic() + args.run_seconds if args.run_seconds > 0 else None
         while stop_at is None or time.monotonic() < stop_at:
             now = time.monotonic()
@@ -824,6 +826,16 @@ def main():
                             and now - last_foreground > 0.1):
                         pump.ensure_foreground()
                         last_foreground = now
+
+                    # Once the shim is live it supplies both readings and force, so nothing in
+                    # THIS process touches WGI again -- and the probe window is then a second
+                    # window sitting on the user's screen for no reason. Hiding rather than
+                    # destroying keeps the message pump, which is cheap and avoids a teardown
+                    # path that only ever runs here.
+                    if (args.sink == "ipc" and not probe_hidden and sink is not None
+                            and sink.shim_state()[0]):
+                        pump.hide()
+                        probe_hidden = True
 
                 if now >= next_print:
                     parts = " ".join("%s %+.2f" % (lbl, rawv) for lbl, rawv, _v in written)

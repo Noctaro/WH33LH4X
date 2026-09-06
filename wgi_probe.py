@@ -10,7 +10,7 @@ wheel publishes no PID collection at all. Windows.Gaming.Input is a different st
 ForceFeedbackMotor comes from the GIP driver for Xbox-licensed devices -- and it reaches
 the motor that the other two cannot see.
 
-Confirmed on a HORI FFB Racing Wheel (VID 0x0F0D, PID 0x015C, Xbox mode):
+Confirmed on a Hori Force Feedback Racing Wheel DLX (VID 0x0F0D, PID 0x015C, Xbox mode):
 
     force_feedback_motors : 1
     is_enabled            : True
@@ -148,6 +148,7 @@ user32 = ctypes.WinDLL("user32", use_last_error=True)
 
 WS_OVERLAPPEDWINDOW = 0x00CF0000
 SW_SHOW = 5
+SW_HIDE = 0
 CW_USEDEFAULT = -2147483648
 PM_REMOVE = 0x0001
 
@@ -232,6 +233,19 @@ class PumpThread(threading.Thread):
             print("        enumerate and force output will be silent.")
             log.event("foreground.refused")
         return ok
+
+    def hide(self):
+        """
+        Put the window away while keeping the message pump running.
+
+        Only safe once nothing in this process still needs Windows.Gaming.Input. Enumeration,
+        force output and position reads are all foreground-gated, and a hidden window cannot
+        hold the foreground -- so calling this early silently breaks all three. The bridge
+        calls it only after the shim reports itself live, which is the point WGI stops being
+        used in this process at all.
+        """
+        if self.hwnd:
+            user32.ShowWindow(self.hwnd, SW_HIDE)
 
     def stop(self):
         self._stop.set()
@@ -584,16 +598,20 @@ EFFECTS = [
                                             "smooth left-right rocking"), "wave", "silent"),
     ("Square wave", lambda m, d, f: _periodic(ff.PeriodicForceEffectKind.SQUARE_WAVE, m, d, f,
                                               "hard alternating jolts"), "wave", "silent"),
-    ("Triangle wave", lambda m, d, f: _periodic(ff.PeriodicForceEffectKind.TRIANGLE_WAVE, m, d, f,
-                                                "linear rise and fall"), "wave", "silent"),
-    ("Sawtooth up", lambda m, d, f: _periodic(ff.PeriodicForceEffectKind.SAWTOOTH_WAVE_UP, m, d, f,
-                                              "ramp up then snap back"), "wave", "silent"),
-    ("Sawtooth down", lambda m, d, f: _periodic(ff.PeriodicForceEffectKind.SAWTOOTH_WAVE_DOWN, m, d, f,
-                                                "snap up then ramp down"), "wave", "silent"),
+    ("Triangle wave", lambda m, d, f: _periodic(ff.PeriodicForceEffectKind.TRIANGLE_WAVE,
+                                                m, d, f, "linear rise and fall"),
+     "wave", "silent"),
+    ("Sawtooth up", lambda m, d, f: _periodic(ff.PeriodicForceEffectKind.SAWTOOTH_WAVE_UP,
+                                              m, d, f, "ramp up then snap back"),
+     "wave", "silent"),
+    ("Sawtooth down", lambda m, d, f: _periodic(ff.PeriodicForceEffectKind.SAWTOOTH_WAVE_DOWN,
+                                                m, d, f, "snap up then ramp down"),
+     "wave", "silent"),
     ("Spring", lambda m, d, f: _condition(ff.ConditionForceEffectKind.SPRING, m,
                                           "pulls back to centre"), "condition", "works"),
     ("Damper", lambda m, d, f: _condition(ff.ConditionForceEffectKind.DAMPER, m,
-                                          "resists speed -- turn fast vs slow"), "condition", "works"),
+                                          "resists speed -- turn fast vs slow"),
+     "condition", "works"),
     ("Inertia", lambda m, d, f: _condition(ff.ConditionForceEffectKind.INERTIA, m,
                                            "resists acceleration -- heavy to start turning"),
      "condition", "coarse"),
@@ -1403,7 +1421,7 @@ def parse_args():
     p.add_argument("--gain", type=float, default=1.0,
                    help="master gain 0.0-1.0, set before each load (default 1.0)")
     p.add_argument("--magnitude", type=float, default=0.30,
-                   help="effect magnitude 0.0-1.0 -- the real intensity control (default 0.30)")
+                   help="effect magnitude 0.0-1.0 -- the intensity control (default 0.30)")
     p.add_argument("--duration", type=float, default=6.0,
                    help="seconds per effect, 0 = hold until Enter (default 6)")
     p.add_argument("--wait", type=float, default=30.0, help="detection timeout (default 30)")
