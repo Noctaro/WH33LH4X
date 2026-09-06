@@ -56,6 +56,16 @@ $pyTag     = 'python311'
 $pyUrl     = "https://www.python.org/ftp/python/$pyVersion/python-$pyVersion-embed-amd64.zip"
 $pyMd5     = '6d9aa08531d48fcc261ba667e2df17c4'
 
+# What the download calls itself. GITHUB_REF_NAME is the tag on a release build and the branch
+# name on every other one, so only a v-prefixed value is a version; anything else falls back to
+# what git can say about the working tree.
+$version = $env:GITHUB_REF_NAME
+if ($version -notlike 'v*') {
+    $version = $null
+    try { $version = git -C $repo describe --tags --always --dirty } catch { }
+    if (-not $version) { $version = 'unreleased' }
+}
+
 $staging = Join-Path $OutDir 'WH33LH4X'
 
 # Runtime modules, then the diagnostics a user actually needs. The dead ends now live in
@@ -80,6 +90,7 @@ $sourceFiles = @(
 Write-Host "repo:    $repo"
 Write-Host "out:     $staging"
 Write-Host "python:  $pyVersion embeddable"
+Write-Host "version: $version"
 
 # --- clean --------------------------------------------------------------------------------
 if (Test-Path $staging) { Remove-Item $staging -Recurse -Force }
@@ -208,6 +219,11 @@ $guiLines = @(
     'start "" "%~dp0python\pythonw.exe" "%~dp0gui.py" %*'
 )
 Set-Content -Path (Join-Path $staging 'WH33LH4X-GUI.cmd') -Value $guiLines -Encoding ASCII
+
+# --- version ---------------------------------------------------------------------------------
+# The zip is named the same whatever built it, so without this a user cannot tell which build
+# they extracted and a bug report cannot name one. gui.py reads it back for the title bar.
+Set-Content -Path (Join-Path $staging 'VERSION.txt') -Value $version -Encoding ASCII
 
 # --- report and zip --------------------------------------------------------------------------
 $files = @(Get-ChildItem $staging -Recurse -File)

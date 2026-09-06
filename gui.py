@@ -153,6 +153,15 @@ class ShimView(object):
         """Nothing is held open between reads, so there is nothing to release."""
 
 
+def bundle_version():
+    """The bundle's version, or None in a repo checkout, where nothing writes the file."""
+    try:
+        with open(os.path.join(ROOT, "VERSION.txt"), encoding="utf-8") as fh:
+            return fh.readline().strip() or None
+    except OSError:
+        return None
+
+
 def last_log_line():
     """
     Why the newest bridge run gave up, or None if it did not say.
@@ -378,7 +387,10 @@ class App(object):
         self.tune = self._load_tune()
         self.game = tk.StringVar(value=self._load_setting("game", ""))
 
-        root.title("WH33LH4X")
+        # A plain title is the repo checkout, a version is the bundle. Which install a
+        # screenshot came from stops being a question.
+        version = bundle_version()
+        root.title(("WH33LH4X %s" % version) if version else "WH33LH4X")
         root.minsize(620, 640)
         main = ttk.Frame(root, padding=10)
         main.pack(fill="both", expand=True)
