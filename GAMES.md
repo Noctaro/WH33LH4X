@@ -1,14 +1,9 @@
 # Game compatibility
 
-What this bridge does in each game that has been tried, and what each one needs before it
-works. Games differ far more than they should: two titles using the same DirectInput API can
-disagree about whether a virtual device is even a wheel, and that single disagreement decides
-whether force feedback is real or useless.
+What each game needs before it works, and what is still wrong with it once it does.
 
-**Everything here is measured, not assumed.** Where a claim came from a log, the numbers are
-included. Where something is untested, it says untested rather than guessing.
-
-New entries are welcome — copy the [template](#template-for-a-new-game) at the bottom.
+Adding a game? The template and what is worth measuring first are in
+[docs/development.md](docs/development.md#adding-a-game).
 
 ## Status at a glance
 
@@ -35,394 +30,115 @@ New entries are welcome — copy the [template](#template-for-a-new-game) at the
 
 ## DiRT 4
 
-**Status:** 🟡 Steering, pedals and force feedback all work — the wheel loads up in a corner
-and pulls back to centre. The one rough edge is that the motor can stop producing torque,
-which an alt-tab out and back clears; see [Known issues](#dirt-4-known-issues).
+**Tested on:** Steam build, app id 421020, from the packaged bundle.
 
-**Verified:** 2026-08-25, Steam build, app id 421020. Re-confirmed from the packaged
-bundle (embeddable Python, prebuilt shim) rather than a source checkout.
+### Setup
 
-### Required setup
+Both files below are yours to edit, and Steam's *Verify integrity of game files* restores them,
+so back up `device_defines.xml` first and expect to reapply after a game update.
 
-DiRT 4 classifies input devices from its own database and gives anything it does not
-recognise a **generic, non-directional** force feedback profile. Without the entry below, the
-game sends unsigned magnitude with no usable direction: the wheel pulls one way permanently,
-never centres, and both in-game force feedback sliders do nothing. Kerbs and gravel still feel
-correct, which is what makes this so easy to misdiagnose.
-
-**1. Register vJoy as a wheel.** In `<game>\input\devices\device_defines.xml`, before the
-closing `</device_list>`:
+**1. Register vJoy as a wheel**, or the game sends force that never centres. In
+`<game>\input\devices\device_defines.xml`, before the closing `</device_list>`:
 
 ```xml
 <device id="{BEAD1234-0000-0000-0000-504944564944}" name="vjoy_wheel" priority="100" type="wheel" ffb="enabled" />
 ```
 
 `type="wheel"` is the part that matters. The GUID is your device's PID and VID concatenated,
-then the constant `504944564944` (ASCII for `PIDVID`) — vJoy is `VID_1234` `PID_BEAD`, so it
-becomes `{BEAD1234-...}`. To confirm your own IDs:
+then `504944564944`, which is ASCII for `PIDVID`. vJoy is `VID_1234` `PID_BEAD`, hence
+`{BEAD1234-...}`. To read your own IDs:
 
 ```powershell
 Get-ChildItem "HKCU:\System\CurrentControlSet\Control\MediaProperties\PrivateProperties\Joystick\OEM" |
   ForEach-Object { "{0} -> {1}" -f $_.PSChildName, (Get-ItemProperty $_.PSPath).OEMName }
 ```
 
-**2. Add an action map** at `<game>\input\actionmaps\vjoy_wheel.xml` — the file name must
-match the `name` attribute above. See [`docs/dirt4/vjoy_wheel.xml`](docs/dirt4/vjoy_wheel.xml)
-in this repo for the version that is known to work.
+**2. Copy [`docs/dirt4/vjoy_wheel.xml`](docs/dirt4/vjoy_wheel.xml)** to
+`<game>\input\actionmaps\vjoy_wheel.xml`. The file name must match the `name` attribute above.
+It binds steering for you, which the settings screen makes awkward, since the engine treats the
+axis as two halves.
 
-Back up `device_defines.xml` first. Steam's *Verify integrity of game files* restores both if
-anything goes wrong, and will also remove them on a game update — expect to reapply after
-patches.
+**3. In game:** set the input preset to the vJoy wheel, **turn the in-game force feedback
+strength down** before the first drive, and **leave the centring spring off**.
 
-### Why the action map is provided
-
-The engine binds steering as **two halves of one axis** (`di_x_axis` `type="lower"` and
-`type="upper"`). The action map declares both halves up front, so a fresh install has working
-steering without going near the settings screen.
-
-This section used to say the action map was the *only* way to bind steering, because assigning
-the second direction in the game's own UI dropped the device with *"Steuerungsgerät geändert /
-the connection to an input device was disconnected"*. **That was a symptom of the unregistered
-device, not of the UI.** Re-tested 2026-08-26 with vJoy registered as `type="wheel"`: steering
-was rebound to a button and then reassigned to the axis from the game's own settings screen,
-with no drop.
-
-Untested: whether a fresh install with `device_defines.xml` edited but *no* action map can bind
-steering through the UI alone. Both files were present in that test, so step 2 stays.
-
-### Settings that work
-
-> **These numbers assume the wheel's own strength setting is on 8.** That control lives in
-> the *HORI FFB RWD-Devicemanager für Xbox Series X Series S* app from the Microsoft Store,
-> it is driven with the wheel itself rather than the keyboard, and whatever you set there
-> persists without the app running.
->
-> It is a real gain stage above everything in `tune.json`. Measured 2026-08-26: at a fixed
-> commanded force of 0.30, the wheel travelled **0.099** at strength 8, **0.029** at
-> strength 1, and **0.106** back at 8 again. About 3.5x, from the same file. So the values
-> below are only meaningful once yours matches.
->
-> Breakaway force does **not** show this, and looking there wasted two attempts. It sits
-> below the smallest step this wheel tolerates at both settings, so the ramp reports its
-> own `--step` either way. Travel at a fixed force is what has resolution here.
-
-In `tune.json`:
-
-```json
-{ "strength": 0.2, "invert": true, "dir_mode": "sin", "max_force": 0.45 }
-```
-
-**These are conservative, and measurably so.** A 2026-08-25 session at these values:
-
-```
-game asked : -1.000 .. +1.000
-wheel got  : -0.200 .. +0.200
-non-zero samples 1699; 10.0% under 0.01 (below breakaway), 0.3% at the ceiling
-```
-
-**Measured 2026-08-25 on a Hori Force Feedback Racing Wheel DLX** (`VID 0x0F0D`, Xbox mode). Every
-number in this section is that one device -- the bridge is not HORI-specific, and another wheel
-needs its own `stiction_test.py` run rather than these figures.
-
-Breakaway force -- the level below which the motor does not move the wheel at all -- came out
-**below 0.02, and below 0.01**. That is not a measurement so much as a ceiling: every pass broke
-away on the *first* step tried, at both step sizes, so each run reports its own `--step`. This
-wheel has no meaningful stiction problem.
-
-**But there are positions it will not leave.** Seen repeatedly near centre, the wheel does not
-move at **0.30** -- thirty times the breakaway figure. Cogging is the obvious explanation and it
-is *not* established; belt binding or a moulded detent would look identical. That matters here
-specifically:
-DiRT 4's centring force is proportional to steering angle, so it is weakest exactly where those
-positions are. "It holds position instead of centring" is at least as likely to be cogging at one
-of those spots as it is to be stiction.
-
-Commanding a force this wheel cannot act on also has a cost. After about a second of it,
-the motor goes silent, audible as two short hums, while reporting itself perfectly
-healthy through every `Windows.Gaming.Input` call. Whether that is a driver stall cut-out
-or something else is a guess; the behaviour is measured and reproducible. It is why
-`stiction_test.py` defaults to `--step 0.02` and warns below it.
-
-This used to say the motor stays silent for the rest of the process. It does not: giving
-up the foreground and taking it back clears it, 12 times out of 12. See
-[Known issues](#dirt-4-known-issues).
-
-Against the session above, only **10% of non-zero output falls below breakaway and 0.3% clips**.
-So the bottom of the range is not where the problem is, and the headroom at the top is where the
-opportunity is:
-
-- **`strength` above 0.2.** The game is asking for full scale and getting 0.2 of it, with
-  almost nothing clipping. This raises peak force, so move it in steps and read the
-  [oscillation note](#dirt-4-known-issues) first. **This is the change that matters.**
-- **`min_force: 0.01`**, optional. Hardware compensation, not an effect -- it lifts small
-  non-zero forces to something the motor can express. It recovers that 10% without raising
-  peak force, so it carries no oscillation risk, but it is a small effect either way.
-
-This figure has been wrong twice, in opposite directions, which is worth recording:
-
-- **0.1** was a hardcoded placeholder in `tune_report.py` that was never measured. It made the
-  same kind of session look like 75% of its output was wasted.
-- **0.022 right / 0.010 left** came from a real run, but its later passes had walked the wheel
-  into its end stop. A wheel against the stop cannot move at any force, so those passes
-  measured the stop, not stiction, and inflated the right-hand average. `stiction_test.py` now
-  recentres the wheel before every pass.
-
-**`invert: true` is measured, not preference**, and confirmed by feel. With our force output
-at zero, the game's centring spring disabled and the car driving, DiRT 4's force points the
-*same* way as the steering angle:
-
-```
-140 samples, mean |force| 0.596
-96% the same sign as steering
-wheel LEFT   mean angle -0.31 -> mean force -0.547
-wheel RIGHT  mean angle +0.31 -> mean force +0.554
-```
-
-Symmetric on both sides. Applied unchanged that is positive feedback: the wheel runs away into
-whatever corner you turn into, hardest under throttle. Inverted, it pulls back to centre
-through a corner, which is what it should do.
-
-The likely reason is our own plumbing rather than the game: this wheel's motor drives in the
-opposite direction to the sign of its own position reading, so one global flip corrects every
-effect at once.
-
-In game:
-
-- Set the input preset to the vJoy wheel device.
-- **Turn the in-game force feedback strength down** before the first drive. Once the device is
-  registered correctly those sliders work for the first time, and a setting left at maximum
-  from when it did nothing produces forces at ±1.0 of full scale.
-- **Leave the centring spring OFF.** Real self-aligning torque is strong (0.596 mean while
-  driving) and behaves far better in a loop with lag than the artificial spring, which tends
-  to hunt.
-
-<a name="dirt-4-known-issues"></a>
-### Known issues
-
-- **The motor can go silent, and nothing looks wrong when it does.** Correct force is
-  commanded, the bridge log looks perfect, the effect still reports as running, and the
-  wheel is dead.
-
-  **ALT-TAB OUT OF THE GAME AND BACK IN.** That clears it, and you do not have to quit.
-  Measured 2026-08-26 with `evidence/revive_test.py --variant focus`: after silencing the
-  motor deliberately, dropping the foreground for four seconds and taking it back revived
-  it in **12 of 12** runs. Nothing else tried came close. Reloading the effect managed 1
-  in 5, reloading it with the force already applied 0 in 2, and waiting 0 in 2.
-
-  The reason is that this motor belongs to whoever is in the foreground. Losing focus
-  hands it back to the firmware, which clears the fault, and returning takes it again.
-  That is also why the wheel's own centring spring comes back when you alt-tab away, and
-  why restarting the game works: a new process has to re-acquire.
-
-  Restarting the game still works if alt-tab does not. The bridge never needs restarting.
-
-  **It has never happened in a real session.** Every observation of the motor going silent
-  came from `stiction_test.py` or `revive_test.py`, both of which command tiny forces at a
-  wheel that is deliberately held still. Driving does not do that: your hands are moving the
-  wheel, so a force either moves it or is overridden. Keep this as a tip in case it ever bites
-  someone, not as something to expect.
-
-  *Confirmed on a deliberately silenced motor outside a game. Doing it from inside a running
-  game is the same foreground transition, but has not been separately measured.*
-
-  Two mechanisms are known to produce exactly this, and they are told apart by evidence rather
-  than by symptom:
-
-  1. **Claim churn.** If the shim's log (`%TEMP%\wh33lh4x_shim.log`) shows `bridge went quiet
-     -- releasing the motor`, the motor was released and re-claimed. Doing that repeatedly
-     leaves it accepting effects and producing no torque.
-  2. **A force the wheel cannot act on.** Measured 2026-08-25 with `stiction_test.py`:
-     commanding force at a position the wheel will not leave, for about a second, silences the
-     motor **for the rest of the process** while every `Windows.Gaming.Input` call keeps
-     reporting healthy. Audible as **two short hums**. Nothing in any log records it, and it
-     fits "a fresh game is a fresh motor" exactly. **Whether this ever happens during play is
-     untested** -- it was produced by a diagnostic deliberately ramping tiny forces, which is
-     not what the bridge does.
-
-  If the shim log has no release line and you heard the hums, it was the cut-out. Lowering
-  `strength` far enough that the wheel is commanded forces it cannot act on makes this *more*
-  likely, not less.
-- **Oscillation at high gain.** Too much `strength` makes the wheel hunt and, at worst, sweep
-  lock to lock on its own. The game's force reflects wheel position from some tens of
-  milliseconds ago, and a laggy spring with too much gain is unstable. Lower `strength`.
-  Inverting a damping force does the same thing for a different reason, so get the sign right
-  before blaming gain.
-- **Sends friction as well as constant force.** An earlier session recorded constant force
-  only; a 2026-08-25 session recorded **friction at roughly the same rate as constant**
-  (13,970 friction operations against 13,950 constant, over 374 telemetry samples). No spring
-  or damper worth the name — 2 operations each — and no periodics. Unexplained: the two
-  sessions differ, and the likeliest cause is that the earlier one predates registering vJoy as
-  a wheel in `device_defines.xml`, since an unrecognised device gets a different force feedback
-  profile. **Untested either way** — it is recorded here as a measurement, not a conclusion.
-
-### Launching
-
-Steam DRM relaunches the game through the client, so start it from Steam and let the launcher
-wait for it:
+**4. Start the game from Steam**, because its DRM relaunches through the client:
 
 ```powershell
 .\play.ps1 -Game "...\DiRT 4\dirt4.exe" -NoLaunch
 ```
 
+### Settings
+
+```json
+{ "strength": 0.2, "invert": true, "dir_mode": "sin", "max_force": 0.45 }
+```
+
+- **Raise `strength` first.** At 0.2 the game is asking for full scale and getting a fifth of
+  it, with almost nothing clipping. Move it in steps.
+- **`min_force: 0.01`** is optional, and lifts forces too small for the motor to express.
+- These values assume the wheel's own strength setting is on 8. It is worth about 3.5x on its
+  own and is invisible to this software, so match yours first:
+  [docs/tuning.md](docs/tuning.md#the-gain-stage-the-software-cannot-see).
+
+### Known issues
+
+- **Oscillation at high gain.** Too much `strength` makes the wheel hunt, and at worst sweep
+  lock to lock. Lower it. An inverted damping force looks identical, so check the sign first.
+- **The motor can go silent while everything reports healthy.** Alt-tab out and back in; that
+  cleared it in 12 of 12 measured runs, and no restart is needed. It has never happened in a
+  real session, only under diagnostics.
+
 ---
 
 ## RaceRoom Racing Experience
 
-**Status:** 🟡 Playable. Steering, pedals and force feedback all work. Free to play, and no
-kernel anti-cheat.
+**Tested on:** Steam build, from a source checkout. Free to play, no kernel anti-cheat.
 
-**Verified:** 2026-08-27, Steam build, from a source checkout.
+### Setup
 
-No device registration step is needed. DiRT 4's `device_defines.xml` mechanism is specific to
-Codemasters' engine and RaceRoom has no equivalent.
+Nothing to edit. Two things to know:
 
-### Pick RRREWebBrowser.exe
+**1. Pick `RRREWebBrowser.exe`**, in
+`...\steamapps\common\raceroom racing experience\Game\`. With any other exe the game will not
+let steering be assigned.
 
-In `...\steamapps\common\raceroom racing experience\Game\`. Observed 2026-08-27: with anything
-else, the game would not let steering be assigned.
+**2. Bind steering in the game**, then drive.
 
-### What it sends
+### Known issues
 
-One constant force on block 1, plus six sine effects on blocks 2 to 7 that it allocates, stops
-and never starts. Nothing is lost by ignoring them: this wheel's firmware is silent on
-periodics anyway (see [docs/hardware.md](docs/hardware.md)).
-
-### Force stopping after about a minute, fixed 2026-08-27
-
-Force feedback died roughly 65 seconds into every stint and only came back on re-entering a
-menu. That was ours.
-
-RaceRoom asks for an effect that runs until it says stop, and the HID PID duration field is
-16 bits, so there is no number that means forever. Games send the all-ones sentinel `0xFFFF`
-instead. We read it as a literal 65.535 seconds and expired the effect mid-lap. A menu made
-RaceRoom stop and restart the effect, which restarted the fuse.
-
-Measured from `logs/vjoy_bridge_20260826_235738.log`: nine effects in one session, each alive
-65.1 to 65.6 seconds. DiRT 4 sends duration 0, which is why this stayed hidden through all of
-its testing.
-
-The bridge now logs a `decode.effect` line with the raw duration on the first packet that
-defines an effect, so the next game that encodes something unexpectedly says so in the log
-rather than in the wheel. RaceRoom's reads:
-
-```
-decode.effect  block=1 kind=constant raw_duration=65535 seconds=infinite
-```
-
-Confirmed on the fix: one constant force alive **220 s**, ending only when the session was
-left, against a hard ceiling of 65.6 s before it.
+None outstanding. 
 
 ---
 
 ## Automobilista 2 Demo
 
-**Status:** 🟡 Playable. Steering, pedals and force feedback all work, but the game adds a
-centre deadzone of its own and lets throttle bleed into steering. No anti-cheat.
+**Tested on:** Steam, `AMS2DemoAVX.exe`, no anti-cheat. The full game is untested and may
+differ.
 
-**Verified:** 2026-08-27, Steam, `AMS2DemoAVX.exe`. The full game is untested and may differ.
+### Setup
 
-### Set Controller Damping to 0 first
+**1. Set Controller Damping to 0**, under Options > Controls > Configuration. **At 100,
+steering is completely dead on track** while the menus, calibration, pedals and force feedback
+all look perfect. The Custom Wheel preset can leave it at 100, so the usual advice for an
+unrecognised wheel is what puts it there.
 
-Options > Controls > Configuration. **At 100, steering is completely dead on track** while the
-menus, calibration, pedals and force feedback all look perfect. The Custom Wheel preset can
-leave it at 100, so the usual advice for an unrecognised wheel is what puts it there.
+**2. Leave Speed Sensitivity at 0**, which is correct for a wheel.
 
-Nothing about the symptom points at a damping slider, so this is worth checking before anything
-else.
-
-#### How it was found
-
-The cross test did it:
-
-| Bound to | Result on track |
-|---|---|
-| wheel axis to throttle and brake | works, the car accelerates |
-| pedals to steering | ignored |
-
-The failure followed the **steering slot**, not the device and not the axis. That ruled out
-axis ranges, resolution, device IDs and the popular claim that the Madness engine blocks
-virtual devices, in one test. Damping sits on that slot: it kills whatever is bound there,
-leaves throttle, brake and force feedback alone, and applies only while driving.
-
-### The centre deadzone and the throttle bleed are the game's
-
-With damping fixed, throttle drags the steering further into the corner, and there is a dead
-patch around centre that calibration does not show.
-
-**Neither is ours.** Measured 2026-08-27 from `logs/vjoy_bridge_20260827_030410.log`:
-
-```
-max |steering - pos| overall: 0.0000
-
-wheel pos   throttle off        throttle on
- -0.5       -0.5018 (n= 16)     -0.4785 (n=  8)
- +0.2       +0.2035 (n= 53)     +0.2033 (n= 19)
- +0.6       +0.6116 (n= 10)     +0.6140 (n=  9)
-```
-
-The steering fed to vJoy is the wheel position exactly, with no throttle term in it, at every
-position. The coupling is added inside the game.
-
-AMS2 classifies input devices and treats a wheel it does not recognise as a **gamepad**, which
-gets the engine's deadzone and sensitivity filtering. That filtering is speed dependent, which
-is why throttle changes the steering curve, and calibration looks fine because it reads the
-axis raw. [Reiza's own forum thread](https://forum.reizastudios.com/threads/vjoy-not-working.10026/)
-on this, with vJoy, ran from April 2020 to December 2021 and reached no fix:
-
-> there is a 10% deadzone around center (for each side) and at each end. This is enforced,
-> there is no option or workaround to disable it and it's there just while driving.
-
-Unlike DiRT 4, there is no device database to edit. Codemasters exposed theirs as an XML file;
-AMS2 identifies wheels by model, and vJoy's identity is fixed at `VID 0x1234 PID 0xBEAD`.
-
-### Things that are not the problem
-
-Tried, and changed nothing: Steam Input off, deleting the Documents folder, Return to Defaults,
-the over-rotate calibration trick. **Speed Sensitivity 0 is correct for a wheel**, so leave it.
-
-### What it sends
-
-One constant force, plus sine effects it allocates at gain 0 and never starts. Duration
-`0xFFFF`, the same infinite sentinel RaceRoom uses, so the fix described under RaceRoom covers
-this game too.
-
----
-
-## Template for a new game
-
-Copy this, fill it in, and add a row to [Status at a glance](#status-at-a-glance). Keep
-unknowns as unknowns — a blank is more useful than a guess.
-
-```markdown
-## Game name
-
-**Status:** 🟢 / 🟡 / 🔴 / ⚪ one line on what does and does not work.
-
-**Verified:** YYYY-MM-DD, store and build.
-
-### Required setup
-What has to be changed before it works, exact paths and exact text. Nothing if it just works.
-
-### Settings that work
-The `tune.json` values, and the relevant in-game settings.
+**3. Bind steering in the game**, then drive.
 
 ### Known issues
-What is still wrong, and what is known about why.
 
-### Evidence
-Where a claim is surprising, the measurement behind it: log numbers, what was compared with
-what. This is the part that stops the next person repeating the work.
-```
+- **A centre deadzone that calibration does not show, and throttle bleeding into steering.**
+  Both are the game's, and there is no fix. AMS2 treats a wheel it does not recognise as a
+  gamepad and applies speed-dependent deadzone and sensitivity filtering, and unlike DiRT 4
+  there is no device database to edit.
+  [Reiza's own thread](https://forum.reizastudios.com/threads/vjoy-not-working.10026/) about
+  this with vJoy ran from April 2020 to December 2021 and reached no fix: *"there is a 10%
+  deadzone around center (for each side) and at each end. This is enforced, there is no option
+  or workaround to disable it and it's there just while driving."*
 
-### What is worth recording
+  What we send is clean. Measured against `logs/vjoy_bridge_20260827_030410.log`, the steering
+  fed to vJoy is the wheel position exactly, with no throttle term in it, at every position.
 
-- **Does the game see the vJoy device as a wheel at all?** This is the question that decides
-  everything else, and games answer it in ways that are not visible from their settings menu.
-- **Does force ever go negative?** Run `tune_report.py` after a session. A wheel whose output
-  never changes sign cannot centre, whatever it feels like — and rectified force feels
-  perfectly normal on kerbs and gravel, so feel will not catch it.
-- **Which way does the game's force point?** Measure it with `strength: 0` in `tune.json` so
-  the wheel is free while you steer by hand. With force applied, wheel position and game force
-  drive each other and the correlation means nothing.
-- **Which in-game sliders actually do something.** Some do nothing until the device is
-  correctly classified.
+- **Not the problem.** All tried, none of them changed anything: Steam Input, deleting the
+  Documents folder, Return to Defaults, and the over-rotate calibration trick.
