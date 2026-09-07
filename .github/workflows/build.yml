@@ -197,6 +197,9 @@ jobs:
       - name: Draft a release with the bundle attached
         env:
           GH_TOKEN: ${{ github.token }}
+          # This job never checks the repo out, and gh works out which repository it is talking
+          # to from the local git remote. Without this it fails with "not a git repository".
+          GH_REPO: ${{ github.repository }}
         run: |
           gh release create "$GITHUB_REF_NAME" \
             dist/WH33LH4X-windows-x64.zip \

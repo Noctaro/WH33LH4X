@@ -178,6 +178,46 @@ beyond. The transition is 1e-6 wide, the function is discontinuous at that point
 and a velocity landing on exactly 0.05 has measure zero. Documented rather than special cased,
 because a `friction` branch in the formula would have to be maintained forever to buy nothing.
 
+## Adding a game
+
+A game's entry has two halves. `games.json` holds the machine-readable part and generates both
+the GUI's notes panel and GAMES.md's status table, so it is edited first and the table is
+regenerated with `packaging\gen_games_table.py`. GAMES.md holds the setup steps by hand.
+
+Keep GAMES.md to what a user does: the steps, the values, and what is still wrong. Measurements
+belong in [tuning.md](tuning.md) or [hardware.md](hardware.md), and unknowns stay unknowns,
+because a blank is more useful than a guess.
+
+```markdown
+## Game name
+
+**Status:** one line on what does and does not work.
+
+**Tested on:** store and build.
+
+### Setup
+Numbered steps, exact paths and exact text. Say "nothing" if it just works.
+
+### Settings
+The `tune.json` values, and the in-game settings that matter.
+
+### Known issues
+What is still wrong, one or two lines each.
+```
+
+Four things are worth measuring before writing any of it:
+
+- **Does the game see the vJoy device as a wheel at all?** This decides everything else, and
+  games answer it in ways their settings menu does not show.
+- **Does force ever go negative?** Run `tune_report.py` after a session. A wheel whose output
+  never changes sign cannot centre, whatever it feels like, and rectified force feels perfectly
+  normal on kerbs and gravel.
+- **Which way does the game's force point?** Measure with `strength: 0` so the wheel is free
+  while steering by hand. With force applied, position and force drive each other and the
+  correlation means nothing.
+- **Which in-game sliders actually do something.** Some do nothing until the device is
+  correctly classified.
+
 ## What is where
 
 Every script's flags and a one-line description of each are in [COMMANDS.md](../COMMANDS.md).

@@ -101,5 +101,25 @@ rectification is inaudible on symmetric effects. Only arithmetic on a log caught
 ## Where the numbers came from
 
 `min_force` comes from `stiction_test.py`, which measures the smallest force that moves the
-wheel at all. The values that work for DiRT 4, and the measurements behind them, are in
-[GAMES.md](../GAMES.md).
+wheel at all. The per-game values live in [GAMES.md](../GAMES.md); what was measured to arrive
+at them is here.
+
+### DiRT 4
+
+At `strength: 0.2`, `max_force: 0.45`, the game asked for the full ±1.000 and the wheel got
+±0.200. Across 1699 non-zero samples, 10.0% fell below breakaway and 0.3% hit the ceiling. So
+the bottom of the range is not the problem and the headroom is at the top, which is why raising
+`strength` is the change that matters and `min_force: 0.01` is a small one.
+
+`invert: true` was measured with our own output at zero and the car driving: DiRT 4's force
+points the same way as the steering angle, 140 samples, mean magnitude 0.596, 96% matching
+sign, symmetric on both sides. Applied unchanged that is positive feedback, and the wheel runs
+away into whatever corner it is turned into. The likely cause is our own plumbing rather than
+the game, since this wheel's motor drives opposite to the sign of its own position reading, so
+one global flip corrects every effect at once.
+
+The game sends friction at roughly the same rate as constant force, 13,970 operations against
+13,950 over 374 telemetry samples, with two spring and two damper operations and no periodics.
+An earlier session recorded constant force only, and the likeliest explanation is that it
+predates registering vJoy as a wheel, which changes the profile the game hands out. Untested
+either way.

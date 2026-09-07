@@ -73,6 +73,17 @@ That matters for centring specifically, because a spring is weakest exactly wher
 positions are. "It holds position instead of centring" is at least as likely to be one of those
 spots as it is to be stiction.
 
+**Commanding a force the wheel cannot act on has a cost.** After about a second of it the motor
+goes silent, audible as two short hums, while every `Windows.Gaming.Input` call keeps reporting
+healthy and nothing in any log records it. Giving up the foreground and taking it back clears
+it, 12 times out of 12. Only diagnostics have ever produced it: they command tiny forces at a
+wheel deliberately held still, which is not what driving does. It is why `stiction_test.py`
+defaults to `--step 0.02` and warns below it.
+
+Releasing and re-claiming the motor repeatedly does the same thing by a different route, and
+the two are told apart by the shim log: `bridge went quiet` means claim churn, silence with the
+hums and no release line means the cut-out.
+
 ## Why the other APIs are dead ends
 
 GameInput, DirectInput, raw HID and raw GIP were each tried and each fails, for a different

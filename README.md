@@ -47,10 +47,7 @@ Prefer a terminal? Everything the window does, `WH33LH4X.cmd` does too. See
 [COMMANDS.md](COMMANDS.md).
 
 ## Tuning
-
-Force feedback is judged by feel, and feel cannot be judged across a restart. By the time the
-game has reloaded and you are back at the corner that felt wrong, you are comparing against a
-memory. So the sliders work **while you drive**: a change reaches the wheel within half a
+The sliders work **while you drive**: a change reaches the wheel within half a
 second, mid corner.
 
 | Slider | What it does |
@@ -60,7 +57,7 @@ second, mid corner.
 | **Damper** | Resists how fast you turn. This is what stops the spring overshooting and hunting |
 | **Friction** | Constant drag whenever the wheel moves: weight, rather than centring |
 
-One thing worth knowing before you blame the software: **the wheel has a strength setting of
+One thing worth knowing: **the wheel has a strength setting of
 its own**, in the *HORI FFB RWD-Devicemanager für Xbox Series X Series S* app from the
 Microsoft Store. It is a real gain stage above everything here, worth about 3.5x between its
 lowest and highest setting, and nothing in this project can read or change it. If two machines
@@ -83,7 +80,7 @@ What you can check instead of trusting a signature:
   and each one ships `SHA256SUMS.txt` plus a GitHub artifact attestation, so you can prove the
   zip you have is the one CI built from a named commit.
 
-The reasoning, the verification commands, and how to report a false positive to Microsoft are
+The reasoning and the verification commands are
 in [SECURITY.md](SECURITY.md).
 
 ## Where everything else is
@@ -97,9 +94,6 @@ in [SECURITY.md](SECURITY.md).
 | [docs/development.md](docs/development.md) | Working on the code: venv, the probe tool, tests, building |
 | [COMMANDS.md](COMMANDS.md) | Every script and every flag |
 | [evidence/](evidence/README.md) | Four APIs that do **not** work on this wheel, and the probes that prove it |
-
-Anything load bearing is written next to the code it constrains rather than in a document that
-goes stale on its own.
 
 ## Thanks ♥
 
@@ -117,17 +111,6 @@ Windows 11 build.
 **[tidzo/pyvjoy](https://github.com/tidzo/pyvjoy)**. Decodes force feedback through vJoy's own
 exports instead of reimplementing HID PID, and bundles the matching DLL. That is the whole
 usermode half of the problem, solved by someone else.
-
-**[PyWinRT](https://github.com/pywinrt/pywinrt)**, MIT. This wheel's motor is reachable only
-through `Windows.Gaming.Input`, and PyWinRT makes that a `pip install` rather than a C++
-project.
-
-**[Zig](https://ziglang.org/)**, MIT. Builds the shim on a machine with no Visual Studio, and
-links it against nothing but OS libraries, so nobody needs a VC++ redistributable.
-
-**[CPython](https://www.python.org/)**,
-**[typing_extensions](https://github.com/python/typing_extensions)** and
-**[Ruff](https://github.com/astral-sh/ruff)** round it out.
 
 No HORI code or assets are used anywhere in this project.
 
