@@ -266,6 +266,14 @@ def load_sequence():
     out.append((0x0B, value_param_block()))
     out.append((0x0C, STATE_RUNNING))
     out.append((0x0A, SHORT_CMD))
+    # Everything below was missing until 2026-09-21, and its absence is why three separate
+    # replay attempts produced no torque on either platform. WGI uploads the table a second
+    # time, zeroes the whole parameter bank a second time, and ends on STATE_LOADED -- which
+    # is also the state its steady-state heartbeat repeats, not STATE_RUNNING.
+    out += [(0x0D, body) for body in table_chunks()]
+    out.append((0x0B, value_param_block()))
+    out += [(0x0B, body) for body in zero_param_blocks()[1:]]
+    out.append((0x0C, STATE_LOADED))
     return out
 
 
