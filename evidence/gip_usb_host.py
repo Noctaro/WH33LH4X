@@ -153,8 +153,13 @@ def decode_header(data):
 
 
 class Wheel:
-    def __init__(self, verbose=True, pad=False, wait=0.0, client=0, zlp=False, dump=False):
+    def __init__(self, verbose=True, pad=False, wait=0.0, client=0, zlp=False, dump=False,
+                 reattach=True):
         self.verbose = verbose
+        # Handing the kernel driver back looks polite, but a run that reattaches leaves the
+        # device in the state where the NEXT run gets no torque. Every confirmed torque run
+        # so far inherited a device whose previous host died without reattaching.
+        self.reattach = reattach
         self.pad = pad
         self.zlp = zlp
         self.dump = [] if dump else None
@@ -196,7 +201,9 @@ class Wheel:
             usb.util.release_interface(self.dev, INTERFACE)
         except Exception:
             pass
-        if self.detached:
+        if self.detached and not self.reattach:
+            self.log("  leaving the kernel driver detached (--no-reattach)")
+        elif self.detached:
             try:
                 self.dev.attach_kernel_driver(INTERFACE)
                 self.log("  kernel driver reattached")
@@ -217,9 +224,10 @@ class Wheel:
         if sequence is None:
             self.sequence = (self.sequence + 1) & 0xFF or 1  # xone never uses sequence 0
         if self.dump is not None:
-            # Record what actually goes on the wire, not what we meant to send. gip_diff.py
-            # compares this against the WGI capture; without it a regression is unfalsifiable.
-            self.dump.append((command, bytes(body)))
+            # The full packet as transmitted: header, padding and all. Recording the body alone
+            # hid framing and padding differences, which is exactly what made one regression
+            # unfalsifiable.
+            self.dump.append(bytes(packet))
         written = self.dev.write(EP_OUT, packet, timeout=1000)
         # A transfer that is an exact multiple of wMaxPacketSize needs a zero-length packet to
         # mark its end. WinUSB leaves SHORT_PACKET_TERMINATE off by default, so a 64-byte force
@@ -581,6 +589,9 @@ def main():
     parser.add_argument("--warmup", type=float, default=0.0,
                         help="read for this long after identify, before arming, so the wheel "
                              "can finish its calibration sweep")
+    parser.add_argument("--no-reattach", action="store_true",
+                        help="on exit, leave the kernel driver detached instead of handing "
+                             "it back -- the state every confirmed torque run inherited")
     parser.add_argument("--zlp", action="store_true",
                         help="send a zero-length packet after any transfer that is an exact "
                              "multiple of the 64-byte max packet size (needed on WinUSB)")
@@ -610,7 +621,7 @@ def main():
     BEAT_STATE[0] = (gip_protocol.STATE_LOADED if args.beat_state == "loaded"
                      else gip_protocol.STATE_RUNNING)
     wheel = Wheel(pad=args.pad, wait=args.wait_device, client=args.client, zlp=args.zlp,
-                  dump=bool(args.dump_sent))
+                  dump=bool(args.dump_sent), reattach=not args.no_reattach)
     print("found %04x:%04x%s" % (HORI_VID, HORI_PID, "  [padding OUT to 64 B]" if args.pad else ""))
     wheel.open()
     try:
@@ -689,8 +700,8 @@ def main():
     finally:
         if args.dump_sent and wheel.dump is not None:
             with open(args.dump_sent, "w", encoding="ascii") as handle:
-                for mtype, body in wheel.dump:
-                    handle.write("%02x %s\n" % (mtype, body.hex()))
+                for packet in wheel.dump:
+                    handle.write("%s\n" % packet.hex())
             print("\n   wrote %d sent message(s) to %s" % (len(wheel.dump), args.dump_sent))
         try:
             command_force(wheel, 0.0, 0.0)
