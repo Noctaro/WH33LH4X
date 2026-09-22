@@ -320,8 +320,9 @@ from.
 
 ### `evidence/gip_direct.py` — talk to the GIP driver with no WGI in the process (**dead end**)
 
-The arming sequence was replayed byte-for-byte and still produced no torque. Do not retry this
-without new information.
+Talking to the driver's own handle produces no torque: the driver refuses our writes. Raw USB
+does work, and is documented in [`evidence/RAW_USB.md`](evidence/RAW_USB.md); this script is
+kept because it is what proves the driver handle itself is the closed door.
 
 | Flag | Default | What it does |
 |---|---|---|
@@ -339,3 +340,48 @@ without new information.
 |---|---|---|
 | `wgi` | — | dump from gip_trace.py --dump (force works) |
 | `ours` | — | dump from gip_direct.py --dump (force does not) |
+
+### `evidence/gip_wheel_driver.py` — a working Linux driver (**Linux only**)
+
+Owns the wheel over raw USB, publishes a virtual joystick other programs can read, and holds a
+spring and damper on the real motor. No Microsoft driver, no authentication, no foreground gate.
+[`evidence/RAW_USB.md`](evidence/RAW_USB.md) explains how it got there and how to set up uinput.
+
+```
+python3 gip_wheel_driver.py --spring 0.25 --damper 0 --cap 0.35 --refresh 0 \
+        --min-force 0.05 --deadband 0.01 --release 0.05 --no-unstick
+```
+
+| Flag | Default | What it does |
+|---|---|---|
+| `--spring` | `0.6` | centring stiffness; 0 leaves the wheel free. 0.25 is what felt right for driving |
+| `--damper` | `0.15` | resistance to turning speed |
+| `--cap` | `0.35` | never command more than this |
+| `--min-force` | `0.05` | smallest magnitude worth commanding outside the deadband, because a proportional spring parks off centre once its demand falls below starting friction. 0 disables |
+| `--coast` | `0.15` | stop pushing once moving towards centre faster than this and let momentum finish. 0 disables |
+| `--release` | `0.05` | once settled near centre, stay quiet until the wheel is moved this far out |
+| `--deadband` | `0.01` | spring dead zone around centre |
+| `--refresh` | `0` | seconds between full effect reloads. Each one tears the effect down and rebuilds it, felt as a distinct cogging step. Leave at 0 |
+| `--no-unstick` | — | do not kick the wheel off cogging detents |
+| `--no-smooth` | — | re-run the full effect load for every change (this is the cogging, kept for comparison) |
+| `--wait-for` | — | after arming, hold still until this FILE appears, so an operator can be prompted at the right moment |
+| `--wait-calibration` | `30` | wait for the firmware calibration sweep first; 0 to skip |
+| `--seconds` | `0` | run for this long; 0 means until Ctrl+C |
+| `--trace` | — | log time, position and demand to `wheel_trace.txt` |
+
+### `evidence/gip_arming.py` — the protocol itself
+
+Generates the arming and force sequences from rules, verified 150 of 150 packets byte-identical
+to a real USB wire capture. Imported by the driver; not run directly.
+
+### `evidence/gip_usb_host.py` — the raw USB instrument (**Linux**)
+
+Claiming, power-on, calibration waits, wire replay, force scaling and closed-loop position
+control. This is what the findings were measured with. `--drive K` holds commanded positions,
+`--force-scale` rewrites the magnitude of a replayed session, `--spring` runs a software spring.
+
+### `evidence/usbpcap_parse.py` — read a USBPcap capture
+
+Parses `DLT_USBPCAP` records and filters by device and endpoint. This is what showed that
+`logs/wgi.txt` is not what reaches the wire, which is the discovery the whole raw USB route
+rests on.

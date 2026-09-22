@@ -86,6 +86,10 @@ hums and no release line means the cut-out.
 
 ## Why the other APIs are dead ends
 
-GameInput, DirectInput, raw HID and raw GIP were each tried and each fails, for a different
-reason. [`evidence/README.md`](../evidence/README.md) has the answer to each question in a
-sentence, with the script that produced it beside it.
+GameInput, DirectInput and raw HID were each tried and each fails, for a different reason.
+[`evidence/README.md`](../evidence/README.md) has the answer to each question in a sentence,
+with the script that produced it beside it.
+
+Raw GIP is the exception: spoken over **raw USB** it drives the motor with no Microsoft driver
+and no foreground gate, which is a way past everything on this page.
+[`evidence/RAW_USB.md`](../evidence/RAW_USB.md) is the write-up.
