@@ -62,6 +62,11 @@ try:
 except ImportError:
     ffb_render = None
 
+try:
+    import gip_arming
+except ImportError:
+    gip_arming = None
+
 # Windows has no system libusb; libusb_package ships one, so prefer it when present.
 try:
     import libusb_package
@@ -828,8 +833,124 @@ def replay_wire(wheel, path, max_gap_ms=400.0, read_ms=1, drain_cap=8, force_sca
     return entries
 
 
+def drive(wheel, stiffness, seconds, cap=DEFAULT_CAP, rate=60.0, damping=0.0,
+          centre=0.0, refresh=0.5, centres=None, gains=None):
+    """Arm and hold condition effects using GENERATED sequences -- no capture file.
+
+    Same behaviour as spring(), but every byte comes from gip_arming rather than a replayed
+    pcap, so this runs on any of these wheels without someone else's capture. Verified
+    byte-identical to the wire capture's arming backbone (62/62) and force block.
+    """
+    print("\n-- arming (generated, %d packets) --"
+          % len(gip_arming.arming_sequence()))
+    heard = {}
+    seed = None
+    for command, body, options, delay in gip_arming.arming_sequence():
+        wheel.send(command, body, options=options)
+        if delay:
+            time.sleep(delay)
+        data = wheel.read(timeout=1)
+        if data:
+            head = decode_header(data)
+            if head:
+                heard[head["command"]] = heard.get(head["command"], 0) + 1
+                if head["command"] == GIP_CMD_INPUT:
+                    # Seed the loop with a real position. Input is event-driven, so a loop that
+                    # starts blind, commands zero and therefore moves nothing never receives a
+                    # first sample -- it deadlocks and looks identical to total failure.
+                    seed = steering(head["payload"]) or seed
+    print("   device replied during arming: %s"
+          % (", ".join("0x%02x x%d" % kv for kv in sorted(heard.items())) or "NOTHING"))
+
+    beat_cmd, beat_body = gip_arming.heartbeat()
+    print("\n-- LIVE (generated): spring %.2f, damper %.2f, cap %.2f, %g s --"
+          % (stiffness, damping, cap, seconds))
+    state = ffb_render.WheelState()
+    params = ffb_render.legacy_condition_params("spring", stiffness, offset=centre,
+                                                deadband=0.02)
+    damper = ffb_render.legacy_condition_params("damper", damping)
+
+    started = time.time()
+    next_beat = started
+    next_force = started
+    position = seed if seed is not None else CENTRE
+    if seed is not None:
+        state.update((position - CENTRE) / float(CENTRE), started)
+        print("   seeded position %+.3f" % ((position - CENTRE) / float(CENTRE)))
+    last_sent = None
+    last_time = 0.0
+    current_slot = -1
+    marks = []
+    track = []
+    worst = 0.0
+    loop_heard = {}
+    while time.time() - started < seconds:
+        now = time.time()
+        data = wheel.read(timeout=5)
+        if data:
+            head = decode_header(data)
+            if head:
+                loop_heard[head["command"]] = loop_heard.get(head["command"], 0) + 1
+            if head and head["command"] == GIP_CMD_INPUT:
+                reading = steering(head["payload"])
+                if reading is not None:
+                    position = reading
+                    state.update((position - CENTRE) / float(CENTRE), now)
+                    track.append((now - started, state.position))
+            elif head and head["options"] & OPT_ACKNOWLEDGE:
+                wheel.acknowledge(head)
+        if centres:
+            slot = min(int((now - started) / (seconds / len(centres))), len(centres) - 1)
+            if slot != current_slot:
+                current_slot = slot
+                centre = centres[slot]
+                if gains and slot < len(gains):
+                    stiffness = gains[slot]
+                params = ffb_render.legacy_condition_params("spring", stiffness,
+                                                            offset=centre, deadband=0.02)
+                marks.append((now - started, centre, stiffness))
+                print("   -> centre %+.2f  gain %+.2f" % (centre, stiffness))
+                last_sent = None
+        if now >= next_beat:
+            wheel.send(beat_cmd, beat_body)
+            next_beat = now + 1.0 / 16.0
+        if now >= next_force:
+            demand = ffb_render.condition_force("spring", params, state)
+            if damping:
+                demand += ffb_render.condition_force("damper", damper, state)
+            demand = max(-cap, min(cap, demand))
+            worst = max(worst, abs(demand))
+            if last_sent is None or abs(demand - last_sent) > 0.02 or now - last_time > refresh:
+                for command, body, options, delay in gip_arming.force_sequence(demand):
+                    wheel.send(command, body, options=options)
+                    if delay:
+                        time.sleep(delay)
+                last_sent, last_time = demand, now
+            next_force = now + 1.0 / rate
+
+    print("   largest force commanded: %.2f" % worst)
+    print("   device replied during the loop: %s"
+          % (", ".join("0x%02x x%d" % kv for kv in sorted(loop_heard.items())) or "NOTHING"))
+    for index, (start, target, gain) in enumerate(marks):
+        stop = marks[index + 1][0] if index + 1 < len(marks) else seconds
+        settled = [q for t_, q in track if start + (stop - start) * 0.5 <= t_ < stop]
+        if settled:
+            mean = sum(settled) / len(settled)
+            print("      centre %+.3f  gain %+5.2f   measured %+.3f   error %+.3f   (n=%d)"
+                  % (target, gain, mean, mean - target, len(settled)))
+        else:
+            before = [q for t_, q in track if t_ < start]
+            print("      centre %+.3f  gain %+5.2f   NO MOVEMENT, held at %+.3f"
+                  % (target, gain, before[-1] if before else float("nan")))
+    if not marks and track:
+        settled = [q for t_, q in track if t_ > seconds * 0.6]
+        if settled:
+            print("   SETTLED AT %+.3f  (commanded %+.3f)"
+                  % (sum(settled) / len(settled), centre))
+
+
 def spring(wheel, path, stiffness, seconds, cap=DEFAULT_CAP, rate=60.0, bias=0.0,
-           damping=0.0, centre=0.0, refresh=0.5, centres=None):
+           damping=0.0, centre=0.0, refresh=0.5, centres=None, gains=None):
     """Arm from the wire capture, then hold a CENTRING SPRING of our own.
 
     This is the point of the whole exercise: not replaying a recording, but closing the loop.
@@ -932,10 +1053,15 @@ def spring(wheel, path, stiffness, seconds, cap=DEFAULT_CAP, rate=60.0, bias=0.0
             if slot != current_slot:
                 current_slot = slot
                 centre = centres[slot]
+                # A parallel gain list lets one run change ONLY the stiffness while the target
+                # stays put -- which is how we ask whether the firmware spring can be
+                # cancelled, rather than asking anyone how it feels.
+                if gains and slot < len(gains):
+                    stiffness = gains[slot]
                 spring_params = ffb_render.legacy_condition_params(
                     "spring", stiffness, offset=centre, deadband=0.02)
-                marks.append((now - started, centre))
-                print("   -> commanding centre %+.2f" % centre)
+                marks.append((now - started, centre, stiffness))
+                print("   -> centre %+.2f  gain %+.2f" % (centre, stiffness))
                 last_sent = None
         if now >= next_force:
             demand = bias
@@ -969,13 +1095,20 @@ def spring(wheel, path, stiffness, seconds, cap=DEFAULT_CAP, rate=60.0, bias=0.0
     print("   largest force commanded: %.2f" % worst)
     if track and marks:
         print("\n   COMMANDED vs MEASURED position:")
-        for index, (start, target) in enumerate(marks):
+        for index, (start, target, gain) in enumerate(marks):
             stop = marks[index + 1][0] if index + 1 < len(marks) else seconds
             settled = [q for t_, q in track if start + (stop - start) * 0.5 <= t_ < stop]
             if settled:
                 mean = sum(settled) / len(settled)
-                print("      commanded %+.3f   measured %+.3f   error %+.3f   (n=%d)"
-                      % (target, mean, mean - target, len(settled)))
+                print("      centre %+.3f  gain %+5.2f   measured %+.3f   error %+.3f   (n=%d)"
+                      % (target, gain, mean, mean - target, len(settled)))
+            else:
+                # Input is event-driven, so silence means the wheel did not move. That is a
+                # result: with gain 0 it says the firmware spring is NOT dragging it back.
+                before = [q for t_, q in track if t_ < start]
+                held = before[-1] if before else float("nan")
+                print("      centre %+.3f  gain %+5.2f   NO MOVEMENT, held at %+.3f"
+                      % (target, gain, held))
         return
     if track:
         print("   commanded centre: %+.3f" % centre)
@@ -1289,6 +1422,9 @@ def main():
     parser.add_argument("--replay-wire", metavar="FILE",
                         help="replay a host->device stream captured from the real wire, "
                              "with its original timing (logs/wire_session.txt)")
+    parser.add_argument("--drive", type=float, metavar="K",
+                        help="arm from GENERATED sequences (no capture file) and "
+                             "hold a spring of this stiffness")
     parser.add_argument("--spring", type=float, metavar="K",
                         help="arm from --replay-wire, then hold a live centring spring "
                              "of this stiffness (try 0.15)")
@@ -1297,6 +1433,8 @@ def main():
                              "on 0c 20 and suppresses the firmware centring spring")
     parser.add_argument("--centres", metavar="LIST",
                         help="step the spring centre through these targets, e.g. \"0,0.3,-0.3,0\"")
+    parser.add_argument("--gains", metavar="LIST",
+                        help="stiffness per --centres step, e.g. \"2,0,-1\"")
     parser.add_argument("--centre", type=float, default=0.0,
                         help="where the spring pulls to, -1..+1 (0 = centre)")
     parser.add_argument("--damper", type=float, default=0.0,
@@ -1401,7 +1539,7 @@ def main():
 
         if args.probe or not (args.arm or args.force is not None or args.led or args.identify
                               or args.sequence or args.hori_probe or args.force_raw
-                              or args.replay_wire):
+                              or args.replay_wire or args.drive is not None):
             # Never block on input here: a prompt mid-measurement stops the sampling loop, and
             # this runs over ssh with no tty. Phases are separate invocations, each started
             # once the user is ready -- pass --label to say which is which.
@@ -1412,7 +1550,17 @@ def main():
             print("   settling")
             pump(wheel, 3.0, heartbeat=args.heartbeat)
 
-        if args.replay_wire and args.spring is not None:
+        if args.drive is not None:
+            if ffb_render is None or gip_arming is None:
+                raise SystemExit("ffb_render.py and gip_arming.py must sit beside this file")
+            if args.wait_calibration:
+                wait_calibration(wheel, cap=args.wait_calibration)
+            drive(wheel, args.drive, args.spring_seconds, cap=args.cap,
+                  damping=args.damper, centre=args.centre,
+                  centres=[float(v) for v in args.centres.split(",")] if args.centres else None,
+                  gains=[float(v) for v in args.gains.split(",")] if args.gains else None)
+
+        elif args.replay_wire and args.spring is not None:
             if args.wait_calibration:
                 wait_calibration(wheel, cap=args.wait_calibration)
             if args.kill_spring:
@@ -1432,7 +1580,9 @@ def main():
                    cap=args.cap, bias=args.bias, damping=args.damper,
                    centre=args.centre,
                    centres=[float(v) for v in args.centres.split(',')]
-                   if args.centres else None)
+                   if args.centres else None,
+                   gains=[float(v) for v in args.gains.split(',')]
+                   if args.gains else None)
 
         elif args.replay_wire:
             # Let the wheel finish calibrating first, so nothing in the force phase can be
