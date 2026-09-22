@@ -154,8 +154,12 @@ def decode_header(data):
 
 class Wheel:
     def __init__(self, verbose=True, pad=False, wait=0.0, client=0, zlp=False, dump=False,
-                 reattach=True):
+                 reattach=True, trace=False):
         self.verbose = verbose
+        # Both directions with timestamps. --dump-sent answers "what did we send"; this answers
+        # "what did the device say back", which for the whole arming was nothing we ever looked
+        # at.
+        self.trace = [] if trace else None
         # Handing the kernel driver back looks polite, but a run that reattaches leaves the
         # device in the state where the NEXT run gets no torque. Every confirmed torque run
         # so far inherited a device whose previous host died without reattaching.
@@ -196,6 +200,37 @@ class Wheel:
         usb.util.claim_interface(self.dev, INTERFACE)
         self.log("  interface %d claimed" % INTERFACE)
 
+    def reset_device(self):
+        """Force a genuine bring-up rather than inheriting the kernel driver's session.
+
+        Measured: detaching xone and claiming does NOT reset the device. It keeps whatever
+        session xone established, our power-on is a no-op, and it does not run its calibration
+        sweep -- while claiming a device nobody holds does calibrate. Since the calibration
+        sweep is the visible marker of a real bring-up, and every torque run so far followed
+        one, force the reset instead of hoping to inherit it.
+
+        A reset re-enumerates, so the handle is stale afterwards and the device has to be found
+        and claimed again.
+        """
+        self.log("  resetting the device for a genuine bring-up")
+        try:
+            self.dev.reset()
+        except usb.core.USBError as exc:
+            self.log("  reset failed: %s" % exc)
+        usb.util.dispose_resources(self.dev)
+        self.detached = False
+        deadline = time.time() + 15.0
+        while time.time() < deadline:
+            time.sleep(0.25)
+            found = usb.core.find(idVendor=HORI_VID, idProduct=HORI_PID, backend=_backend())
+            if found is not None:
+                self.dev = found
+                break
+        else:
+            raise SystemExit("the device did not come back after the reset")
+        self.log("  device re-enumerated")
+        self.open()
+
     def close(self):
         try:
             usb.util.release_interface(self.dev, INTERFACE)
@@ -223,6 +258,8 @@ class Wheel:
             packet = packet + b"\x00" * (PACKET - len(packet))
         if sequence is None:
             self.sequence = (self.sequence + 1) & 0xFF or 1  # xone never uses sequence 0
+        if self.trace is not None:
+            self.trace.append(("tx", time.monotonic(), bytes(packet)))
         if self.dump is not None:
             # The full packet as transmitted: header, padding and all. Recording the body alone
             # hid framing and padding differences, which is exactly what made one regression
@@ -297,7 +334,9 @@ def probe(wheel, seconds, label=""):
     print("\n-- reading input for %g s %s --" % (seconds, label))
     kinds = {}
     payloads = []
-    deadline = time.time() + seconds
+    stamps = []
+    started = time.time()
+    deadline = started + seconds
     while time.time() < deadline:
         data = wheel.read()
         if not data:
@@ -305,6 +344,7 @@ def probe(wheel, seconds, label=""):
         kinds[data[0]] = kinds.get(data[0], 0) + 1
         if data[0] == GIP_CMD_INPUT and len(data) > 4:
             payloads.append(data[4:])
+            stamps.append(time.time() - started)
 
     print("   %d message(s); commands: %s"
           % (sum(kinds.values()),
@@ -325,6 +365,25 @@ def probe(wheel, seconds, label=""):
             print("      byte %2d: %3d distinct, 0x%02x..0x%02x" % (offset, count, low, high))
     else:
         print("      NO payload byte varied at all")
+
+    # Per-second view. The calibration routine drives the wheel to both locks by itself, so
+    # while it runs the widest-varying byte sweeps its whole range with nobody touching the
+    # wheel; when it finishes, that range collapses. That transition is the thing we need to
+    # time, because arming a wheel that is still calibrating is the prime suspect for the
+    # silent motor.
+    if variance and stamps:
+        axis = max(variance.items(), key=lambda kv: kv[1][0])[0]
+        print("   per-second range of byte %d (the widest-varying one):" % axis)
+        for second in range(int(seconds)):
+            window = [p[axis] for p, t in zip(payloads, stamps)
+                      if second <= t < second + 1]
+            if not window:
+                print("      t=%2ds   -- silent --" % second)
+                continue
+            low, high = min(window), max(window)
+            bar = "#" * max(1, (high - low) * 40 // 255)
+            print("      t=%2ds  %4d msg  0x%02x..0x%02x  %s"
+                  % (second, len(window), low, high, bar))
     return kinds, variance
 
 
@@ -425,13 +484,22 @@ def gip_protocol_state():
     return 0x0C
 
 
-def replay(wheel, path, until, gap_ms, beat_ms):
-    """Send a captured WGI write stream verbatim, reframed for the wire.
+def replay(wheel, path, until, gap_ms, beat_ms, ack=False, read_ms=5, drain_cap=64):
+    """Send a captured WGI write stream verbatim, reframed for the wire, and LISTEN.
 
     Our hand-written load_sequence() reproduced only the first 36 messages of an arming that
     actually runs to ~107: WGI uploads the table twice, zeroes the parameter bank twice, and
     ends on a 0x0c 20 state that load_sequence never sends. Replaying the capture removes the
     guesswork that three hand-modelled attempts did not.
+
+    What it did NOT remove is our deafness. This loop used to call read(timeout=1) and throw
+    the result away, so across all 107 arming messages we never examined a reply and never
+    acknowledged one -- while identify() and pump() both do. A 1 ms timeout is also shorter
+    than the endpoint's interval, so it mostly timed out regardless, and a reply can sit behind
+    several 0x20 INPUT frames because the device streams input continuously. Hence the drain.
+
+    Acknowledging is kept behind a flag: the recipe that produces torque today does not ack
+    during arming, and it has to keep working as the A/B control.
     """
     import gip_protocol as gp
     with open(path, encoding="ascii") as handle:
@@ -445,14 +513,50 @@ def replay(wheel, path, until, gap_ms, beat_ms):
         messages = messages[:until]
 
     counts = {}
-    print("\n-- replaying %d captured message(s) from %s --" % (len(messages), path))
-    for mtype, body in messages:
+    replies = {}
+    ack_requests = 0
+    interesting = []
+    print("\n-- replaying %d captured message(s) from %s (acks %s) --"
+          % (len(messages), path, "ON" if ack else "OFF"))
+    for index, (mtype, body) in enumerate(messages):
         wheel.send(mtype, body)
         counts[mtype] = counts.get(mtype, 0) + 1
         if gap_ms:
             time.sleep(gap_ms / 1000.0)
-        wheel.read(timeout=1)
+        # Drain rather than sample once. The cap stops a device that streams faster than we
+        # read from turning this into an unbounded loop.
+        for _ in range(drain_cap):
+            data = wheel.read(timeout=read_ms)
+            if not data:
+                break
+            if wheel.trace is not None:
+                wheel.trace.append(("rx", time.monotonic(), bytes(data)))
+            head = decode_header(data)
+            if not head:
+                continue
+            replies[head["command"]] = replies.get(head["command"], 0) + 1
+            if head["command"] != GIP_CMD_INPUT:
+                # Anything that is not the input stream is the device reacting to arming --
+                # the signal we have never once looked at.
+                interesting.append((index, mtype, bytes(data)))
+            if head["options"] & OPT_ACKNOWLEDGE:
+                ack_requests += 1
+                if ack:
+                    wheel.acknowledge(head, received=head["length"])
+
     print("   sent: %s" % ", ".join("0x%02x x%d" % kv for kv in sorted(counts.items())))
+    print("   device replied: %s"
+          % (", ".join("0x%02x x%d" % kv for kv in sorted(replies.items())) or "NOTHING"))
+    print("   messages asking to be acknowledged: %d%s"
+          % (ack_requests, "" if ack else "  (IGNORED -- pass --ack-arming to answer them)"))
+    if interesting:
+        print("   %d non-input message(s) during arming:" % len(interesting))
+        for index, mtype, data in interesting[:12]:
+            print("      after msg #%d (0x%02x): %s" % (index, mtype, data[:32].hex()))
+        if len(interesting) > 12:
+            print("      ... and %d more" % (len(interesting) - 12))
+    else:
+        print("   no non-input messages during arming at all")
     return messages
 
 
@@ -548,6 +652,52 @@ def arm(wheel):
     return sent
 
 
+def wait_calibration(wheel, cap=30.0, quiet_needed=2.0, settle=2.0):
+    """Wait for the firmware calibration sweep to finish before arming.
+
+    Claiming the device restarts it -- measured, not assumed: on an already-settled wheel,
+    claim plus power-on made it drive itself to both locks for about 8 s while reporting
+    NOTHING, then resume input in a burst covering the full steering range. The old flow
+    issued its first force command at roughly t=6 s, squarely inside that window, which is a
+    far better explanation for the silent motor than anything we send.
+
+    Detected rather than slept through, because the duration is a property of the wheel and we
+    would only be guessing: wait for the input stream to go quiet (the sweep starting), then
+    for it to come back (the sweep finished), then a settle margin. The cap is generous on
+    purpose -- there is no prize for arming early.
+    """
+    print("\n-- waiting for the calibration sweep (cap %g s) --" % cap)
+    started = time.time()
+    last_input = started
+    saw_quiet = False
+    finished = None
+    while time.time() - started < cap:
+        data = wheel.read(timeout=50)
+        now = time.time()
+        if data:
+            head = decode_header(data)
+            if head and head["options"] & OPT_ACKNOWLEDGE:
+                wheel.acknowledge(head, received=head["length"])
+            if head and head["command"] == GIP_CMD_INPUT:
+                if saw_quiet:
+                    finished = now - started
+                    break
+                last_input = now
+        elif not saw_quiet and now - last_input >= quiet_needed:
+            saw_quiet = True
+            print("   input stopped at t=%.1f s -- the wheel is calibrating"
+                  % (last_input - started))
+
+    if finished is None:
+        print("   NO completion seen within %g s -- arming anyway, treat a silent motor here "
+              "as unexplained" % cap)
+    else:
+        print("   input resumed at t=%.1f s -- calibration complete" % finished)
+    if settle:
+        pump(wheel, settle)
+    return finished
+
+
 def command_force(wheel, magnitude, hold, beat=False):
     # force_block is the one field in this protocol that round-tripped across five magnitudes.
     body = gip_protocol.force_block(magnitude)
@@ -589,6 +739,19 @@ def main():
     parser.add_argument("--warmup", type=float, default=0.0,
                         help="read for this long after identify, before arming, so the wheel "
                              "can finish its calibration sweep")
+    parser.add_argument("--reset", action="store_true",
+                        help="USB-reset the device after claiming it, forcing a real "
+                             "bring-up instead of inheriting the kernel driver's session")
+    parser.add_argument("--wait-calibration", type=float, default=0.0, metavar="CAP",
+                        help="before arming, wait for the firmware calibration sweep to "
+                             "finish, giving up after CAP seconds (try 30)")
+    parser.add_argument("--ack-arming", action="store_true",
+                        help="acknowledge device messages during the replay, as identify() and "
+                             "pump() already do -- the arming has always ignored them")
+    parser.add_argument("--arm-read-ms", type=int, default=5,
+                        help="per-read timeout while draining during the replay (default 5)")
+    parser.add_argument("--trace-arming", metavar="FILE",
+                        help="write both directions with timestamps for the whole run")
     parser.add_argument("--no-reattach", action="store_true",
                         help="on exit, leave the kernel driver detached instead of handing "
                              "it back -- the state every confirmed torque run inherited")
@@ -621,10 +784,13 @@ def main():
     BEAT_STATE[0] = (gip_protocol.STATE_LOADED if args.beat_state == "loaded"
                      else gip_protocol.STATE_RUNNING)
     wheel = Wheel(pad=args.pad, wait=args.wait_device, client=args.client, zlp=args.zlp,
-                  dump=bool(args.dump_sent), reattach=not args.no_reattach)
+                  dump=bool(args.dump_sent), reattach=not args.no_reattach,
+                  trace=bool(args.trace_arming))
     print("found %04x:%04x%s" % (HORI_VID, HORI_PID, "  [padding OUT to 64 B]" if args.pad else ""))
     wheel.open()
     try:
+        if args.reset:
+            wheel.reset_device()
         if args.cold:
             cold_listen(wheel, args.seconds)
         elif not args.no_init:
@@ -665,6 +831,11 @@ def main():
                 await_announce(wheel, args.announce_wait)
             wheel.power_on()
             time.sleep(0.3)
+            # Before identify, not after: identify silences the input stream entirely -- 30 s
+            # of nothing, measured twice -- and input resuming is the only completion signal
+            # we have for the calibration sweep.
+            if args.wait_calibration:
+                wait_calibration(wheel, cap=args.wait_calibration)
             identify(wheel, 3.0, ack=True)
             if args.warmup:
                 # Let the wheel finish its calibration sweep before arming. With xpad bound the
@@ -676,7 +847,8 @@ def main():
                 kinds = pump(wheel, args.warmup)
                 print("   saw: %s"
                       % ", ".join("0x%02x x%d" % kv for kv in sorted(kinds.items())))
-            replay(wheel, args.replay, args.replay_until, args.gap_ms, None)
+            replay(wheel, args.replay, args.replay_until, args.gap_ms, None,
+                   ack=args.ack_arming, read_ms=args.arm_read_ms)
             print("   settling with the 0x0c 20 heartbeat")
             pump(wheel, 2.0, heartbeat=True)
 
@@ -698,6 +870,14 @@ def main():
             for magnitude in magnitudes:
                 command_force(wheel, magnitude, args.hold, beat=args.heartbeat)
     finally:
+        if args.trace_arming and wheel.trace is not None:
+            base = wheel.trace[0][1] if wheel.trace else 0.0
+            with open(args.trace_arming, "w", encoding="ascii") as handle:
+                for direction, stamp, packet in wheel.trace:
+                    handle.write("%9.3f %s %s\n"
+                                 % ((stamp - base) * 1000.0, direction, packet.hex()))
+            print("\n   wrote %d traced event(s) to %s"
+                  % (len(wheel.trace), args.trace_arming))
         if args.dump_sent and wheel.dump is not None:
             with open(args.dump_sent, "w", encoding="ascii") as handle:
                 for packet in wheel.dump:
