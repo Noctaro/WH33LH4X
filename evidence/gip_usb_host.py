@@ -57,6 +57,11 @@ try:
 except ImportError:
     sys.exit("gip_protocol.py must sit beside this file")
 
+try:
+    import ffb_render
+except ImportError:
+    ffb_render = None
+
 # Windows has no system libusb; libusb_package ships one, so prefer it when present.
 try:
     import libusb_package
@@ -673,6 +678,26 @@ FORCE_DURATION = b"\x01\x60\xea\x46"   # 30000.0 as f32 LE -- marks a force bloc
 FORCE_SLOT = 0x0008                    # the signed magnitude, proven by A/B
 
 
+def set_force_magnitude(packet, value, sequence=None):
+    """Write an exact signed magnitude into slot 0x08 of a wire force block.
+
+    The sequence byte matters: every force block in the capture carries a fresh one
+    (0x35, 0x36, 0x37...). Re-sending a template unchanged means re-sending the same
+    sequence number, which the device appears to treat as a duplicate and ignore.
+    """
+    data = bytearray(packet)
+    if sequence is not None:
+        data[2] = sequence or 1          # xone never uses sequence 0
+    body = data[4:]
+    for index in range(0, 60, 6):
+        pid, = struct.unpack_from("<H", body, index)
+        if pid == FORCE_SLOT:
+            struct.pack_into("<f", body, index + 2, value)
+            data[4:] = body
+            break
+    return bytes(data)
+
+
 def scale_force_block(packet, scale):
     """Rewrite slot 0x08 of a wire force block, preserving its sign.
 
@@ -728,31 +753,243 @@ def replay_wire(wheel, path, max_gap_ms=400.0, read_ms=1, drain_cap=8, force_sca
           % (len(entries), max_gap_ms))
     counts = {}
     replies = {}
-    for delta, packet in entries:
-        gap = min(delta, max_gap_ms) / 1000.0
-        if gap > 0:
-            time.sleep(gap)
-        if force_scale is not None and packet[0] == 0x0B and FORCE_DURATION in packet:
-            packet, applied = scale_force_block(packet, force_scale)
-            if applied is not None:
-                print("   force block scaled to %+.2f" % applied)
-        wheel.send_raw(packet)
-        counts[packet[0]] = counts.get(packet[0], 0) + 1
-        for _ in range(drain_cap):
-            data = wheel.read(timeout=read_ms)
+    samples = []
+    events = []
+    started = time.time()
+
+    def drain_for(seconds):
+        # Spend the inter-packet gap READING rather than sleeping. Sleeping through it threw
+        # away the wheel's own position reports, which are the only objective measure of
+        # whether a commanded force did anything.
+        end = time.time() + seconds
+        while True:
+            left = end - time.time()
+            if left <= 0:
+                return
+            data = wheel.read(timeout=max(1, int(left * 1000)))
             if not data:
-                break
+                continue
             head = decode_header(data)
             if not head:
                 continue
             replies[head["command"]] = replies.get(head["command"], 0) + 1
-            if head["options"] & OPT_ACKNOWLEDGE:
+            if head["command"] == GIP_CMD_INPUT:
+                position = steering(head["payload"])
+                if position is not None:
+                    samples.append((time.time() - started, position))
+            elif head["options"] & OPT_ACKNOWLEDGE:
                 wheel.acknowledge(head)
+
+    for delta, packet in entries:
+        gap = min(delta, max_gap_ms) / 1000.0
+        if gap > 0:
+            drain_for(gap)
+        if force_scale is not None and packet[0] == 0x0B and FORCE_DURATION in packet:
+            packet, applied = scale_force_block(packet, force_scale)
+            if applied is not None:
+                print("   force block scaled to %+.2f" % applied)
+        if packet[0] == 0x0B and FORCE_DURATION in packet:
+            body = packet[4:]
+            for index in range(0, 60, 6):
+                pid, = struct.unpack_from("<H", body, index)
+                if pid == FORCE_SLOT:
+                    value, = struct.unpack_from("<f", body, index + 2)
+                    events.append((time.time() - started, value))
+                    break
+        wheel.send_raw(packet)
+        counts[packet[0]] = counts.get(packet[0], 0) + 1
 
     print("   sent: %s" % ", ".join("0x%02x x%d" % kv for kv in sorted(counts.items())))
     print("   device replied: %s"
           % (", ".join("0x%02x x%d" % kv for kv in sorted(replies.items())) or "NOTHING"))
+
+    if not samples:
+        print("   no position reports -- cannot measure the effect objectively")
+        return entries
+    print("\n   MEASURED WHEEL MOVEMENT after each force block (hands off to read this):")
+    # Deflection saturates: with nobody holding it, even a tenth of full scale eventually
+    # drives the wheel to its end stop, so "how far" cannot separate magnitudes. How FAST it
+    # gets there can.
+    print("      commanded    peak speed       time to lock")
+    for stamp, magnitude in events:
+        window = [(t_, p) for t_, p in samples if stamp <= t_ < stamp + 2.5]
+        if len(window) < 3:
+            print("      %+6.2f       (no samples)" % magnitude)
+            continue
+        speed = 0.0
+        for (t0, p0), (t1, p1) in zip(window, window[1:]):
+            if t1 > t0:
+                speed = max(speed, abs(p1 - p0) / (t1 - t0))
+        locked = next((t_ - stamp for t_, p in window
+                       if abs(p - CENTRE) > CENTRE * 0.9), None)
+        print("      %+6.2f     %9.0f cnt/s    %s"
+              % (magnitude, speed,
+                 "%.2f s" % locked if locked is not None else "never"))
     return entries
+
+
+def spring(wheel, path, stiffness, seconds, cap=DEFAULT_CAP, rate=60.0, bias=0.0,
+           damping=0.0, centre=0.0, refresh=0.5, centres=None):
+    """Arm from the wire capture, then hold a CENTRING SPRING of our own.
+
+    This is the point of the whole exercise: not replaying a recording, but closing the loop.
+    The wheel reports its own position (16-bit LE at input bytes 2-3, centred on 0x8000) all
+    the way through a wire session, because that session never sends the `identify` that
+    silences the input stream. So we can read where the wheel is and command a force against
+    it, at whatever stiffness we like -- which is a spring, and a light one is exactly what the
+    factory's immovable centring spring refuses to be.
+
+    Arming is replayed verbatim up to the first force block, because the arming is the part we
+    still cannot construct from scratch. After that every force block is ours: the captured
+    block reused as a template with slot 0x08 rewritten, plus the 0x0c heartbeat the session
+    keeps up at ~16 Hz.
+    """
+    entries = []
+    with open(path, encoding="ascii") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            delta, packet = line.split(" ", 1)
+            entries.append((float(delta), bytes.fromhex(packet)))
+
+    first_force = next(i for i, (_, p) in enumerate(entries)
+                       if p[0] == 0x0B and FORCE_DURATION in p)
+    template = entries[first_force][1]
+    # The FIRST 0x0c in the session is STATE_CLEAR, which tells the wheel no effect is
+    # loaded -- heartbeating that at 16 Hz kept the firmware spring alive and our force
+    # inert. The steady state is 0xf0 STATE_RUNNING, 304 of the 455 on the wire.
+    beat = next(p for _, p in entries if p[0] == 0x0C and p[4] == 0xF0)
+
+    # Replay the WHOLE session, not just up to the first force block: 20 of the 24 0x0d table
+    # uploads happen after it, so stopping early leaves the device half-configured -- which is
+    # exactly what a 0.30 demand that moved nothing looked like.
+    print("\n-- arming from the wire capture (%d packets) --" % len(entries))
+    for delta, packet in entries:
+        gap = min(delta, 400.0) / 1000.0
+        if gap > 0:
+            time.sleep(gap)
+        wheel.send_raw(packet)
+        wheel.read(timeout=1)
+
+    print("\n-- LIVE CONDITION EFFECTS: spring %.2f, damper %.2f, cap %.2f, %g s --"
+          % (stiffness, damping, cap, seconds))
+    print("   turn the wheel; it should pull back to centre and resist fast movement")
+
+    # Reuse the project's own tested control laws rather than a hand-rolled -k*x. ffb_render
+    # imports only math, so it runs here unchanged, and it brings the deadband, saturations
+    # and velocity smoothing that were fitted to this wheel.
+    state = ffb_render.WheelState()
+    # A force command is not one message. Around EVERY force block in the capture:
+    #     0c 00 CLEAR x2 | 0d table chunk x4 | 0b magnitude | 0c 10 | 0c f0 running
+    # That is why the session carries 0x0d x24 -- six force events times four chunks. Sending
+    # the 0b alone, which is all we did at first, drops a magnitude into a cleared device.
+    clear = next(p for _, p in entries if p[0] == 0x0C and p[4] == 0x00)
+    state10 = next(p for _, p in entries if p[0] == 0x0C and p[4] == 0x10)
+    table = [p for _, p in entries[:first_force] if p[0] == 0x0D][-4:]
+    if len(table) != 4:
+        table = [p for _, p in entries if p[0] == 0x0D][:4]
+
+    # offset IS the spring's centre, per ffb_render's own docstring. A non-zero centre
+    # turns the spring into a position hold, which can be checked against the position
+    # the wheel reports instead of against anyone's impression of the force.
+    spring_params = ffb_render.legacy_condition_params("spring", stiffness,
+                                                      offset=centre, deadband=0.02)
+    damper_params = ffb_render.legacy_condition_params("damper", damping)
+
+    started = time.time()
+    next_beat = started
+    next_force = started
+    position = CENTRE
+    worst = 0.0
+    last_sent = None
+    current_slot = -1
+    marks = []
+    last_time = 0.0
+    sequence = template[2]
+    track = []
+    while time.time() - started < seconds:
+        now = time.time()
+        data = wheel.read(timeout=5)
+        if data:
+            head = decode_header(data)
+            if head and head["command"] == GIP_CMD_INPUT:
+                reading = steering(head["payload"])
+                if reading is not None:
+                    position = reading
+                    state.update((position - CENTRE) / float(CENTRE), now)
+                    track.append((now - started, state.position))
+            elif head and head["options"] & OPT_ACKNOWLEDGE:
+                wheel.acknowledge(head)
+        if now >= next_beat:
+            wheel.send_raw(beat)
+            next_beat = now + 1.0 / 16.0
+        if centres:
+            # Step the commanded centre through a list, dwelling on each. Commanded versus
+            # measured position is the honest test of control: no hands, no impressions.
+            slot = int((now - started) / (seconds / len(centres)))
+            slot = min(slot, len(centres) - 1)
+            if slot != current_slot:
+                current_slot = slot
+                centre = centres[slot]
+                spring_params = ffb_render.legacy_condition_params(
+                    "spring", stiffness, offset=centre, deadband=0.02)
+                marks.append((now - started, centre))
+                print("   -> commanding centre %+.2f" % centre)
+                last_sent = None
+        if now >= next_force:
+            demand = bias
+            if stiffness:
+                demand += ffb_render.condition_force("spring", spring_params, state)
+            if damping:
+                demand += ffb_render.condition_force("damper", damper_params, state)
+            demand = max(-cap, min(cap, demand))
+            worst = max(worst, abs(demand))
+            # Send ONLY when the magnitude changes, as the Windows driver does: the capture
+            # holds 6 force blocks against 455 heartbeats. Each block carries a duration and a
+            # start flag, so re-sending one 60 times a second plausibly restarts the effect
+            # before it can do anything -- which is what a 0.30 demand that moved nothing
+            # looked like.
+            # On change, but also refreshed periodically: one block for a constant demand may
+            # simply lapse, while 60 Hz re-issue appears to restart the effect before it runs.
+            if (last_sent is None or abs(demand - last_sent) > 0.02
+                    or now - last_time > refresh):
+                for packet in (clear, clear, *table):
+                    sequence = (sequence + 1) & 0xFF or 1
+                    wheel.send_raw(bytes(packet[:2]) + bytes([sequence]) + packet[3:])
+                    time.sleep(0.004)
+                sequence = (sequence + 1) & 0xFF or 1
+                wheel.send_raw(set_force_magnitude(template, demand, sequence))
+                time.sleep(0.008)
+                sequence = (sequence + 1) & 0xFF or 1
+                wheel.send_raw(bytes(state10[:2]) + bytes([sequence]) + state10[3:])
+                last_sent = demand
+                last_time = now
+            next_force = now + 1.0 / rate
+    print("   largest force commanded: %.2f" % worst)
+    if track and marks:
+        print("\n   COMMANDED vs MEASURED position:")
+        for index, (start, target) in enumerate(marks):
+            stop = marks[index + 1][0] if index + 1 < len(marks) else seconds
+            settled = [q for t_, q in track if start + (stop - start) * 0.5 <= t_ < stop]
+            if settled:
+                mean = sum(settled) / len(settled)
+                print("      commanded %+.3f   measured %+.3f   error %+.3f   (n=%d)"
+                      % (target, mean, mean - target, len(settled)))
+        return
+    if track:
+        print("   commanded centre: %+.3f" % centre)
+        for window in (0, 1, 2, 3, 4):
+            low, high = window * seconds / 5.0, (window + 1) * seconds / 5.0
+            chunk = [p for t_, p in track if low <= t_ < high]
+            if chunk:
+                print("      t=%4.1f..%4.1fs   mean position %+.3f   (n=%d)"
+                      % (low, high, sum(chunk) / len(chunk), len(chunk)))
+        settled = [p for t_, p in track if t_ > seconds * 0.6]
+        if settled:
+            print("   SETTLED AT %+.3f  (commanded %+.3f, error %+.3f)"
+                  % (sum(settled) / len(settled), centre,
+                     sum(settled) / len(settled) - centre))
 
 
 def force_raw(wheel, path, hold, beat=True):
@@ -1052,6 +1289,23 @@ def main():
     parser.add_argument("--replay-wire", metavar="FILE",
                         help="replay a host->device stream captured from the real wire, "
                              "with its original timing (logs/wire_session.txt)")
+    parser.add_argument("--spring", type=float, metavar="K",
+                        help="arm from --replay-wire, then hold a live centring spring "
+                             "of this stiffness (try 0.15)")
+    parser.add_argument("--kill-spring", metavar="FILE",
+                        help="before arming, replay the old wgi.txt sequence that ends "
+                             "on 0c 20 and suppresses the firmware centring spring")
+    parser.add_argument("--centres", metavar="LIST",
+                        help="step the spring centre through these targets, e.g. \"0,0.3,-0.3,0\"")
+    parser.add_argument("--centre", type=float, default=0.0,
+                        help="where the spring pulls to, -1..+1 (0 = centre)")
+    parser.add_argument("--damper", type=float, default=0.0,
+                        help="damper coefficient held alongside the spring")
+    parser.add_argument("--bias", type=float, default=0.0,
+                        help="constant force added to the spring, to test whether the "
+                             "firmware spring is suppressed only while an effect is held")
+    parser.add_argument("--spring-seconds", type=float, default=20.0,
+                        help="how long to hold the spring (default 20)")
     parser.add_argument("--force-scale", type=float, metavar="MAG",
                         help="rewrite slot 0x08 of each replayed force block to this "
                              "magnitude, keeping its sign (0 = control run)")
@@ -1158,7 +1412,29 @@ def main():
             print("   settling")
             pump(wheel, 3.0, heartbeat=args.heartbeat)
 
-        if args.replay_wire:
+        if args.replay_wire and args.spring is not None:
+            if args.wait_calibration:
+                wait_calibration(wheel, cap=args.wait_calibration)
+            if args.kill_spring:
+                # The firmware's centring spring comes back with every calibration, and the
+                # calibration runs on every claim. The old (malformed) arming ends on 0c 20
+                # STATE_LOADED -- a state that never appears on the wire -- and that
+                # persistently suppresses the spring. So kill it AFTER calibrating, then arm
+                # properly and hold a spring of our own.
+                print("\n-- suppressing the firmware spring (old arming, ends on 0c 20) --")
+                BEAT_STATE[0] = gip_protocol.STATE_LOADED
+                replay(wheel, args.kill_spring, 107, 2.0, None)
+                pump(wheel, 2.0, heartbeat=True)
+                BEAT_STATE[0] = gip_protocol.STATE_RUNNING
+            if ffb_render is None:
+                raise SystemExit('ffb_render.py must sit beside this file')
+            spring(wheel, args.replay_wire, args.spring, args.spring_seconds,
+                   cap=args.cap, bias=args.bias, damping=args.damper,
+                   centre=args.centre,
+                   centres=[float(v) for v in args.centres.split(',')]
+                   if args.centres else None)
+
+        elif args.replay_wire:
             # Let the wheel finish calibrating first, so nothing in the force phase can be
             # mistaken for the firmware's own sweep. That confusion has cost this project a
             # whole day of wrong conclusions once already.
