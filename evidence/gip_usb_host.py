@@ -85,6 +85,7 @@ GIP_CMD_ANNOUNCE = 0x02
 GIP_CMD_STATUS = 0x03
 GIP_CMD_IDENTIFY = 0x04
 GIP_CMD_POWER = 0x05
+GIP_CMD_AUTHENTICATE = 0x06
 GIP_CMD_LED = 0x0A
 GIP_CMD_HID_REPORT = 0x0B
 GIP_CMD_INPUT = 0x20
@@ -280,6 +281,22 @@ class Wheel:
         if written != len(packet):
             self.log("  SHORT WRITE: %d of %d bytes for command 0x%02x"
                      % (written, len(packet), command))
+        return written
+
+    def send_raw(self, packet):
+        """Write a packet exactly as captured -- no reframing, no sequence of ours.
+
+        Everything else here builds a header from (command, body). The authentication exchange
+        cannot be rebuilt that way: its options bytes carry chunk flags and its sequence numbers
+        are part of a conversation we are impersonating, so the bytes go out verbatim.
+        """
+        if self.trace is not None:
+            self.trace.append(("tx", time.monotonic(), bytes(packet)))
+        if self.dump is not None:
+            self.dump.append(bytes(packet))
+        written = self.dev.write(EP_OUT, packet, timeout=1000)
+        if written != len(packet):
+            self.log("  SHORT WRITE: %d of %d bytes" % (written, len(packet)))
         return written
 
     def power_on(self):
@@ -652,6 +669,223 @@ def arm(wheel):
     return sent
 
 
+FORCE_DURATION = b"\x01\x60\xea\x46"   # 30000.0 as f32 LE -- marks a force block
+FORCE_SLOT = 0x0008                    # the signed magnitude, proven by A/B
+
+
+def scale_force_block(packet, scale):
+    """Rewrite slot 0x08 of a wire force block, preserving its sign.
+
+    Slot 0x08 is the signed magnitude: replaying the capture with it at +/-1.0 pulls the wheel,
+    and with it at 0.0 does nothing, everything else held identical. Scaling it is how an
+    arbitrary force is commanded without rebuilding the block from scratch, which we cannot yet
+    do because the other nine slots are only partly understood.
+    """
+    data = bytearray(packet)
+    body = data[4:]
+    for index in range(0, 60, 6):
+        pid, = struct.unpack_from("<H", body, index)
+        if pid != FORCE_SLOT:
+            continue
+        current, = struct.unpack_from("<f", body, index + 2)
+        sign = -1.0 if current < 0 else 1.0
+        struct.pack_into("<f", body, index + 2, sign * abs(scale))
+        data[4:] = body
+        return bytes(data), sign * abs(scale)
+    return bytes(data), None
+
+
+def replay_wire(wheel, path, max_gap_ms=400.0, read_ms=1, drain_cap=8, force_scale=None):
+    """Replay a host->device stream captured from the REAL WIRE, with its original timing.
+
+    WHY THIS REPLACES THE wgi.txt REPLAY (2026-09-22): `logs/wgi.txt` is what WGI wrote to the
+    driver, and the driver does not pass it through. Comparing the two streams for the same
+    session:
+
+        wire:  150 arming messages   0x0a x5  0x05 x1  0x0c x88  0x0b x52  0x0d x4
+        ours:  107 arming messages   0x0a x3  0x05 x0  0x0c x43  0x0b x53  0x0d x8
+
+    The driver reorders, dedupes and rewrites: it sends a 0x05 power message we never sent at
+    all, uploads the 0x0d table ONCE at the END rather than twice near the start, and expands
+    sparse 0x0b updates into full ten-slot blocks. Reconstructing the arming from the driver
+    side was always going to produce something the device had never been asked to accept.
+
+    So stop reconstructing: send exactly what crossed the wire, at the cadence it crossed.
+    The one thing that cannot be replayed is the 0x06 authentication, whose challenge is
+    freshly random -- so if this still produces nothing, authentication is the remaining
+    difference and the raw-USB route is closed.
+    """
+    entries = []
+    with open(path, encoding="ascii") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            delta, packet = line.split(" ", 1)
+            entries.append((float(delta), bytes.fromhex(packet)))
+
+    print("\n-- replaying %d WIRE packet(s) with captured timing (gaps capped at %g ms) --"
+          % (len(entries), max_gap_ms))
+    counts = {}
+    replies = {}
+    for delta, packet in entries:
+        gap = min(delta, max_gap_ms) / 1000.0
+        if gap > 0:
+            time.sleep(gap)
+        if force_scale is not None and packet[0] == 0x0B and FORCE_DURATION in packet:
+            packet, applied = scale_force_block(packet, force_scale)
+            if applied is not None:
+                print("   force block scaled to %+.2f" % applied)
+        wheel.send_raw(packet)
+        counts[packet[0]] = counts.get(packet[0], 0) + 1
+        for _ in range(drain_cap):
+            data = wheel.read(timeout=read_ms)
+            if not data:
+                break
+            head = decode_header(data)
+            if not head:
+                continue
+            replies[head["command"]] = replies.get(head["command"], 0) + 1
+            if head["options"] & OPT_ACKNOWLEDGE:
+                wheel.acknowledge(head)
+
+    print("   sent: %s" % ", ".join("0x%02x x%d" % kv for kv in sorted(counts.items())))
+    print("   device replied: %s"
+          % (", ".join("0x%02x x%d" % kv for kv in sorted(replies.items())) or "NOTHING"))
+    return entries
+
+
+def force_raw(wheel, path, hold, beat=True):
+    """Send force blocks captured from the REAL WIRE, verbatim.
+
+    THE BUG THIS EXISTS FOR (2026-09-22): `logs/wgi.txt` was captured at the driver interface,
+    where WGI writes a SPARSE update -- one populated slot plus 0xffff padding meaning "slot
+    unused". The driver expands that into a full ten-slot effect block before it reaches the
+    device. We were replaying the sparse form straight at the wheel.
+
+        WGI -> driver:  08=0.25  ---- ---- ---- ---- ---- ---- ---- ---- ----
+        driver -> wire: 00=0 01=30000 02=int1 03=-1 04=0 05=1 06=-1 07=0 08=+1 09=1
+
+    The arming blocks are byte-identical between the two; only the force message is rewritten,
+    which is exactly the message that never worked. 0x08 carries the signed magnitude and flips
+    between pulses, matching the LEFT/RIGHT/LEFT/RIGHT/LEFT direction test that produced real
+    torque on Windows.
+    """
+    with open(path, encoding="ascii") as handle:
+        packets = [bytes.fromhex(line.strip()) for line in handle if line.strip()]
+    print("\n-- sending %d captured WIRE force block(s), HANDS ON THE WHEEL --" % len(packets))
+    for index, packet in enumerate(packets):
+        wheel.send_raw(packet)
+        print("   wire force block #%d (%d B)" % (index, len(packet)))
+        if hold:
+            pump(wheel, hold, heartbeat=beat)
+    return packets
+
+
+def hori_probe(wheel, profile=1, offset=0, count=51, read_ms=80, drain_cap=32):
+    """Ask the wheel for its PROFILE MEMORY over HORI's own config channel.
+
+    From mbenkmann/hori_device_manager, who traced the HORI Device Manager talking to a
+    Fighting Commander Octa (Wireshark on a Linux host, Windows in a QEMU VM):
+
+        HOST>  0f 00 <seq> 3c | 04 <profile> <off_hi> <off_lo> <count> 00...
+        <PAD   10 00 <seq> 3c | 05 <profile> <off_hi> <off_lo> <count> <data...>
+
+    hori_cmd 0x04 reads profile memory, 0x05 is the reply, 0x03 writes it. Crucially this
+    channel involves **no authentication** -- it is HORI's, not Microsoft's, which is why it is
+    worth trying after 0x06 closed the door on commanding the motor directly.
+
+    Our wheel's own descriptor declares exactly two command types we have never seen used:
+    0x0e (max 56) and 0x10 (max 60). That is the same shape as the Octa's 0x0f/0x10 pair, so
+    try both host ids and see which the wheel answers.
+
+    Read-only: this only issues hori_cmd 0x04.
+    """
+    print("\n-- probing HORI's config channel (read profile %d at 0x%04x) --"
+          % (profile, offset))
+    found = []
+    for command, body_len in ((0x0E, 56), (0x0F, 60), (0x10, 60)):
+        body = bytearray(body_len)
+        body[0] = 0x04                       # hori_cmd: read profile memory
+        body[1] = profile
+        body[2] = (offset >> 8) & 0xFF
+        body[3] = offset & 0xFF
+        body[4] = min(count, body_len - 5)
+        wheel.send(command, bytes(body))
+        time.sleep(0.05)
+        replies = []
+        for _ in range(drain_cap):
+            data = wheel.read(timeout=read_ms)
+            if not data:
+                break
+            head = decode_header(data)
+            if not head or head["command"] == GIP_CMD_INPUT:
+                continue
+            replies.append(bytes(data))
+        print("   host 0x%02x (%d B body) -> %s"
+              % (command, body_len,
+                 "no reply" if not replies else "%d repl(y/ies)" % len(replies)))
+        for packet in replies[:4]:
+            print("      %s" % packet[:40].hex())
+            if packet[0] in (0x0F, 0x10) and len(packet) > 5 and packet[4] == 0x05:
+                print("      *** HORI PROFILE MEMORY REPLY -- the channel is open ***")
+                found.append((command, packet))
+    return found
+
+
+def replay_auth(wheel, path, read_ms=60, gap=0.05, drain_cap=64):
+    """Replay a captured host-side 0x06 AUTHENTICATE exchange, verbatim.
+
+    THE FINDING THIS EXISTS FOR (2026-09-22): a real USB wire capture shows Windows completing
+    a full mutual authentication with this wheel -- the device streams an X.509 certificate
+    (subject "Xbox", valid to 2043) across ~20 chunks and the host answers with its own chunked
+    response -- and it finishes ONE MESSAGE before `logs/wgi.txt` begins. Our reference capture
+    sat above the driver, and the driver is what authenticates, so 0x06 could never appear in
+    it. That is why this was wrongly retired as a dead hypothesis.
+
+    It explains the central symptom exactly: parameter writes are accepted (the factory spring
+    drops, 0x25 goes 06 00 -> 06 02) but the motor never actuates. Configuration is
+    unprivileged; actuation is not.
+
+    WHAT THIS TESTS, and its likely answer: if the exchange is stateless, replaying the host's
+    twelve packets works. A certificate exchange normally signs a fresh nonce, in which case
+    this fails and raw USB is blocked by design rather than by a bug. One run settles it.
+    """
+    with open(path, encoding="ascii") as handle:
+        packets = [bytes.fromhex(line.strip()) for line in handle if line.strip()]
+
+    print("\n-- replaying %d captured 0x06 AUTHENTICATE packet(s) --" % len(packets))
+    replies = {}
+    said = []
+    for index, packet in enumerate(packets):
+        wheel.send_raw(packet)
+        time.sleep(gap)
+        for _ in range(drain_cap):
+            data = wheel.read(timeout=read_ms)
+            if not data:
+                break
+            head = decode_header(data)
+            if not head:
+                continue
+            replies[head["command"]] = replies.get(head["command"], 0) + 1
+            if head["command"] != GIP_CMD_INPUT:
+                said.append((index, bytes(data)))
+            # A CHUNK_START carries the TOTAL in chunk_offset, so record it before acking;
+            # acknowledge() needs it to report how much is still outstanding.
+            if head["options"] & OPT_CHUNK_START:
+                wheel.chunk_total = head["chunk_offset"]
+            if head["options"] & OPT_ACKNOWLEDGE:
+                wheel.acknowledge(head)
+
+    print("   device replied: %s"
+          % (", ".join("0x%02x x%d" % kv for kv in sorted(replies.items())) or "NOTHING"))
+    answered = [p for i, p in said if p and p[0] == GIP_CMD_AUTHENTICATE]
+    print("   0x06 messages back from the device: %d" % len(answered))
+    for index, packet in said[:14]:
+        print("      after auth pkt #%d: %s" % (index, packet[:28].hex()))
+    return replies
+
+
 def wait_calibration(wheel, cap=30.0, quiet_needed=2.0, settle=2.0):
     """Wait for the firmware calibration sweep to finish before arming.
 
@@ -698,13 +932,85 @@ def wait_calibration(wheel, cap=30.0, quiet_needed=2.0, settle=2.0):
     return finished
 
 
+def steering(payload):
+    """The wheel's own position: 16-bit little-endian at payload bytes 2-3, centre 0x8000.
+
+    Measured: byte 2 sweeps its whole range while byte 3 only moves 0x7e..0x81, which is the
+    signature of a little-endian 16-bit value around a mid-scale centre rather than two
+    independent bytes.
+    """
+    if len(payload) < 4:
+        return None
+    return struct.unpack_from("<H", payload, 2)[0]
+
+
+CENTRE = 0x8000
+
+
 def command_force(wheel, magnitude, hold, beat=False):
+    """Command a force and report what the wheel actually does while it is applied.
+
+    Reading the position back is the only way to tell a torque from a position target: under a
+    steady torque a free wheel keeps travelling to the lock, under a position target it parks
+    at a value proportional to what was commanded. Asking a human which of those they felt is
+    not a measurement.
+    """
     # force_block is the one field in this protocol that round-tripped across five magnitudes.
     body = gip_protocol.force_block(magnitude)
     wheel.send(GIP_CMD_HID_REPORT, body)
     print("   force %+.2f  (%d byte body)" % (magnitude, len(body)))
-    if hold:
-        pump(wheel, hold, heartbeat=beat)
+    if not hold:
+        return
+
+    started = time.time()
+    next_beat = started
+    next_short = started
+    samples = []
+    said = []
+    while time.time() - started < hold:
+        now = time.time()
+        if beat and now >= next_beat:
+            wheel.send(gip_protocol_state(), BEAT_STATE[0])
+            next_beat = now + 1.0 / 16.0
+        if beat and now >= next_short:
+            wheel.send(GIP_CMD_LED, gip_protocol.SHORT_CMD)
+            next_short = now + 2.0
+        data = wheel.read(timeout=20)
+        if not data:
+            continue
+        head = decode_header(data)
+        if not head:
+            continue
+        if head["options"] & OPT_ACKNOWLEDGE:
+            wheel.acknowledge(head, received=head["length"])
+        if head["command"] == GIP_CMD_INPUT:
+            position = steering(head["payload"])
+            if position is not None:
+                samples.append((now - started, position))
+        else:
+            # Anything that is not input is the device commenting on what we just asked it to
+            # do. The 0x25 status byte moved 0x00 -> 0x02 during arming, so this is where an
+            # "armed", "refused" or "out of range" answer would show up.
+            said.append((now - started, bytes(data)))
+
+    for stamp, packet in said[:8]:
+        print("      %6.2fs  device said: %s" % (stamp, packet[:28].hex()))
+    if not samples:
+        print("      (the wheel reported no position at all during the hold)")
+        return
+    print("      t       raw   offset   position")
+    bucket = 0.25
+    slot = 0.0
+    while slot < hold:
+        window = [p for t, p in samples if slot <= t < slot + bucket]
+        slot += bucket
+        if not window:
+            continue
+        mean = sum(window) // len(window)
+        offset = mean - CENTRE
+        column = 24 + max(-24, min(24, offset * 24 // CENTRE))
+        bar = " " * column + "|"
+        print("   %6.2fs  %5d  %+6d   %s" % (slot - bucket, mean, offset, bar))
 
 
 def main():
@@ -739,6 +1045,32 @@ def main():
     parser.add_argument("--warmup", type=float, default=0.0,
                         help="read for this long after identify, before arming, so the wheel "
                              "can finish its calibration sweep")
+    parser.add_argument("--sequence", metavar="LIST",
+                        help="comma-separated magnitudes to command in order, such as "
+                             "0,0.1,0,-0.1,0 -- interleave zeros so the run carries "
+                             "its own baseline")
+    parser.add_argument("--replay-wire", metavar="FILE",
+                        help="replay a host->device stream captured from the real wire, "
+                             "with its original timing (logs/wire_session.txt)")
+    parser.add_argument("--force-scale", type=float, metavar="MAG",
+                        help="rewrite slot 0x08 of each replayed force block to this "
+                             "magnitude, keeping its sign (0 = control run)")
+    parser.add_argument("--max-gap-ms", type=float, default=400.0,
+                        help="cap replayed inter-packet gaps (default 400)")
+    parser.add_argument("--force-raw", metavar="FILE",
+                        help="after arming, send force blocks captured from the real "
+                             "wire verbatim (logs/force_wire.txt)")
+    parser.add_argument("--hori-probe", action="store_true",
+                        help="ask the wheel for profile memory over HORI's own config "
+                             "channel -- read-only, and needs no authentication")
+    parser.add_argument("--hori-offset", type=lambda v: int(v, 0), default=0,
+                        help="profile memory offset for --hori-probe (default 0)")
+    parser.add_argument("--replay-auth", metavar="FILE",
+                        help="replay a captured host-side 0x06 AUTHENTICATE exchange "
+                             "verbatim before arming (logs/auth_out.txt)")
+    parser.add_argument("--skip-identify", action="store_true",
+                        help="do not send 0x04 before arming -- identify silences the "
+                             "input stream, so position cannot be read while armed")
     parser.add_argument("--reset", action="store_true",
                         help="USB-reset the device after claiming it, forcing a real "
                              "bring-up instead of inheriting the kernel driver's session")
@@ -813,7 +1145,9 @@ def main():
             set_led(wheel, args.led[0], args.led[1])
             pump(wheel, args.hold)
 
-        if args.probe or not (args.arm or args.force is not None or args.led or args.identify):
+        if args.probe or not (args.arm or args.force is not None or args.led or args.identify
+                              or args.sequence or args.hori_probe or args.force_raw
+                              or args.replay_wire):
             # Never block on input here: a prompt mid-measurement stops the sampling loop, and
             # this runs over ssh with no tty. Phases are separate invocations, each started
             # once the user is ready -- pass --label to say which is which.
@@ -823,6 +1157,15 @@ def main():
             arm(wheel)
             print("   settling")
             pump(wheel, 3.0, heartbeat=args.heartbeat)
+
+        if args.replay_wire:
+            # Let the wheel finish calibrating first, so nothing in the force phase can be
+            # mistaken for the firmware's own sweep. That confusion has cost this project a
+            # whole day of wrong conclusions once already.
+            if args.wait_calibration:
+                wait_calibration(wheel, cap=args.wait_calibration)
+            replay_wire(wheel, args.replay_wire, max_gap_ms=args.max_gap_ms,
+                        force_scale=args.force_scale)
 
         if args.replay:
             # Always bring the device up before replaying; --announce-wait only decides
@@ -836,7 +1179,15 @@ def main():
             # we have for the calibration sweep.
             if args.wait_calibration:
                 wait_calibration(wheel, cap=args.wait_calibration)
-            identify(wheel, 3.0, ack=True)
+            if args.skip_identify:
+                print("\n-- skipping identify: it silences the input stream --")
+                pump(wheel, 1.0)
+            else:
+                identify(wheel, 3.0, ack=True)
+            if args.hori_probe:
+                hori_probe(wheel, offset=args.hori_offset)
+            if args.replay_auth:
+                replay_auth(wheel, args.replay_auth)
             if args.warmup:
                 # Let the wheel finish its calibration sweep before arming. With xpad bound the
                 # device was always calibrated long before we touched it; as first host it is
@@ -863,6 +1214,22 @@ def main():
                 command_force(wheel, -args.cap, 1.5, beat=True)
                 command_force(wheel, 0.0, 0.3)
             wheel.client = 0
+
+        elif args.force_raw:
+            force_raw(wheel, args.force_raw, args.hold, beat=args.heartbeat)
+
+        elif args.sequence:
+            # Zeros interleaved with magnitudes so the run carries its own baseline: the
+            # question is never "did the wheel move" but "did it move differently while a
+            # force was commanded than while zero was".
+            magnitudes = [float(step) for step in args.sequence.split(",")]
+            over = [m for m in magnitudes if abs(m) > args.cap]
+            if over:
+                raise SystemExit("magnitude(s) %s exceed the --cap of %.2f"
+                                 % (over, args.cap))
+            print("\n-- commanding force sequence %s --" % magnitudes)
+            for magnitude in magnitudes:
+                command_force(wheel, magnitude, args.hold, beat=args.heartbeat)
 
         elif args.force is not None:
             print("\n-- commanding force, HANDS ON THE WHEEL --")
