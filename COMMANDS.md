@@ -347,25 +347,28 @@ Owns the wheel over raw USB, publishes a virtual joystick other programs can rea
 spring and damper on the real motor. No Microsoft driver, no authentication, no foreground gate.
 [`evidence/RAW_USB.md`](evidence/RAW_USB.md) explains how it got there and how to set up uinput.
 
+The defaults are the tuned values, so it normally needs no flags at all:
+
 ```
-python3 gip_wheel_driver.py --spring 0.25 --damper 0 --cap 0.35 --refresh 0 \
-        --min-force 0.05 --deadband 0.01 --release 0.05 --no-unstick
+python3 gip_wheel_driver.py
 ```
 
 | Flag | Default | What it does |
 |---|---|---|
-| `--spring` | `0.6` | centring stiffness; 0 leaves the wheel free. 0.25 is what felt right for driving |
-| `--damper` | `0.15` | resistance to turning speed |
+| `--spring` | `0.25` | centring stiffness; 0 leaves the wheel free |
+| `--damper` | `0.08` | resistance to turning speed. This, not coasting, is what stops overshoot smoothly |
 | `--cap` | `0.35` | never command more than this |
-| `--min-force` | `0.05` | smallest magnitude worth commanding outside the deadband, because a proportional spring parks off centre once its demand falls below starting friction. 0 disables |
-| `--coast` | `0.15` | stop pushing once moving towards centre faster than this and let momentum finish. 0 disables |
-| `--release` | `0.05` | once settled near centre, stay quiet until the wheel is moved this far out |
-| `--deadband` | `0.01` | spring dead zone around centre |
-| `--refresh` | `0` | seconds between full effect reloads. Each one tears the effect down and rebuilds it, felt as a distinct cogging step. Leave at 0 |
+| `--min-force` | `0.05` | smallest magnitude worth commanding, because a proportional spring parks off centre once its demand falls below starting friction |
+| `--floor-ramp` | `0.05` | distance over which `--min-force` fades in from centre. A hard floor flips sign across centre and is felt as a step; 0 restores it |
+| `--force-step` | `0.001` | smallest force change worth sending. Near centre the demand is only 0.01 to 0.03, so a coarse step is a large fraction of it and is felt as notching |
+| `--deadband` | `0` | spring dead zone around centre, and the settle gate that goes with it. 0 disables both, which is what you want |
+| `--release` | `0` | once settled, stay quiet until the wheel is moved this far out |
+| `--coast` | `0` | stop pushing once moving towards centre faster than this. Chops the force on and off; prefer `--damper` |
+| `--refresh` | `0` | seconds between full effect reloads. Each one tears the effect down and rebuilds it, felt as a cogging step. Leave at 0 |
 | `--no-unstick` | — | do not kick the wheel off cogging detents |
 | `--no-smooth` | — | re-run the full effect load for every change (this is the cogging, kept for comparison) |
 | `--wait-for` | — | after arming, hold still until this FILE appears, so an operator can be prompted at the right moment |
-| `--wait-calibration` | `30` | wait for the firmware calibration sweep first; 0 to skip |
+| `--wait-calibration` | `0` | wait for a firmware calibration sweep. Claiming the device does NOT trigger one, so this normally just times out |
 | `--seconds` | `0` | run for this long; 0 means until Ctrl+C |
 | `--trace` | — | log time, position and demand to `wheel_trace.txt` |
 

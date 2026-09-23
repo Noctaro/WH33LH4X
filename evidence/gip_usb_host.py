@@ -1275,6 +1275,7 @@ def wait_calibration(wheel, cap=30.0, quiet_needed=2.0, settle=2.0):
     last_input = started
     saw_quiet = False
     finished = None
+    seen = []
     while time.time() - started < cap:
         data = wheel.read(timeout=50)
         now = time.time()
@@ -1296,7 +1297,30 @@ def wait_calibration(wheel, cap=30.0, quiet_needed=2.0, settle=2.0):
         print("   NO completion seen within %g s -- arming anyway, treat a silent motor here "
               "as unexplained" % cap)
     else:
-        print("   input resumed at t=%.1f s -- calibration complete" % finished)
+        # Silence alone does NOT prove a sweep happened; it only proves the device stopped
+        # talking. A real sweep drives to both locks, so the burst that follows covers most of
+        # the range. Measure that, because a detector reporting success on a wheel the operator
+        # can see standing still is worse than no detector.
+        print("   input resumed at t=%.1f s" % finished)
+        burst = time.time()
+        while time.time() - burst < 0.5:
+            data = wheel.read(timeout=50)
+            if not data:
+                continue
+            head = decode_header(data)
+            if head and head["options"] & OPT_ACKNOWLEDGE:
+                wheel.acknowledge(head, received=head["length"])
+            if head and head["command"] == GIP_CMD_INPUT:
+                reading = steering(head["payload"])
+                if reading is not None:
+                    seen.append((reading - CENTRE) / float(CENTRE))
+        travel = (max(seen) - min(seen)) if seen else 0.0
+        if travel > 0.5:
+            print("   travel %.2f of full scale -- the wheel really swept" % travel)
+        else:
+            print("   travel %.2f of full scale -- NO SWEEP SEEN. The device went quiet "
+                  "without moving, so it was probably already calibrated. Treat this run's "
+                  "starting state as unknown." % travel)
     if settle:
         pump(wheel, settle)
     return finished

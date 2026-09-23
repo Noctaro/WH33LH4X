@@ -30,6 +30,7 @@ SAFETY: force is capped and zeroed on exit. The wheel is strong; do not run it u
 
 import argparse
 import functools
+import math
 import os
 import sys
 import time
@@ -67,6 +68,7 @@ STALL_SECONDS = 0.6        # commanded force with no movement for this long mean
 STALL_REST = 0.8           # rest at zero before commanding anything again
 STALL_KICK = 0.30          # well above any breakaway this wheel has shown
 STALL_KICK_SECONDS = 0.6
+STALE_READING = 0.02      # no input for this long means the wheel is still, not fast
 
 
 def make_virtual_joystick():
@@ -90,7 +92,8 @@ def make_virtual_joystick():
 
 def run(wheel, stiffness, damping, cap, seconds, rate=60.0, refresh=10.0,
         deadband=0.01, wait_for=None, smooth=True, trace=None, unstick=True,
-        min_force=0.05, release=0.05, coast=0.0):
+        min_force=0.05, release=0.05, coast=0.0, floor_ramp=0.05,
+        force_step=0.001):
     joystick = make_virtual_joystick()
     # UInput.device is not always populated -- evdev resolves it by rescanning /dev/input, which
     # can lose the race or lack permission. The device exists either way, so do not die for a
@@ -149,9 +152,16 @@ def run(wheel, stiffness, damping, cap, seconds, rate=60.0, refresh=10.0,
     stall_position = state.position
     settled = False
     kicks = 0
+    last_reading = started
     try:
         while seconds <= 0 or time.time() - started < seconds:
             now = time.time()
+            # Input is event-driven: a wheel that stops moving sends nothing, so state.velocity
+            # would hold its last value for ever and every decision resting on it would act on a
+            # speed the wheel no longer has. Feed the last position back in to decay it to zero.
+            if now - last_reading > STALE_READING:
+                state.update(state.position, now)
+                last_reading = now
             data = wheel.read(timeout=5)
             if data:
                 head = decode_header(data)
@@ -160,6 +170,7 @@ def run(wheel, stiffness, damping, cap, seconds, rate=60.0, refresh=10.0,
                     if reading is not None:
                         position = reading
                         state.update((position - CENTRE) / float(CENTRE), now)
+                        last_reading = now
                         joystick.write(e.EV_ABS, e.ABS_X, position - CENTRE)
                         joystick.syn()
                         reports += 1
@@ -199,8 +210,19 @@ def run(wheel, stiffness, damping, cap, seconds, rate=60.0, refresh=10.0,
                 # smoothed, lagging velocity -- so the floor was amplifying force in the
                 # direction the wheel was already moving. That is positive feedback, and it
                 # feels exactly like the wheel accelerating your own movement.
-                if min_force and abs(state.position) > deadband and abs(centring) < min_force:
-                    centring = -min_force if state.position > 0 else min_force
+                if min_force:
+                    # A hard floor SWITCHES ON at the deadband edge and flips sign across
+                    # centre, so the force jumps by twice min_force in the one place the wheel
+                    # is most sensitive. That is felt as a step in the middle. Ramp it instead:
+                    # zero at centre, full floor once clear of it, no edge anywhere.
+                    if floor_ramp > 0.0:
+                        floor = min_force * math.tanh(abs(state.position) / floor_ramp)
+                    elif abs(state.position) > deadband:
+                        floor = min_force
+                    else:
+                        floor = 0.0
+                    if abs(centring) < floor:
+                        centring = -floor if state.position > 0 else floor
 
                 # Hysteresis: once it has settled near centre, stop pushing until it is moved
                 # well clear again. Commanding a fixed floor right outside a narrow deadband
@@ -217,7 +239,11 @@ def run(wheel, stiffness, damping, cap, seconds, rate=60.0, refresh=10.0,
                 if settled:
                     if abs(state.position) > release:
                         settled = False
-                elif abs(state.position) <= deadband:
+                elif deadband > 0.0 and abs(state.position) <= deadband:
+                    # deadband 0 means NO gate. Without the guard, exact centre satisfies
+                    # abs(position) <= 0, so every pass through the middle zeroed the force for
+                    # one sample and snapped it back -- a step exactly where the wheel is most
+                    # sensitive.
                     settled = True
                 demand = 0.0 if settled else centring
                 if damping and not settled:
@@ -233,7 +259,7 @@ def run(wheel, stiffness, damping, cap, seconds, rate=60.0, refresh=10.0,
                         if delay:
                             time.sleep(delay)
                     last_sent, last_time = demand, now
-                elif abs(demand - last_sent) > 0.005:
+                elif abs(demand - last_sent) > force_step:
                     # Once an effect is loaded AND RUNNING, update the magnitude with a bare
                     # parameter block. Re-running the whole load sequence for every change tears
                     # the effect down and rebuilds it ~30 ms at a time, which is felt as cogging
@@ -269,25 +295,34 @@ def run(wheel, stiffness, damping, cap, seconds, rate=60.0, refresh=10.0,
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--spring", type=float, default=0.6,
-                        help="centring stiffness; 0 leaves the wheel free (default 0.6)")
-    parser.add_argument("--damper", type=float, default=0.15,
-                        help="resistance to turning speed (default 0.15)")
+    parser.add_argument("--spring", type=float, default=0.25,
+                        help="centring stiffness; 0 leaves the wheel free (default 0.25)")
+    parser.add_argument("--damper", type=float, default=0.08,
+                        help="resistance to turning speed (default 0.08)")
     parser.add_argument("--cap", type=float, default=DEFAULT_CAP,
                         help="never command more than this (default %.2f)" % DEFAULT_CAP)
     parser.add_argument("--min-force", type=float, default=0.05,
                         help="smallest magnitude worth commanding outside the "
                              "deadband; 0 disables (default 0.05)")
-    parser.add_argument("--coast", type=float, default=0.15,
+    parser.add_argument("--force-step", type=float, default=0.001,
+                        help="smallest force change worth sending. Near centre the "
+                             "demand is only 0.01-0.03, so a coarse step is a large "
+                             "fraction of it and is felt as notching (default 0.001)")
+    parser.add_argument("--floor-ramp", type=float, default=0.05,
+                        help="distance over which --min-force fades in from centre; a hard "
+                             "floor flips sign across centre and is felt as a step "
+                             "(0 restores the hard floor)")
+    parser.add_argument("--coast", type=float, default=0.0,
                         help="stop pushing once moving towards centre faster than "
                              "this, so momentum finishes the job (0 disables)")
-    parser.add_argument("--release", type=float, default=0.05,
+    parser.add_argument("--release", type=float, default=0.0,
                         help="once settled near centre, stay quiet until the wheel "
                              "is moved this far out (default 0.05)")
     parser.add_argument("--no-unstick", action="store_true",
                         help="do not kick the wheel off cogging detents")
-    parser.add_argument("--deadband", type=float, default=0.01,
-                        help="spring dead zone around centre (default 0.01)")
+    parser.add_argument("--deadband", type=float, default=0.0,
+                        help="spring dead zone around centre, and the settle gate that goes "
+                             "with it; 0 disables both (default 0)")
     parser.add_argument("--refresh", type=float, default=0.0,
                         help="seconds between full effect reloads; each one tears "
                              "the effect down and rebuilds it, felt as a distinct "
@@ -300,8 +335,10 @@ def main():
                         help="after arming, hold still until this file appears")
     parser.add_argument("--seconds", type=float, default=0.0,
                         help="run for this long; 0 means until Ctrl+C")
-    parser.add_argument("--wait-calibration", type=float, default=30.0, metavar="CAP",
-                        help="wait for the firmware calibration sweep first (0 to skip)")
+    parser.add_argument("--wait-calibration", type=float, default=0.0, metavar="CAP",
+                        help="wait for a firmware calibration sweep first. Claiming the "
+                             "device does NOT trigger one, so this normally just times out "
+                             "(default 0)")
     args = parser.parse_args()
 
     wheel = Wheel()
@@ -315,7 +352,8 @@ def main():
             refresh=args.refresh, wait_for=args.wait_for,
             smooth=not args.no_smooth, trace=[] if args.trace else None,
             unstick=not args.no_unstick, deadband=args.deadband,
-            min_force=args.min_force, release=args.release, coast=args.coast)
+            min_force=args.min_force, release=args.release, coast=args.coast,
+            floor_ramp=args.floor_ramp, force_step=args.force_step)
     finally:
         wheel.close()
     return 0

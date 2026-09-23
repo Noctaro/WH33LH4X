@@ -92,13 +92,12 @@ sudo udevadm control --reload && sudo udevadm trigger
 Then, with the wheel unbound from `xone`:
 
 ```
-python3 gip_wheel_driver.py --spring 0.25 --damper 0 --cap 0.35 --refresh 0 \
-        --min-force 0.05 --deadband 0.01 --release 0.05 --no-unstick
+python3 gip_wheel_driver.py
 ```
 
 That produces `/dev/input/js0`, named "HORI Force Feedback Racing Wheel (raw USB)", carrying
-steering, while the motor holds a light spring. Those values are the ones that felt right on the
-real wheel; the defaults in the script are stiffer.
+steering, while the motor holds a light spring. The defaults ARE the tuned values, arrived at
+over six hands-on runs measured against the trace.
 
 `--wait-for FILE` arms the wheel and then holds still until the file appears, so an operator can
 be told to take hold at the exact moment instead of guessing when the calibration sweep ended.
@@ -111,15 +110,22 @@ everything a closed loop needs.
 
 1. **A proportional spring parks off centre.** At a gain of 0.25 an offset of 0.08 demands 0.02,
    which is below what starts a stationary wheel, so it stops wherever the force ran out. Fixed
-   with a minimum force outside the deadband.
+   with a minimum force, ramped in from centre rather than switched on.
 2. **Floor only the centring force, never spring plus damper.** Flooring the sum let the damper
    win whenever the spring was small, and the damper's sign comes from a smoothed, lagging
    velocity. The floor then amplified force in the direction the wheel was already moving. That
    is positive feedback, and it was felt exactly as such: "it felt like accelerating my moves".
-3. **A fixed floor outside a narrow deadband is bang-bang control.** It drives through centre,
-   flips, drives back. Mitigated with settle hysteresis, and with coasting: stop pushing once the
-   wheel is already travelling towards centre and let momentum finish.
+3. **Velocity FREEZES when the wheel stops.** Input is event-driven, so a still wheel sends
+   nothing and the velocity estimate keeps its last value indefinitely. Anything deciding on
+   velocity then acts on a speed the wheel no longer has: coasting never released and the wheel
+   parked wherever it was left. Fixed by feeding the last position back in so velocity decays.
 4. **Never reload the effect to change a magnitude.** See above; `--refresh 0`.
+5. **Every remaining step was a mitigation for an already-fixed bug.** Coasting chopped the
+   force on and off 245 times in 45 s. The settle gate left a band around centre with neither
+   spring nor damper. A hard minimum force flipped sign across centre. Each had been added to
+   paper over an earlier defect, and each was pure cost once that defect was fixed. Removing
+   all three took the largest force jump near centre from 0.143 to 0.061, and the number of
+   on/off switches to zero.
 
 Measured: static friction exceeds moving friction, so 0.05 moves a turning wheel but often will
 not start a still one. Breakaway itself is below 0.01, so the floor is about starting friction,
@@ -127,8 +133,7 @@ not stiction.
 
 ## Not done
 
-- **Coasting is implemented but untested.** The wheel still sweeps slightly around centre, and
-  that is the change most likely to settle it.
+- **Driving something.** The spring feels right in the hand; it has not yet steered a car.
 - **The virtual joystick publishes steering only.** Pedals and buttons need their input offsets
   measured; guessing input layouts has already cost this project one retraction.
 - **Windows is unretested against the wire-derived protocol.** The earlier WinUSB attempt used
