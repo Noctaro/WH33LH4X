@@ -10,12 +10,15 @@ The raw log (time, command, payload hex) goes to --log, in the current directory
 """
 
 import argparse
+import os
 import sys
 import time
 
-sys.path.insert(0, __file__.rsplit("\\", 1)[0] if "\\" in __file__ else ".")
+# The gip package sits at the repository root, or beside this file in a flat copy.
+sys.path.insert(1, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from gip_usb_host import OPT_ACKNOWLEDGE, Wheel, decode_header  # noqa: E402
+from gip.host import Wheel  # noqa: E402
+from gip.wire import OPT_ACKNOWLEDGE, decode_header  # noqa: E402
 
 GAP = 1.5          # seconds of silence that ends a burst
 IGNORE = {0x01}    # acknowledgements carry no input

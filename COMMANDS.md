@@ -229,6 +229,12 @@ against a newer runtime or a different wheel.
 Run before proposing a change to `ffb_render.py`. No test framework, no dependencies, no
 hardware: `.\.venv\Scripts\python.exe test_ffb_render.py`. Takes no flags.
 
+### `test_gip.py` — the same bytes still go on the wire
+
+Run before proposing a change to `gip/`. Pins the arming and force bytes that drove the motor,
+and the input report decoding. No hardware, no pyusb: `.\.venv\Scripts\python.exe test_gip.py`.
+Takes no flags.
+
 ### `test_shimview.py` — the GUI must not create the shared section
 
 No hardware, no wheel, no game. Asserts the ORDER that broke a real session rather than
@@ -372,10 +378,12 @@ python3 gip_wheel_driver.py
 | `--seconds` | `0` | run for this long; 0 means until Ctrl+C |
 | `--trace` | — | log time, position and demand to `wheel_trace.txt` |
 
-### `evidence/gip_arming.py` — the protocol itself
+### `gip/` — the protocol itself
 
-Generates the arming and force sequences from rules, verified 150 of 150 packets byte-identical
-to a real USB wire capture. Imported by the driver; not run directly.
+`gip/arming.py` generates the arming and force sequences from rules, verified 150 of 150
+packets byte-identical to a real USB wire capture. `gip/wire.py` frames messages,
+`gip/host.py` owns the USB interface, `gip/report.py` decodes the input report. Imported by the
+tools and the bridge; not run directly.
 
 ### `evidence/gip_usb_host.py` — the raw USB instrument (**Linux**)
 

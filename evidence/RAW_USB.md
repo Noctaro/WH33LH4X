@@ -58,7 +58,7 @@ circumvents a signing key, and nothing here needs to.
 
 ## The protocol is generated, not replayed
 
-`gip_arming.py` builds the arming and force sequences from rules. Verified **150 of 150 packets
+[`gip/arming.py`](../gip/arming.py) builds the arming and force sequences from rules. Verified **150 of 150 packets
 byte-identical** to the wire capture, headers and option bytes included.
 
 The only captured artefact left is **186 bytes of effect table** (`TABLE_CHUNKS`), which the
@@ -75,7 +75,7 @@ Two traps inside it, both self-inflicted and both expensive:
 
 | File | What it is |
 |---|---|
-| `gip_arming.py` | Generates the arming and force sequences from rules. The protocol itself. |
+| [`../gip/`](../gip/) | The protocol itself: arming and force sequences, framing, the USB host, input report decoding. |
 | `gip_wheel_driver.py` | The usable driver: owns the wheel, publishes a joystick, holds the spring. |
 | `gip_usb_host.py` | The instrument. Claiming, power-on, calibration waits, replay, force scaling, closed-loop position control. |
 | `usbpcap_parse.py` | Parses USBPcap captures, which is how the driver-versus-wire difference was found. |
@@ -92,8 +92,10 @@ sudo udevadm control --reload && sudo udevadm trigger
 Then, with the wheel unbound from `xone`:
 
 ```
-python3 gip_wheel_driver.py
+python3 evidence/gip_wheel_driver.py
 ```
+
+The tools find the `gip/` package at the repository root, or beside them in a flat copy.
 
 That produces `/dev/input/js0`, named "HORI Force Feedback Racing Wheel (raw USB)", carrying
 steering, while the motor holds a light spring. The defaults ARE the tuned values, arrived at

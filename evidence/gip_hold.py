@@ -10,21 +10,18 @@ and the real position is logged four times a second.
 """
 
 import argparse
+import os
 import sys
 import time
 
-sys.path.insert(0, __file__.rsplit("\\", 1)[0] if "\\" in __file__ else ".")
+# The gip package sits at the repository root, or beside this file in a flat copy.
+sys.path.insert(1, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import ffb_render  # noqa: E402
-import gip_arming  # noqa: E402
-from gip_usb_host import (  # noqa: E402
-    CENTRE,
-    GIP_CMD_INPUT,
-    OPT_ACKNOWLEDGE,
-    Wheel,
-    decode_header,
-    steering,
-)
+from gip import arming as gip_arming  # noqa: E402
+from gip.host import Wheel  # noqa: E402
+from gip.report import CENTRE, steering  # noqa: E402
+from gip.wire import GIP_CMD_INPUT, OPT_ACKNOWLEDGE, decode_header  # noqa: E402
 
 STALE_READING = 0.02   # as gip_wheel_driver: no input this long means still, not fast
 OFF_TARGET = 0.03      # a still wheel closer than this to its target is holding, not stalled
