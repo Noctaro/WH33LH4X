@@ -40,7 +40,7 @@ except ImportError:
 import ffb_render as render
 import probe_log as log
 from live_tune import ButtonTuner, LiveTune
-from motor_sink import IpcMotorSink, RateLimiter, WgiMotorSink, clamp
+from motor_sink import IpcMotorSink, RateLimiter, RawUsbMotorSink, WgiMotorSink, clamp
 
 try:
     import pyvjoy
@@ -138,6 +138,9 @@ class WheelReader(object):
     def capabilities(self):
         """What this wheel actually has, so unmapped axes can be skipped and reported."""
         caps = {}
+        if self.wheel is None and hasattr(self.source, "CAPABILITIES"):
+            # The raw USB sink reads the device itself, so it knows what is physically there.
+            return dict(self.source.CAPABILITIES)
         if self.wheel is None:
             # Readings come from the shim, so the device was never seen here. Unknown rather
             # than False, so nothing is skipped on a guess.
@@ -523,11 +526,13 @@ def parse_args():
                    help="read the wheel and report, but write nothing to vJoy")
     p.add_argument("--no-ffb", action="store_true",
                    help="input path only; never take the motor")
-    p.add_argument("--sink", choices=("ipc", "wgi"), default="ipc",
+    p.add_argument("--sink", choices=("ipc", "wgi", "rawusb"), default="ipc",
                    help="where force goes. 'ipc' (default) publishes to the shim inside the "
                         "game, which is the only thing that works with a game running. 'wgi' "
                         "drives the motor from this process and only produces torque while "
-                        "this window is in front. Diagnostics only.")
+                        "this window is in front. Diagnostics only. 'rawusb' owns the wheel "
+                        "over USB with no shim and no foreground gate; needs the wheel bound "
+                        "to WinUSB. See evidence/RAW_USB.md.")
     p.add_argument("--no-grab", action="store_true",
                    help="never take the foreground. Force output will be silent unless you "
                         "click the probe window yourself, but nothing steals your keyboard.")
@@ -605,17 +610,24 @@ def main():
         # looks exactly like "the game sees no input". Force is withheld further down, by not
         # registering the callback and never commanding anything.
         use_ipc = args.sink == "ipc" and not args.dry_run
+        use_raw = args.sink == "rawusb"
 
-        raw, wheels = wait_for_devices(args.wait, pump)
         motor = label = wheel = None
         identity = {}
-        if has_motor(raw, wheels):
-            motor, label, wheel, identity = report(raw, wheels)
-        elif not use_ipc:
-            rule("RESULT")
-            print("  No wheel found. Put it in Xbox mode (long-press PROFILE) and press one")
-            print("  of its buttons while this runs.")
-            return 1
+        if use_raw:
+            # WinUSB hides the wheel from WGI entirely, so there is nothing to enumerate: the
+            # sink is the reader's source and the motor both, as with the shim.
+            sink = RawUsbMotorSink(max_force=1.0, gain=args.gain).open()
+            identity = {"name": "HORI racing wheel, raw USB"}
+        else:
+            raw, wheels = wait_for_devices(args.wait, pump)
+            if has_motor(raw, wheels):
+                motor, label, wheel, identity = report(raw, wheels)
+            elif not use_ipc:
+                rule("RESULT")
+                print("  No wheel found. Put it in Xbox mode (long-press PROFILE) and press")
+                print("  one of its buttons while this runs.")
+                return 1
 
         # Create the IPC sink BEFORE the reader, because it is also the reader's source: the
         # shim publishes wheel position through the same section it takes force from.
@@ -629,7 +641,9 @@ def main():
             rule("RESULT")
             print("  Found a device via %s but no RacingWheel to read position from." % label)
             return 1
-        if wheel is None:
+        if wheel is None and use_raw:
+            print("  Readings and force both go over raw USB.")
+        elif wheel is None:
             # Not a failure with the IPC sink. Enumerating needs this window in front, so a
             # bridge started after the game never sees the wheel and does not need to: the
             # shim supplies both readings and force.
@@ -681,7 +695,11 @@ def main():
             print("  played on the real wheel. Everything is computed in software and")
             print("  summed into one command. See ffb_render.EffectMixer.")
             print()
-            if args.sink == "ipc":
+            if use_raw:
+                print("  Force goes straight to the wheel over USB. No shim, and no window")
+                print("  has to be in front.")
+                print()
+            elif args.sink == "ipc":
                 print("  Force goes to the shim inside the game, which calls WGI from there.")
                 print("  This process never takes the foreground. The game keeps it, which")
                 print("  is exactly what makes the motor reachable. Copy")
@@ -784,7 +802,7 @@ def main():
                     # only on the wgi sink. Grabbing unconditionally steals every keystroke
                     # including the Ctrl+C meant to stop it, and on the ipc sink it takes
                     # focus from the game the shim needs to be in front.
-                    if (args.sink != "ipc" and not args.no_grab
+                    if (args.sink == "wgi" and not args.no_grab
                             and decoder.mixer.running_effects()
                             and now - last_foreground > 0.1):
                         pump.ensure_foreground()
