@@ -5,9 +5,10 @@ Everything else computes a number, a single signed force for the steering axis, 
 This module turns that number into torque and is the only module that knows how.
 
 CONSTRAINT: WGI force output and position reads are both foreground gated, so a background
-process cannot drive this motor. IpcMotorSink is the answer: a dinput8.dll proxy loads inside
-the game, calls WGI from there, and takes its force from a shared section. See
-docs/hardware.md#the-foreground-owns-the-motor.
+process cannot drive this motor through WGI. IpcMotorSink is one answer: a dinput8.dll proxy
+loads inside the game, calls WGI from there, and takes its force from a shared section. See
+docs/hardware.md#the-foreground-owns-the-motor. RawUsbMotorSink is the other: it bypasses the
+Microsoft driver, and with it the gate. See evidence/RAW_USB.md.
 
 CONSTRAINT: every implementation clamps to max_force before commanding anything, and close()
 leaves the motor released. This runs hands-on with a wheel strong enough to whip itself to
@@ -383,6 +384,275 @@ class IpcMotorSink(MotorSink):
         self._mm.close()
         self._mm = None
         log.event("sink.close", sink=self.name, writes=self.writes, failures=self.failures)
+
+
+class RawUsbMotorSink(MotorSink):
+    """
+    Own the wheel over raw USB: GIP straight to the endpoint, no Microsoft driver, no shim.
+
+    Needs the wheel bound to WinUSB (Zadig) on Windows, or xone unbound on Linux. Nothing here
+    is foreground gated: measured A->B->A on 2026-09-23, the sweep was identical with another
+    application in front. See evidence/RAW_USB.md.
+
+    A reader thread takes every input report and a writer thread sends on a fixed WRITE_HZ
+    schedule, the wheel's own 4 ms interrupt interval (usbmon, 2026-09-23). Reading inline
+    capped writes near 65 Hz, since a WinUSB read returns after about 12 ms. The effect is
+    loaded once at zero and every change after that is a bare parameter block. There is no
+    periodic reload: each one tears the effect down for ~30 ms and is felt as a step
+    (evidence/RAW_USB.md), and the tuned Linux spring runs without one. set_force only hands
+    the writer a number.
+
+    CONSTRAINT: the sign is passed through unchanged, which matches WgiMotorSink: a positive
+    force moves the position reading positive on both. Measured in DiRT 4 on 2026-09-24 with
+    invert: true, whose output felt right under WGI: negating here made the wheel pull into
+    the steer, the out force opposing the position in 74 of 84 ticks before the flip.
+    """
+
+    name = "rawusb"
+
+    # CONSTRAINT: raw magnitude 1.0 is not known to equal WGI's 1.0, and this wheel whips
+    # itself to full lock. evidence/gip_usb_host.py's DEFAULT_CAP until the two are compared.
+    CAP = 0.35
+    HEARTBEAT = 1.0 / 16.0
+    WRITE_HZ = 250.0        # the interrupt endpoint's 4 ms interval
+    FORCE_STEP = 0.001      # smallest magnitude change worth sending
+    MAX_FAILURES = 50
+
+    # Input report bits (evidence/input_map.py, 2026-09-23) onto vJoy buttons, laid out like
+    # WGI's RacingWheelButtons: tiptronic on its gear bits, D-pad on its D-pad bits, then
+    # Button1.. in this order. Which WGI button A was is unmeasured, so that order is a choice.
+    # The wheel sends left face as A and right face as tiptronic down: one bit each.
+    # (byte, bit, flag): tiptronic down, up, D-pad up/down/left/right, A, B, X, Y.
+    BUTTONS = ((1, 0x20, 1 << 0), (1, 0x10, 1 << 1),
+               (1, 0x01, 1 << 2), (1, 0x02, 1 << 3), (1, 0x04, 1 << 4), (1, 0x08, 1 << 5),
+               (0, 0x10, 1 << 6), (0, 0x20, 1 << 7), (0, 0x40, 1 << 8), (0, 0x80, 1 << 9))
+
+    # What this wheel physically has, in WheelReader.capabilities terms. There is no handbrake
+    # lever: the button once taken for one is right face, so the handbrake axis stays unmapped.
+    CAPABILITIES = {"clutch": True, "handbrake": False, "pattern_shifter": False,
+                    "max_wheel_angle": None}
+
+    def __init__(self, max_force=1.0, gain=1.0):
+        super().__init__(max_force)
+        self.gain = clamp(abs(gain))
+        self._wheel = None
+        self._threads = []
+        self._send_lock = threading.Lock()
+        self._running = False
+        self._started = None
+        self.ticks = 0
+        self.blocks = 0
+        self._demand = 0.0
+        self._reading = None
+        self._reports = 0
+        self._usb = None
+
+    def open(self):
+        """Claim, power on, arm, load at zero, start the I/O thread. Raises RuntimeError."""
+        import os
+        import sys
+        evidence = os.path.join(os.path.dirname(os.path.abspath(__file__)), "evidence")
+        if evidence not in sys.path:
+            # gip_usb_host imports gip_arming as a top-level module and silently degrades
+            # without it, so the directory itself has to be importable.
+            sys.path.insert(0, evidence)
+        try:
+            import gip_arming
+            import gip_usb_host as usb_host
+        except ImportError as exc:
+            raise RuntimeError("raw USB needs pyusb and libusb_package: %s" % exc)
+        self._arming, self._usb = gip_arming, usb_host
+
+        try:
+            wheel = usb_host.Wheel(verbose=False)
+        except SystemExit as exc:
+            # Wheel() exits the process when nothing is plugged in; a sink must not.
+            raise RuntimeError(str(exc))
+        try:
+            bound = wheel.dev.is_kernel_driver_active(0)
+        except NotImplementedError:
+            bound = False
+        except Exception:
+            bound = False
+        if bound:
+            raise RuntimeError("xone still holds the wheel; unbind it first "
+                               "(evidence/RAW_USB.md)")
+        try:
+            wheel.open()
+        except Exception as exc:
+            raise RuntimeError("could not claim the wheel over USB (bound to WinUSB?): %s"
+                               % exc)
+        self._wheel = wheel
+        try:
+            wheel.power_on()
+            time.sleep(0.3)
+            for command, body, options, delay in gip_arming.arming_sequence():
+                wheel.send(command, body, options=options)
+                if delay:
+                    time.sleep(delay)
+                self._handle(wheel.read(timeout=1))
+            for command, body, options, delay in gip_arming.force_sequence(0.0):
+                wheel.send(command, body, options=options)
+                if delay:
+                    time.sleep(delay)
+        except Exception as exc:
+            self._release()
+            raise RuntimeError("arming the wheel failed: %s" % exc)
+
+        if self._reading is None:
+            # Input is event-driven: a still wheel sends nothing, and the bridge computes no
+            # force until it has a reading. Power-on recentres the wheel, so centre is true.
+            self._reading = _ShimReading(0.0, 0.0, 0.0, 0.0, 0.0, 0)
+        self._last = 0.0
+        self._running = True
+        self._started = time.monotonic()
+        self._threads = [threading.Thread(target=self._read_loop, name="rawusb-read",
+                                          daemon=True),
+                         threading.Thread(target=self._run, name="rawusb-write", daemon=True)]
+        for thread in self._threads:
+            thread.start()
+        log.event("sink.open", sink=self.name, gain=self.gain, max_force=self.max_force,
+                  cap=self.CAP, write_hz=self.WRITE_HZ)
+        return self
+
+    def _handle(self, data):
+        """Acknowledge what asks for it and decode input reports into a reading."""
+        if not data:
+            return
+        head = self._usb.decode_header(data)
+        if not head:
+            return
+        if head["options"] & self._usb.OPT_ACKNOWLEDGE:
+            with self._send_lock:
+                self._wheel.acknowledge(head)
+        if head["command"] != self._usb.GIP_CMD_INPUT:
+            return
+        payload = head["payload"]
+        self._reports += 1
+        if self._reports == 1 or len(payload) < 10:
+            return      # the first report of a session is junk (2026-09-23)
+        steer, throttle, brake, clutch = struct.unpack_from("<HHHH", payload, 2)
+        buttons = 0
+        for byte, bit, flag in self.BUTTONS:
+            if payload[byte] & bit:
+                buttons |= flag
+        self._reading = _ShimReading(
+            clamp((steer - 0x8000) / 32768.0), throttle / 65535.0, brake / 65535.0,
+            clutch / 65535.0, 0.0, buttons)
+
+    def _read_loop(self):
+        wheel = self._wheel
+        while self._running:
+            try:
+                self._handle(wheel.read(timeout=100))
+            except Exception:
+                time.sleep(0.01)
+
+    def _send(self, command, body, options=0x00):
+        with self._send_lock:
+            self._wheel.send(command, body, options=options)
+
+    def _run(self):
+        arming = self._arming
+        beat_command, beat_body = arming.heartbeat()
+        period = 1.0 / self.WRITE_HZ
+        tick = next_beat = time.monotonic()
+        sent = 0.0
+        failures = 0
+        while self._running:
+            try:
+                now = time.monotonic()
+                if now >= next_beat:
+                    self._send(beat_command, beat_body)
+                    next_beat = now + self.HEARTBEAT
+                with self._lock:
+                    demand = self._demand
+                if abs(demand - sent) > self.FORCE_STEP:
+                    self._send(arming.GIP_PARAM, arming.force_block(demand))
+                    sent = demand
+                    self.blocks += 1
+                self.ticks += 1
+                failures = 0
+            except Exception as exc:
+                failures += 1
+                self.failures += 1
+                if failures > self.MAX_FAILURES:
+                    self.healthy = False
+                    self._running = False
+                    log.event("sink.unhealthy", failures=self.failures, error=repr(exc))
+            # Absolute schedule, resynced when behind, so lateness is not repaid in a burst.
+            tick += period
+            delay = tick - time.monotonic()
+            if delay > 0:
+                time.sleep(delay)
+            else:
+                tick = time.monotonic()
+
+    @property
+    def achieved_hz(self):
+        if not self._started:
+            return 0.0
+        elapsed = time.monotonic() - self._started
+        return self.ticks / elapsed if elapsed > 0 else 0.0
+
+    def set_force(self, x):
+        """Hand the I/O thread a new force. Cheap; never touches USB itself."""
+        if not self._running:
+            return False
+        value = clamp(clamp(x, self.max_force) * self.gain, self.CAP)
+        with self._lock:
+            self._demand = value
+            self._last = value
+            self.writes += 1
+        return True
+
+    def keepalive(self):
+        """The I/O thread beats on its own; report whether it still runs."""
+        return self._running
+
+    def read(self):
+        """The latest reading, shaped like the shim's, or None before the wheel is armed."""
+        return self._reading if self._running else None
+
+    def shim_state(self):
+        """(state, alive) in IpcMotorSink's terms, so reporting needs no special case."""
+        if self._running:
+            return (IpcMotorSink.STATE_ACTIVE, True)
+        return (IpcMotorSink.STATE_NONE, False)
+
+    def describe(self):
+        return ("raw USB sink (max force %.2f, gain %.2f, hard cap %.2f, writes at %.0f Hz)%s"
+                % (self.max_force, self.gain, self.CAP, self.WRITE_HZ,
+                   "" if self.healthy else ", UNHEALTHY"))
+
+    def _release(self):
+        wheel, self._wheel = self._wheel, None
+        if wheel is None:
+            return
+        try:
+            for command, body, options, delay in self._arming.force_sequence(0.0):
+                wheel.send(command, body, options=options)
+                if delay:
+                    time.sleep(delay)
+        except Exception:
+            pass
+        try:
+            wheel.close()
+        except Exception:
+            pass
+
+    def close(self):
+        """Stop the I/O thread, zero the motor, release the interface. Safe to call twice."""
+        self._running = False
+        for thread in self._threads:
+            thread.join(timeout=2.0)
+        self._threads = []
+        if self._wheel is None:
+            return
+        achieved = self.achieved_hz
+        self._release()
+        log.event("sink.close", sink=self.name, writes=self.writes, failures=self.failures,
+                  loop_hz=round(achieved, 1), blocks=self.blocks)
 
 
 class RateLimiter(object):

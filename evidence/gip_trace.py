@@ -520,6 +520,29 @@ def write_stream_dump(tracer, path):
     return count
 
 
+def read_stream_dump(tracer, path):
+    """
+    Every distinct read payload, in full, as hex -- one message per line.
+
+    The summary truncates payloads to 150 hex characters, which loses the tail of anything
+    large. The device descriptor (type 0x04, 453 bytes here) carries the HID descriptor
+    tunnelled over GIP, per [MS-GIPUSB] and the Linux xbox_gip work, so the tail is precisely
+    the part worth having. Deduplicated because the device repeats itself and only the distinct
+    messages matter for decoding.
+    """
+    seen = set()
+    count = 0
+    with open(path, "w", encoding="ascii") as fh:
+        for _t, kind, _h, payload, _m in tracer.events:
+            if kind != "read" or not payload or payload in seen:
+                continue
+            seen.add(payload)
+            fh.write(payload.hex() + "\n")
+            count += 1
+    print("  read dump: %s  (%d distinct message(s))" % (path, count))
+    return count
+
+
 def write_shim_config(tracer):
     """
     Hand the shim the device id, via %TEMP%\\wh33lh4x.cfg.
@@ -675,6 +698,8 @@ def parse_args():
     p.add_argument("--no-log", action="store_true", help="do not write a session log")
     p.add_argument("--dump", metavar="FILE",
                    help="write every captured write, in order, for comparison with gip_direct")
+    p.add_argument("--dump-reads", metavar="FILE",
+                   help="write every distinct read payload in full; needs --reads")
     return p.parse_args()
 
 
@@ -743,6 +768,8 @@ def main():
         write_shim_config(tracer)
         if args.dump:
             write_stream_dump(tracer, args.dump)
+        if args.dump_reads:
+            read_stream_dump(tracer, args.dump_reads)
         if foreground < 0.95:
             rule("WARNING -- this run was not fully foregrounded")
             print("  Held foreground for only %d%% of the sequence. Force output is gated on"
