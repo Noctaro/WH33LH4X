@@ -32,8 +32,7 @@ The version matters, and so do a few checkboxes. You do not have to get it right
 the window checks all of it and tells you exactly what to change. Full walkthrough in
 [docs/vjoy.md](docs/vjoy.md).
 
-**3. Do the per-game setup** from [GAMES.md](GAMES.md). For DiRT 4 that is two XML edits, and
-without them the game sends force that never centres.
+**3. Do the per-game setup** from [GAMES.md](GAMES.md).
 
 **4. Run `WH33LH4X-GUI.cmd`.** Pick the game's `.exe`, press **Start**.
 
