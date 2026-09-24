@@ -394,9 +394,13 @@ class RawUsbMotorSink(MotorSink):
     is foreground gated: measured A->B->A on 2026-09-23, the sweep was identical with another
     application in front. See evidence/RAW_USB.md.
 
-    One I/O thread does every read and write, the loop evidence/gip_hold.py runs: the effect
-    is loaded once at zero, magnitude changes are bare parameter blocks, and a full reload
-    every REFRESH seconds keeps it from lapsing. set_force only hands that thread a number.
+    A reader thread takes every input report and a writer thread sends on a fixed WRITE_HZ
+    schedule, the wheel's own 4 ms interrupt interval (usbmon, 2026-09-23). Reading inline
+    capped writes near 65 Hz, since a WinUSB read returns after about 12 ms. The effect is
+    loaded once at zero and every change after that is a bare parameter block. There is no
+    periodic reload: each one tears the effect down for ~30 ms and is felt as a step
+    (evidence/RAW_USB.md), and the tuned Linux spring runs without one. set_force only hands
+    the writer a number.
 
     CONSTRAINT: the sign is passed through unchanged, which matches WgiMotorSink: a positive
     force moves the position reading positive on both. Measured in DiRT 4 on 2026-09-24 with
@@ -410,7 +414,7 @@ class RawUsbMotorSink(MotorSink):
     # itself to full lock. evidence/gip_usb_host.py's DEFAULT_CAP until the two are compared.
     CAP = 0.35
     HEARTBEAT = 1.0 / 16.0
-    REFRESH = 10.0          # full reload interval, gip_wheel_driver's default
+    WRITE_HZ = 250.0        # the interrupt endpoint's 4 ms interval
     FORCE_STEP = 0.001      # smallest magnitude change worth sending
     MAX_FAILURES = 50
 
@@ -432,8 +436,12 @@ class RawUsbMotorSink(MotorSink):
         super().__init__(max_force)
         self.gain = clamp(abs(gain))
         self._wheel = None
-        self._thread = None
+        self._threads = []
+        self._send_lock = threading.Lock()
         self._running = False
+        self._started = None
+        self.ticks = 0
+        self.blocks = 0
         self._demand = 0.0
         self._reading = None
         self._reports = 0
@@ -497,10 +505,14 @@ class RawUsbMotorSink(MotorSink):
             self._reading = _ShimReading(0.0, 0.0, 0.0, 0.0, 0.0, 0)
         self._last = 0.0
         self._running = True
-        self._thread = threading.Thread(target=self._run, name="rawusb-io", daemon=True)
-        self._thread.start()
+        self._started = time.monotonic()
+        self._threads = [threading.Thread(target=self._read_loop, name="rawusb-read",
+                                          daemon=True),
+                         threading.Thread(target=self._run, name="rawusb-write", daemon=True)]
+        for thread in self._threads:
+            thread.start()
         log.event("sink.open", sink=self.name, gain=self.gain, max_force=self.max_force,
-                  cap=self.CAP)
+                  cap=self.CAP, write_hz=self.WRITE_HZ)
         return self
 
     def _handle(self, data):
@@ -511,7 +523,8 @@ class RawUsbMotorSink(MotorSink):
         if not head:
             return
         if head["options"] & self._usb.OPT_ACKNOWLEDGE:
-            self._wheel.acknowledge(head)
+            with self._send_lock:
+                self._wheel.acknowledge(head)
         if head["command"] != self._usb.GIP_CMD_INPUT:
             return
         payload = head["payload"]
@@ -527,31 +540,38 @@ class RawUsbMotorSink(MotorSink):
             clamp((steer - 0x8000) / 32768.0), throttle / 65535.0, brake / 65535.0,
             clutch / 65535.0, 0.0, buttons)
 
+    def _read_loop(self):
+        wheel = self._wheel
+        while self._running:
+            try:
+                self._handle(wheel.read(timeout=100))
+            except Exception:
+                time.sleep(0.01)
+
+    def _send(self, command, body, options=0x00):
+        with self._send_lock:
+            self._wheel.send(command, body, options=options)
+
     def _run(self):
-        arming, wheel = self._arming, self._wheel
+        arming = self._arming
         beat_command, beat_body = arming.heartbeat()
-        next_beat = time.monotonic()
-        loaded_at = time.monotonic()
+        period = 1.0 / self.WRITE_HZ
+        tick = next_beat = time.monotonic()
         sent = 0.0
         failures = 0
         while self._running:
             try:
-                self._handle(wheel.read(timeout=5))
                 now = time.monotonic()
                 if now >= next_beat:
-                    wheel.send(beat_command, beat_body)
+                    self._send(beat_command, beat_body)
                     next_beat = now + self.HEARTBEAT
                 with self._lock:
                     demand = self._demand
-                if now - loaded_at > self.REFRESH:
-                    for command, body, options, delay in arming.force_sequence(demand):
-                        wheel.send(command, body, options=options)
-                        if delay:
-                            time.sleep(delay)
-                    sent, loaded_at = demand, now
-                elif abs(demand - sent) > self.FORCE_STEP:
-                    wheel.send(arming.GIP_PARAM, arming.force_block(demand))
+                if abs(demand - sent) > self.FORCE_STEP:
+                    self._send(arming.GIP_PARAM, arming.force_block(demand))
                     sent = demand
+                    self.blocks += 1
+                self.ticks += 1
                 failures = 0
             except Exception as exc:
                 failures += 1
@@ -560,7 +580,20 @@ class RawUsbMotorSink(MotorSink):
                     self.healthy = False
                     self._running = False
                     log.event("sink.unhealthy", failures=self.failures, error=repr(exc))
-                time.sleep(0.01)
+            # Absolute schedule, resynced when behind, so lateness is not repaid in a burst.
+            tick += period
+            delay = tick - time.monotonic()
+            if delay > 0:
+                time.sleep(delay)
+            else:
+                tick = time.monotonic()
+
+    @property
+    def achieved_hz(self):
+        if not self._started:
+            return 0.0
+        elapsed = time.monotonic() - self._started
+        return self.ticks / elapsed if elapsed > 0 else 0.0
 
     def set_force(self, x):
         """Hand the I/O thread a new force. Cheap; never touches USB itself."""
@@ -588,8 +621,8 @@ class RawUsbMotorSink(MotorSink):
         return (IpcMotorSink.STATE_NONE, False)
 
     def describe(self):
-        return ("raw USB sink (max force %.2f, gain %.2f, hard cap %.2f)%s"
-                % (self.max_force, self.gain, self.CAP,
+        return ("raw USB sink (max force %.2f, gain %.2f, hard cap %.2f, writes at %.0f Hz)%s"
+                % (self.max_force, self.gain, self.CAP, self.WRITE_HZ,
                    "" if self.healthy else ", UNHEALTHY"))
 
     def _release(self):
@@ -611,13 +644,15 @@ class RawUsbMotorSink(MotorSink):
     def close(self):
         """Stop the I/O thread, zero the motor, release the interface. Safe to call twice."""
         self._running = False
-        if self._thread is not None:
-            self._thread.join(timeout=2.0)
-            self._thread = None
+        for thread in self._threads:
+            thread.join(timeout=2.0)
+        self._threads = []
         if self._wheel is None:
             return
+        achieved = self.achieved_hz
         self._release()
-        log.event("sink.close", sink=self.name, writes=self.writes, failures=self.failures)
+        log.event("sink.close", sink=self.name, writes=self.writes, failures=self.failures,
+                  loop_hz=round(achieved, 1), blocks=self.blocks)
 
 
 class RateLimiter(object):
