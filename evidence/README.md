@@ -59,8 +59,8 @@ wheel, or a Windows update — instead of spending the same days rediscovering i
 
 `gip_protocol.py` is the exception worth reading for its own sake: it decodes the wire format
 this wheel actually speaks. It documents the hardware, whatever anyone decides to do next.
-`gip_arming.py` goes further and *generates* that format, verified byte-identical to a real USB
-capture.
+[`gip/arming.py`](../gip/arming.py) goes further and *generates* that format, verified
+byte-identical to a real USB capture. It has moved out of `evidence/` because the bridge uses it.
 
 ## What stayed in the root
 

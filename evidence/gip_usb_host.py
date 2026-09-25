@@ -40,17 +40,43 @@ Usage (after installing python3-usb and the udev rule):
 
 import argparse
 import functools
+import os
 import struct
 import sys
 import time
 
 print = functools.partial(print, flush=True)  # noqa: A001 -- ssh gives us a pipe, not a tty
 
-try:
-    import usb.core
-    import usb.util
-except ImportError:
-    sys.exit("pyusb missing -- install it with: sudo apt install python3-usb")
+# The gip package sits at the repository root, or beside this file in a flat copy.
+sys.path.insert(1, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from gip import arming as gip_arming  # noqa: E402
+from gip.host import Wheel, _backend  # noqa: E402,F401
+from gip.report import CENTRE, steering  # noqa: E402,F401
+from gip.wire import (  # noqa: E402,F401
+    EP_IN,
+    EP_OUT,
+    GIP_CMD_ACKNOWLEDGE,
+    GIP_CMD_ANNOUNCE,
+    GIP_CMD_AUTHENTICATE,
+    GIP_CMD_HID_REPORT,
+    GIP_CMD_IDENTIFY,
+    GIP_CMD_INPUT,
+    GIP_CMD_LED,
+    GIP_CMD_POWER,
+    GIP_CMD_STATUS,
+    HORI_PID,
+    HORI_VID,
+    INTERFACE,
+    OPT_ACKNOWLEDGE,
+    OPT_CHUNK,
+    OPT_CHUNK_START,
+    OPT_INTERNAL,
+    PACKET,
+    decode_header,
+    encode_header,
+    encode_varint,
+)
 
 try:
     import gip_protocol
@@ -62,44 +88,6 @@ try:
 except ImportError:
     ffb_render = None
 
-try:
-    import gip_arming
-except ImportError:
-    gip_arming = None
-
-# Windows has no system libusb; libusb_package ships one, so prefer it when present.
-try:
-    import libusb_package
-
-    def _backend():
-        return libusb_package.get_libusb1_backend()
-except ImportError:
-    def _backend():
-        return None
-
-HORI_VID = 0x0F0D
-HORI_PID = 0x015C
-INTERFACE = 0
-EP_OUT = 0x01
-EP_IN = 0x81
-PACKET = 64
-
-OPT_ACKNOWLEDGE = 0x10
-OPT_INTERNAL = 0x20
-OPT_CHUNK_START = 0x40
-OPT_CHUNK = 0x80
-
-# Command ids, from xone's bus/protocol.c.
-GIP_CMD_ACKNOWLEDGE = 0x01
-GIP_CMD_ANNOUNCE = 0x02
-GIP_CMD_STATUS = 0x03
-GIP_CMD_IDENTIFY = 0x04
-GIP_CMD_POWER = 0x05
-GIP_CMD_AUTHENTICATE = 0x06
-GIP_CMD_LED = 0x0A
-GIP_CMD_HID_REPORT = 0x0B
-GIP_CMD_INPUT = 0x20
-
 # Refuse to command more than this without an explicit override; the wheel is strong.
 DEFAULT_CAP = 0.35
 
@@ -107,247 +95,6 @@ DEFAULT_CAP = 0.35
 # STATE_LOADED, but frequency is not the same question as which one keeps the effect alive --
 # the run that first produced torque used STATE_LOADED. Selectable so it can be measured.
 BEAT_STATE = [None]
-
-
-def encode_varint(value):
-    out = bytearray()
-    while True:
-        byte = value & 0x7F
-        value >>= 7
-        if value:
-            out.append(byte | 0x80)
-        else:
-            out.append(byte)
-            break
-    return bytes(out)
-
-
-def encode_header(command, options, sequence, length):
-    """Three fixed bytes plus a varint length, padded so the header length is even."""
-    head = bytearray((command, options, sequence))
-    head += encode_varint(length)
-    if len(head) % 2:
-        # xone sets the continuation bit on the last varint byte and appends a zero.
-        head[-1] |= 0x80
-        head.append(0x00)
-    return bytes(head)
-
-
-def decode_header(data):
-    """Inverse of encode_header. Returns a dict, or None if it cannot be a GIP message."""
-    if len(data) < 4:
-        return None
-    command, options, sequence = data[0], data[1], data[2]
-    index = 3
-    length = 0
-    shift = 0
-    while index < len(data):
-        byte = data[index]
-        length |= (byte & 0x7F) << shift
-        index += 1
-        shift += 7
-        if not byte & 0x80:
-            break
-    chunk_offset = 0
-    if options & OPT_CHUNK:
-        shift = 0
-        while index < len(data):
-            byte = data[index]
-            chunk_offset |= (byte & 0x7F) << shift
-            index += 1
-            shift += 7
-            if not byte & 0x80:
-                break
-    return {"command": command, "options": options, "sequence": sequence,
-            "length": length, "chunk_offset": chunk_offset, "header": index,
-            "payload": data[index:index + length]}
-
-
-class Wheel:
-    def __init__(self, verbose=True, pad=False, wait=0.0, client=0, zlp=False, dump=False,
-                 reattach=True, trace=False):
-        self.verbose = verbose
-        # Both directions with timestamps. --dump-sent answers "what did we send"; this answers
-        # "what did the device say back", which for the whole arming was nothing we ever looked
-        # at.
-        self.trace = [] if trace else None
-        # Handing the kernel driver back looks polite, but a run that reattaches leaves the
-        # device in the state where the NEXT run gets no torque. Every confirmed torque run
-        # so far inherited a device whose previous host died without reattaching.
-        self.reattach = reattach
-        self.pad = pad
-        self.zlp = zlp
-        self.dump = [] if dump else None
-        self.client = client
-        self.chunk_total = 0
-        self.sequence = 1
-        self.detached = False
-        self.dev = None
-        deadline = time.time() + wait
-        while True:
-            self.dev = usb.core.find(idVendor=HORI_VID, idProduct=HORI_PID,
-                                     backend=_backend())
-            if self.dev is not None or time.time() > deadline:
-                break
-            time.sleep(0.05)
-        if self.dev is None:
-            raise SystemExit("wheel %04x:%04x not found -- plugged in and in XBOX mode?"
-                             % (HORI_VID, HORI_PID))
-
-    def log(self, message):
-        if self.verbose:
-            print(message, flush=True)
-
-    def open(self):
-        # Kernel-driver detach is a libusb concept Windows does not implement: there the
-        # binding is done once, out of band, by pointing the device at WinUSB.
-        try:
-            if self.dev.is_kernel_driver_active(INTERFACE):
-                self.log("  detaching kernel driver from interface %d" % INTERFACE)
-                self.dev.detach_kernel_driver(INTERFACE)
-                self.detached = True
-        except NotImplementedError:
-            pass
-        usb.util.claim_interface(self.dev, INTERFACE)
-        self.log("  interface %d claimed" % INTERFACE)
-
-    def reset_device(self):
-        """Force a genuine bring-up rather than inheriting the kernel driver's session.
-
-        Measured: detaching xone and claiming does NOT reset the device. It keeps whatever
-        session xone established, our power-on is a no-op, and it does not run its calibration
-        sweep -- while claiming a device nobody holds does calibrate. Since the calibration
-        sweep is the visible marker of a real bring-up, and every torque run so far followed
-        one, force the reset instead of hoping to inherit it.
-
-        A reset re-enumerates, so the handle is stale afterwards and the device has to be found
-        and claimed again.
-        """
-        self.log("  resetting the device for a genuine bring-up")
-        try:
-            self.dev.reset()
-        except usb.core.USBError as exc:
-            self.log("  reset failed: %s" % exc)
-        usb.util.dispose_resources(self.dev)
-        self.detached = False
-        deadline = time.time() + 15.0
-        while time.time() < deadline:
-            time.sleep(0.25)
-            found = usb.core.find(idVendor=HORI_VID, idProduct=HORI_PID, backend=_backend())
-            if found is not None:
-                self.dev = found
-                break
-        else:
-            raise SystemExit("the device did not come back after the reset")
-        self.log("  device re-enumerated")
-        self.open()
-
-    def close(self):
-        try:
-            usb.util.release_interface(self.dev, INTERFACE)
-        except Exception:
-            pass
-        if self.detached and not self.reattach:
-            self.log("  leaving the kernel driver detached (--no-reattach)")
-        elif self.detached:
-            try:
-                self.dev.attach_kernel_driver(INTERFACE)
-                self.log("  kernel driver reattached")
-            except (NotImplementedError, usb.core.USBError) as exc:
-                self.log("  could not reattach the kernel driver: %s" % exc)
-
-    def send(self, command, body, options=0x00, sequence=None):
-        """One GIP message on the interrupt OUT endpoint."""
-        seq = self.sequence if sequence is None else sequence
-        # The options low nibble is the CLIENT ID. We have always sent 0; a device that hosts
-        # several clients would silently drop actuator commands aimed at the wrong one.
-        header = encode_header(command, options | (self.client & 0x0F), seq, len(body))
-        packet = header + body
-        if self.pad and len(packet) < PACKET:
-            # Some interrupt endpoints only accept full-size packets; the force message is
-            # already 64 bytes, but LED and power-on are not, so this is worth ruling out.
-            packet = packet + b"\x00" * (PACKET - len(packet))
-        if sequence is None:
-            self.sequence = (self.sequence + 1) & 0xFF or 1  # xone never uses sequence 0
-        if self.trace is not None:
-            self.trace.append(("tx", time.monotonic(), bytes(packet)))
-        if self.dump is not None:
-            # The full packet as transmitted: header, padding and all. Recording the body alone
-            # hid framing and padding differences, which is exactly what made one regression
-            # unfalsifiable.
-            self.dump.append(bytes(packet))
-        written = self.dev.write(EP_OUT, packet, timeout=1000)
-        # A transfer that is an exact multiple of wMaxPacketSize needs a zero-length packet to
-        # mark its end. WinUSB leaves SHORT_PACKET_TERMINATE off by default, so a 64-byte force
-        # block is never seen as complete -- which is exactly the message that never worked on
-        # Windows, while every shorter one did.
-        if self.zlp and len(packet) % PACKET == 0:
-            try:
-                self.dev.write(EP_OUT, b"", timeout=200)
-            except usb.core.USBError as exc:
-                self.log("  ZLP failed: %s" % exc)
-        # A short write means the endpoint took less than we handed it, which would make every
-        # "sent ok with no effect" result meaningless. Never assume; the count is free.
-        if written != len(packet):
-            self.log("  SHORT WRITE: %d of %d bytes for command 0x%02x"
-                     % (written, len(packet), command))
-        return written
-
-    def send_raw(self, packet):
-        """Write a packet exactly as captured -- no reframing, no sequence of ours.
-
-        Everything else here builds a header from (command, body). The authentication exchange
-        cannot be rebuilt that way: its options bytes carry chunk flags and its sequence numbers
-        are part of a conversation we are impersonating, so the bytes go out verbatim.
-        """
-        if self.trace is not None:
-            self.trace.append(("tx", time.monotonic(), bytes(packet)))
-        if self.dump is not None:
-            self.dump.append(bytes(packet))
-        written = self.dev.write(EP_OUT, packet, timeout=1000)
-        if written != len(packet):
-            self.log("  SHORT WRITE: %d of %d bytes" % (written, len(packet)))
-        return written
-
-    def power_on(self):
-        """xpad's Xbox One init packet: 05 20 00 01 00.
-
-        Detaching the kernel driver takes the device's bring-up with it -- after that it sends
-        a status message and goes quiet. This is what puts it back in a talking state.
-        """
-        self.send(GIP_CMD_POWER, b"\x00", options=OPT_INTERNAL, sequence=0)
-        self.log("  power-on sent (05 20 00 01 00)")
-
-    def acknowledge(self, head, received=None):
-        """Reply to a message whose options set OPT_ACKNOWLEDGE.
-
-        Format from xone's gip_acknowledge_pkt: nine bytes carrying the acked command, our
-        options, how much has arrived and how much is left. Without this the device stops
-        after its first chunk and every later command of ours is ignored -- which is exactly
-        what we measured before implementing it.
-        """
-        # On a CHUNK_START packet chunk_offset carries the TOTAL size, not an offset, so
-        # xone's chunk_offset + packet_length would claim far more than arrived -- which told
-        # the device the transfer was finished and got an empty terminating chunk back.
-        # The caller passes how much it has actually assembled.
-        if received is None:
-            received = head["length"] if head["options"] & OPT_CHUNK_START \
-                else head["chunk_offset"] + head["length"]
-        remaining = 0
-        if head["options"] & OPT_CHUNK and self.chunk_total:
-            remaining = max(0, self.chunk_total - received)
-        body = struct.pack("<BBBHHH", 0x00, head["command"], OPT_INTERNAL,
-                           received & 0xFFFF, 0x0000, remaining & 0xFFFF)
-        self.send(GIP_CMD_ACKNOWLEDGE, body, options=OPT_INTERNAL,
-                  sequence=head["sequence"])
-
-    def read(self, timeout=200):
-        try:
-            return bytes(self.dev.read(EP_IN, PACKET, timeout=timeout))
-        except usb.core.USBTimeoutError:
-            return None
-        except usb.core.USBError:
-            return None
 
 
 def probe(wheel, seconds, label=""):
@@ -1326,21 +1073,6 @@ def wait_calibration(wheel, cap=30.0, quiet_needed=2.0, settle=2.0):
     return finished
 
 
-def steering(payload):
-    """The wheel's own position: 16-bit little-endian at payload bytes 2-3, centre 0x8000.
-
-    Measured: byte 2 sweeps its whole range while byte 3 only moves 0x7e..0x81, which is the
-    signature of a little-endian 16-bit value around a mid-scale centre rather than two
-    independent bytes.
-    """
-    if len(payload) < 4:
-        return None
-    return struct.unpack_from("<H", payload, 2)[0]
-
-
-CENTRE = 0x8000
-
-
 def command_force(wheel, magnitude, hold, beat=False):
     """Command a force and report what the wheel actually does while it is applied.
 
@@ -1575,8 +1307,8 @@ def main():
             pump(wheel, 3.0, heartbeat=args.heartbeat)
 
         if args.drive is not None:
-            if ffb_render is None or gip_arming is None:
-                raise SystemExit("ffb_render.py and gip_arming.py must sit beside this file")
+            if ffb_render is None:
+                raise SystemExit("ffb_render.py must be importable")
             if args.wait_calibration:
                 wait_calibration(wheel, cap=args.wait_calibration)
             drive(wheel, args.drive, args.spring_seconds, cap=args.cap,

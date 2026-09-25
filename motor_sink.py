@@ -418,14 +418,13 @@ class RawUsbMotorSink(MotorSink):
     FORCE_STEP = 0.001      # smallest magnitude change worth sending
     MAX_FAILURES = 50
 
-    # Input report bits (evidence/input_map.py, 2026-09-23) onto vJoy buttons, laid out like
-    # WGI's RacingWheelButtons: tiptronic on its gear bits, D-pad on its D-pad bits, then
-    # Button1.. in this order. Which WGI button A was is unmeasured, so that order is a choice.
-    # The wheel sends left face as A and right face as tiptronic down: one bit each.
-    # (byte, bit, flag): tiptronic down, up, D-pad up/down/left/right, A, B, X, Y.
-    BUTTONS = ((1, 0x20, 1 << 0), (1, 0x10, 1 << 1),
-               (1, 0x01, 1 << 2), (1, 0x02, 1 << 3), (1, 0x04, 1 << 4), (1, 0x08, 1 << 5),
-               (0, 0x10, 1 << 6), (0, 0x20, 1 << 7), (0, 0x40, 1 << 8), (0, 0x80, 1 << 9))
+    # gip.report buttons onto vJoy buttons, laid out like WGI's RacingWheelButtons: tiptronic
+    # on its gear bits, D-pad on its D-pad bits, then Button1.. in this order. Which WGI button
+    # A was is unmeasured, so that order is a choice.
+    BUTTONS = (("TIP_DOWN", 1 << 0), ("TIP_UP", 1 << 1),
+               ("DPAD_UP", 1 << 2), ("DPAD_DOWN", 1 << 3),
+               ("DPAD_LEFT", 1 << 4), ("DPAD_RIGHT", 1 << 5),
+               ("A", 1 << 6), ("B", 1 << 7), ("X", 1 << 8), ("Y", 1 << 9))
 
     # What this wheel physically has, in WheelReader.capabilities terms. There is no handbrake
     # lever: the button once taken for one is right face, so the handbrake axis stays unmapped.
@@ -445,29 +444,17 @@ class RawUsbMotorSink(MotorSink):
         self._demand = 0.0
         self._reading = None
         self._reports = 0
-        self._usb = None
 
     def open(self):
         """Claim, power on, arm, load at zero, start the I/O thread. Raises RuntimeError."""
-        import os
-        import sys
-        evidence = os.path.join(os.path.dirname(os.path.abspath(__file__)), "evidence")
-        if evidence not in sys.path:
-            # gip_usb_host imports gip_arming as a top-level module and silently degrades
-            # without it, so the directory itself has to be importable.
-            sys.path.insert(0, evidence)
         try:
-            import gip_arming
-            import gip_usb_host as usb_host
+            from gip import arming, report, wire
+            from gip.host import Wheel
         except ImportError as exc:
             raise RuntimeError("raw USB needs pyusb and libusb_package: %s" % exc)
-        self._arming, self._usb = gip_arming, usb_host
+        self._arming, self._report, self._wire = arming, report, wire
 
-        try:
-            wheel = usb_host.Wheel(verbose=False)
-        except SystemExit as exc:
-            # Wheel() exits the process when nothing is plugged in; a sink must not.
-            raise RuntimeError(str(exc))
+        wheel = Wheel(verbose=False)    # WheelNotFound is a RuntimeError
         try:
             bound = wheel.dev.is_kernel_driver_active(0)
         except NotImplementedError:
@@ -486,12 +473,12 @@ class RawUsbMotorSink(MotorSink):
         try:
             wheel.power_on()
             time.sleep(0.3)
-            for command, body, options, delay in gip_arming.arming_sequence():
+            for command, body, options, delay in arming.arming_sequence():
                 wheel.send(command, body, options=options)
                 if delay:
                     time.sleep(delay)
                 self._handle(wheel.read(timeout=1))
-            for command, body, options, delay in gip_arming.force_sequence(0.0):
+            for command, body, options, delay in arming.force_sequence(0.0):
                 wheel.send(command, body, options=options)
                 if delay:
                     time.sleep(delay)
@@ -519,26 +506,24 @@ class RawUsbMotorSink(MotorSink):
         """Acknowledge what asks for it and decode input reports into a reading."""
         if not data:
             return
-        head = self._usb.decode_header(data)
+        head = self._wire.decode_header(data)
         if not head:
             return
-        if head["options"] & self._usb.OPT_ACKNOWLEDGE:
+        if head["options"] & self._wire.OPT_ACKNOWLEDGE:
             with self._send_lock:
                 self._wheel.acknowledge(head)
-        if head["command"] != self._usb.GIP_CMD_INPUT:
+        if head["command"] != self._wire.GIP_CMD_INPUT:
             return
-        payload = head["payload"]
         self._reports += 1
-        if self._reports == 1 or len(payload) < 10:
+        report = self._report.decode(head["payload"])
+        if self._reports == 1 or report is None:
             return      # the first report of a session is junk (2026-09-23)
-        steer, throttle, brake, clutch = struct.unpack_from("<HHHH", payload, 2)
         buttons = 0
-        for byte, bit, flag in self.BUTTONS:
-            if payload[byte] & bit:
+        for name, flag in self.BUTTONS:
+            if name in report.buttons:
                 buttons |= flag
-        self._reading = _ShimReading(
-            clamp((steer - 0x8000) / 32768.0), throttle / 65535.0, brake / 65535.0,
-            clutch / 65535.0, 0.0, buttons)
+        self._reading = _ShimReading(clamp(report.steering), report.throttle, report.brake,
+                                     report.clutch, 0.0, buttons)
 
     def _read_loop(self):
         wheel = self._wheel

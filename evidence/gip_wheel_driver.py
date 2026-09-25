@@ -35,18 +35,15 @@ import os
 import sys
 import time
 
-import ffb_render
-import gip_arming
-from gip_usb_host import (
-    CENTRE,
-    DEFAULT_CAP,
-    GIP_CMD_INPUT,
-    OPT_ACKNOWLEDGE,
-    Wheel,
-    decode_header,
-    steering,
-    wait_calibration,
-)
+# The gip package sits at the repository root, or beside this file in a flat copy.
+sys.path.insert(1, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import ffb_render  # noqa: E402
+from gip import arming as gip_arming  # noqa: E402
+from gip.host import Wheel  # noqa: E402
+from gip.report import CENTRE, steering  # noqa: E402
+from gip.wire import GIP_CMD_INPUT, OPT_ACKNOWLEDGE, decode_header  # noqa: E402
+from gip_usb_host import DEFAULT_CAP, wait_calibration  # noqa: E402
 
 try:
     from evdev import AbsInfo, UInput

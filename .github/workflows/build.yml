@@ -66,6 +66,10 @@ jobs:
       - name: Control-law checks
         run: python test_ffb_render.py
 
+      # The arming and force bytes that drove the motor, pinned; also needs no hardware.
+      - name: Wire checks
+        run: python test_gip.py
+
   shim:
     name: build dinput8.dll
     runs-on: windows-latest

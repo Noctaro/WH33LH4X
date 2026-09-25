@@ -28,6 +28,7 @@ None of these need hardware:
 
 ```powershell
 .\.venv\Scripts\python.exe test_ffb_render.py    # the control laws still do what they did
+.\.venv\Scripts\python.exe test_gip.py            # the same bytes still go on the wire
 .\.venv\Scripts\python.exe test_shimview.py      # the GUI must not CREATE the shared section
 .\.venv\Scripts\python.exe -m ruff check .
 .\.venv\Scripts\python.exe packaging\gen_commands.py --check
