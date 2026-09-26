@@ -1,4 +1,4 @@
-<p align="center"><img src="logo/logo.jpg" alt="WH33LH4X logo" width="240"></p>
+<p align="left"><img src="logo/logo.jpg" alt="WH33LH4X logo" width="240"></p>
 
 # WH33LH4X
 
