@@ -7,6 +7,10 @@ All of it lives in `tune.json`, next to the scripts. **The bridge re-reads that 
 runs**, so a saved change reaches the wheel within half a second, mid corner. You do not have
 to restart anything to try a value.
 
+The raw USB bridge (`python -m bridge`) and its window (`python -m ui`) use `user-tune.json`
+instead: a local copy made from `tune.json` the first time, so the tracked file stays the
+template. The window's profiles write into it; the keys are the same.
+
 ## Every key
 
 | Key | What it does |

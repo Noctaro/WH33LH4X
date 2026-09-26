@@ -1,0 +1,16 @@
+{
+  "name": "DiRT 4",
+  "notes": "DiRT 4 sends one constant force that follows the steering, so invert is on. Needs the device_defines.xml entry in GAMES.md.",
+  "tune": {
+    "strength": 0.449,
+    "invert": true,
+    "dir_mode": "sin",
+    "max_force": 0.45,
+    "min_force": 0.0,
+    "spring": 0.0,
+    "damper": 0.0,
+    "friction": 0.0,
+    "centring": "linear",
+    "centring_floor": 0.05
+  }
+}

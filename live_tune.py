@@ -15,8 +15,13 @@ down. Anything unparseable leaves the previous values in place and is reported o
 
 import json
 import os
+import shutil
 
 import ffb_render as render
+
+ROOT = os.path.dirname(os.path.abspath(__file__))
+TEMPLATE = os.path.join(ROOT, "tune.json")          # tracked: the starting values
+USER_TUNE = os.path.join(ROOT, "user-tune.json")    # local: what the bridge and window change
 
 # Every tunable, with the value that means "unchanged from how the game sent it". Anything not
 # in here is ignored, so a stray key in the file is a typo rather than a silent new setting.
@@ -60,6 +65,19 @@ STEPS = [
 # Below this, a force is "nothing" and must stay nothing. Without it, min_force would turn the
 # silence between effects into a permanent buzz against the end stops.
 SILENCE = 0.005
+
+
+def ensure_user_tune(path=USER_TUNE, template=TEMPLATE):
+    """Create the local tuning file from the template if it is missing. True if created."""
+    if os.path.exists(path):
+        return False
+    if os.path.exists(template):
+        shutil.copyfile(template, path)
+    else:
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(DEFAULTS, handle, indent=2)
+            handle.write("\n")
+    return True
 
 
 def clamp(value, limit=1.0):

@@ -26,6 +26,8 @@ wheel_profile.json
 # The window's own state: which game was picked, and the list of ones already run. Same
 # reasoning as above -- a list of where somebody keeps their games is theirs, not a clone's.
 gui_settings.json
+# The live tuning the bridge and window change; created from the tracked template tune.json.
+user-tune.json
 logs/
 # How the window asks play.ps1 to shut down. Both sides delete it, so one on disk means a run
 # ended badly rather than that anything is wrong now.

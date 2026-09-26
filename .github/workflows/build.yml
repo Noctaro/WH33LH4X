@@ -74,6 +74,10 @@ jobs:
       - name: Bridge checks
         run: python test_bridge_core.py
 
+      # Profiles, the bridge process handling and the force test verdict, without a window.
+      - name: UI checks
+        run: python test_ui.py
+
   shim:
     name: build dinput8.dll
     runs-on: windows-latest
