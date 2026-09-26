@@ -15,18 +15,12 @@
 # that check against the DLL actually installed on the machine.
 pyvjoyffb==0.4
 
-# WinRT projections. Pinned as a set — winrt-runtime and the namespace packages are built
-# together and mixing versions is not supported upstream.
-winrt-runtime==3.2.1
-winrt-Windows.Foundation==3.2.1
-winrt-Windows.Foundation.Collections==3.2.1
-winrt-Windows.Foundation.Numerics==3.2.1
-winrt-Windows.Gaming.Input==3.2.1
-winrt-Windows.Gaming.Input.ForceFeedback==3.2.1
-winrt-Windows.Devices.Power==3.2.1
+# Raw USB to the wheel. libusb-package ships the libusb-1.0 DLL that pyusb loads on Windows.
+pyusb==1.3.1
+libusb-package==1.0.30.0
 
-# Pulled in by the WinRT projections; pinned so a resolver change cannot move it underneath us.
-typing_extensions==4.16.0
+# Pulled in by libusb-package; pinned so a resolver change cannot move it underneath us.
+importlib_resources==7.1.0
 
 # The window's theme (Sun Valley ttk theme). Pure Tcl, MIT.
 sv-ttk==2.6.1

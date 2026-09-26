@@ -140,7 +140,7 @@ def condition_force(kind, params, state):
 
 def legacy_condition_params(kind, gain, offset=0.0, deadband=0.10):
     """
-    Reproduce wheel_profile.CONDITION_GAINS behaviour exactly, as ConditionParams.
+    The synthetic conditions fitted to this wheel, as ConditionParams.
 
     CONSTRAINT: offset is the spring's centre and applies to the spring alone. Damper,
     friction and inertia react to velocity or acceleration, which have no centre, and

@@ -1,27 +1,24 @@
 # Tuning
 
-The four sliders in the window cover what most people want to change, and
+The profiles and sliders in the window cover what most people want to change, and
 [the README](../README.md#tuning) describes them. This page is everything else.
 
-All of it lives in `tune.json`, next to the scripts. **The bridge re-reads that file while it
+All of it lives in `user-tune.json`, next to the scripts, created from the template `tune.json`
+the first time the bridge or the window starts. **The bridge re-reads that file while it
 runs**, so a saved change reaches the wheel within half a second, mid corner. You do not have
-to restart anything to try a value.
-
-The raw USB bridge (`python -m bridge`) and its window (`python -m ui`) use `user-tune.json`
-instead: a local copy made from `tune.json` the first time, so the tracked file stays the
-template. The window's profiles write into it; the keys are the same.
+to restart anything to try a value. The window's profiles and sliders write into the same file.
 
 ## Every key
 
 | Key | What it does |
 |---|---|
-| `strength` | Multiplies the game's force. This, not the WGI gain, is the working volume knob: WGI latches gain when the effect loads, so writing it mid-session does nothing. The window's Strength slider caps at `1.00`; this file does not |
+| `strength` | Multiplies the game's force: the working volume knob. The window's Strength slider caps at `1.00`; this file does not |
 | `invert` | Flips the game's force direction. Games disagree about whether a force's sign lives in its magnitude or its direction angle |
 | `dir_mode` | How a force's direction angle is turned into a signed value. Per game |
-| `max_force` | Ceiling on commanded force. Live, unlike `--gain` |
+| `max_force` | Ceiling on commanded force. Live, unlike the bridge's `--gain` |
 | `min_force` | Floor on non-zero output, so small forces still overcome the motor's own stiction instead of vanishing |
 | `spring`, `damper`, `friction` | Synthetic centring, damping and drag, computed from real wheel position. For games that send none, and DiRT 4 sends a single constant force and nothing else. `0` is off |
-| `centring` | `"linear"` adds `spring` and `damper` as they are. `"tuned"` is the Linux driver's law: the same spring plus a floor of `centring_floor` faded in from centre, and velocity sampled per input report. Needs `python -m bridge` |
+| `centring` | `"linear"` adds `spring` and `damper` as they are. `"tuned"` is the Linux driver's law: the same spring plus a floor of `centring_floor` faded in from centre, and velocity sampled per input report |
 | `btn_down`, `btn_up`, `btn_next` | Wheel buttons that adjust tuning mid corner, as 1-based bit numbers. A game owns the foreground and the keyboard with it, so the wheel is the only device that can still reach the bridge. Run it, press buttons, and each new bitfield is printed |
 
 `invert` and `dir_mode` are properties of the **game**, not of your taste, so their known good
@@ -84,8 +81,11 @@ Nothing in this project can read or change that setting, and it sits above every
 **0.099** at strength 8, **0.029** at strength 1, and **0.106** back at 8 again. About 3.5x,
 from identical software settings.
 
-So if two machines feel different with the same `tune.json`, that is the first place to look.
-Note what yours is set to before changing anything here.
+So if two machines feel different with the same settings, that is the first place to look.
+
+Those numbers were measured through `Windows.Gaming.Input`. Whether the setting still applies
+over raw USB is unmeasured, and while WinUSB is bound the HORI app cannot reach the wheel at
+all, so set it before binding and note what it is.
 
 ## Reading back what actually happened
 
@@ -105,8 +105,9 @@ rectification is inaudible on symmetric effects. Only arithmetic on a log caught
 
 ## Where the numbers came from
 
-`min_force` comes from `stiction_test.py`, which measures the smallest force that moves the
-wheel at all. The per-game values live in [GAMES.md](../GAMES.md); what was measured to arrive
+`min_force` comes from the breakaway measurement in
+[hardware.md](hardware.md#stiction-and-positions-the-wheel-will-not-leave), the smallest force
+that moves the wheel at all. The per-game values live in [GAMES.md](../GAMES.md); what was measured to arrive
 at them is here.
 
 ### DiRT 4
@@ -119,9 +120,8 @@ the bottom of the range is not the problem and the headroom is at the top, which
 `invert: true` was measured with our own output at zero and the car driving: DiRT 4's force
 points the same way as the steering angle, 140 samples, mean magnitude 0.596, 96% matching
 sign, symmetric on both sides. Applied unchanged that is positive feedback, and the wheel runs
-away into whatever corner it is turned into. The likely cause is our own plumbing rather than
-the game, since this wheel's motor drives opposite to the sign of its own position reading, so
-one global flip corrects every effect at once.
+away into whatever corner it is turned into. Over raw USB the same setting was confirmed on
+2026-09-24: with `invert: true` the output opposed steering in 186 of 209 strong ticks.
 
 The game sends friction at roughly the same rate as constant force, 13,970 operations against
 13,950 over 374 telemetry samples, with two spring and two damper operations and no periodics.

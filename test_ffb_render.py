@@ -25,12 +25,12 @@ import sys
 import ffb_render as R
 from live_tune import LiveTune
 
-# Fitted to this wheel; mirrors wheel_profile.CONDITION_GAINS.
+# Fitted to this wheel.
 GAINS = {"spring": 2.0, "damper": 1.0, "friction": 1.0, "inertia": 0.10}
 
 
 def legacy(kind, position, centre, velocity, acceleration):
-    """The original laws, copied verbatim from wheel_profile.run_software_condition."""
+    """The original fitted laws, kept verbatim as the reference."""
     gain = GAINS[kind]
     if kind == "spring":
         command = -(position - centre) * gain

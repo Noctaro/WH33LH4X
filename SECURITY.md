@@ -2,21 +2,14 @@
 
 ## What this tool does to your system
 
-**It copies an unsigned `dinput8.dll` into your game's folder before the game starts, and
-removes it when the game exits.**
-
-That is the same mechanism malware uses to get its code running inside another program. It is
-worth saying so plainly rather than hoping you do not notice, because if your antivirus
-objects, it is not being stupid.
-
-What differs is consent and visibility, not technique:
-
-- **The DLL is built from source in this repo**, `shim/*.c`, by one PowerShell script. Nothing
-  about it is hidden from you.
-- **It is only there while you play.** `play.ps1` deploys it before launch and removes it on
-  exit, including after a crash or Ctrl+C. If another tool's `dinput8.dll` is already present,
-  and ReShade uses the same filename, it is moved aside and put back afterwards.
-- **Everything else ships as readable Python.** Open any file in the download and read it.
+- **It replaces the wheel's driver with WinUSB**, once, when you bind it with Zadig. That is what
+  lets it talk to the wheel directly. While WinUSB is bound, Xbox games and the HORI app no
+  longer see the wheel. *Restore Microsoft driver* in the window removes the WinUSB driver
+  package again; it only ever removes a package Zadig installed.
+- **It runs readable Python.** The bridge and the window are plain source, run by Microsoft's
+  signed `python.exe`. Open any file in the download and read it.
+- **It touches no game.** Nothing is copied into a game folder or loaded into a game process.
+  Games see a vJoy virtual wheel, the same as any other vJoy feeder.
 
 ## Why nothing is signed
 
@@ -52,9 +45,9 @@ clear it.
 
 ## Anti-cheat
 
-**Do not use this with a game that has kernel anti-cheat** such as EasyAntiCheat or BattlEye.
-A proxy DLL in the game folder is exactly the shape of thing they are built to stop, and being
-honest about your intent is not a defence they accept. See [GAMES.md](GAMES.md).
+Nothing is loaded into the game, which removes the main reason an anti-cheat objects. It has
+still not been tried with a game that runs kernel anti-cheat such as EasyAntiCheat or BattlEye,
+and vJoy itself is a kernel driver. Treat those games as untested. See [GAMES.md](GAMES.md).
 
 ## Reporting a vulnerability
 
