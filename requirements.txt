@@ -27,3 +27,6 @@ winrt-Windows.Devices.Power==3.2.1
 
 # Pulled in by the WinRT projections; pinned so a resolver change cannot move it underneath us.
 typing_extensions==4.16.0
+
+# The window's theme (Sun Valley ttk theme). Pure Tcl, MIT.
+sv-ttk==2.6.1

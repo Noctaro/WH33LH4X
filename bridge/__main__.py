@@ -7,15 +7,12 @@ python -m bridge: drive the wheel over raw USB and present it to games.
 """
 
 import argparse
-import os
 import sys
 
 import probe_log as log
 from bridge.core import Bridge, NullFrontend
 from bridge.device import RawUsbWheel
-from live_tune import LiveTune
-
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from live_tune import USER_TUNE, LiveTune, ensure_user_tune
 
 
 def parse_args():
@@ -32,8 +29,9 @@ def parse_args():
     p.add_argument("--gain", type=float, default=1.0,
                    help="motor gain 0.0-1.0 after max_force (default 1.0); the raw USB "
                         "hard cap still applies")
-    p.add_argument("--tune", default=os.path.join(ROOT, "tune.json"),
-                   help="live tuning file, re-read while running (default: tune.json)")
+    p.add_argument("--tune", default=USER_TUNE,
+                   help="live tuning file, re-read while running (default: user-tune.json, "
+                        "created from tune.json)")
     p.add_argument("--stop-file", metavar="FILE",
                    help="stop cleanly when this file appears, and delete it")
     p.add_argument("--run-seconds", type=float, default=0.0,
@@ -75,6 +73,8 @@ def main():
         frontend.open(device.CAPABILITIES, ffb=ffb)     # a missing vJoy fails before arming
         device.open()
 
+        if args.tune == USER_TUNE and ensure_user_tune():
+            print("  created %s from tune.json" % args.tune)
         tune = LiveTune(args.tune)
         if tune.write_default():
             print("  created %s" % args.tune)

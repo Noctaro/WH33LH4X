@@ -112,13 +112,24 @@ vJoy. Not in the bundle yet. See [`evidence/RAW_USB.md`](evidence/RAW_USB.md) fo
 | `--device` | `1` | vJoy device id |
 | `--rate` | `250.0` | bridge loop rate in Hz |
 | `--gain` | `1.0` | motor gain after `max_force`; the raw USB hard cap 0.35 still applies |
-| `--tune` | `tune.json` | live tuning file, re-read while running |
+| `--tune` | `user-tune.json` | live tuning file, re-read while running; created from `tune.json` |
 | `--stop-file` | — | stop cleanly when this file appears, and delete it |
 | `--run-seconds` | `0.0` | stop after N seconds (default: until Ctrl+C) |
 | `--no-ffb` | — | input only; never command force |
 | `--dry-run` | — | read the wheel and report; write nothing to vJoy, no force |
 | `--trace` | — | write time, position and force per tick, like `wheel_trace.txt` |
 | `--no-log` | — | — |
+
+### `python -m bridge.nudge` — test force
+
+Arms the wheel, pushes it briefly right and then left with a spring in between, and prints
+`nudge ok right=+0.2 left=-0.2`, or `reversed`, `still`, `unclear` or `silent` (no input). Hands off the wheel. The
+window's Test force button runs this. Takes no flags.
+
+### `python -m ui` — the raw USB window
+
+Profiles, Start and Stop for `python -m bridge`, the feel sliders, and setup checks for vJoy
+and the WinUSB binding. `pythonw -m ui` opens it with no console. Not in the bundle yet.
 
 ### `tune_report.py` — say what the force feedback actually did
 
@@ -258,6 +269,11 @@ Takes no flags.
 
 Run before proposing a change to `bridge/`. Force sign, the stop file, and zero force before the
 wheel is released. No hardware: `.\.venv\Scripts\python.exe test_bridge_core.py`.
+
+### `test_ui.py` — profiles and the bridge process, without a window
+
+Run before proposing a change to `ui/` or `profiles/`. No hardware:
+`.\.venv\Scripts\python.exe test_ui.py`.
 
 ### `test_shimview.py` — the GUI must not create the shared section
 

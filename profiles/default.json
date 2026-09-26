@@ -1,0 +1,16 @@
+{
+  "name": "Default",
+  "notes": "The game's force as it was sent, capped at 0.6. A starting point for a game with no profile yet.",
+  "tune": {
+    "strength": 1.0,
+    "invert": false,
+    "dir_mode": "sin",
+    "max_force": 0.6,
+    "min_force": 0.0,
+    "spring": 0.0,
+    "damper": 0.0,
+    "friction": 0.0,
+    "centring": "linear",
+    "centring_floor": 0.05
+  }
+}

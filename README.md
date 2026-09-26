@@ -1,3 +1,5 @@
+<p align="center"><img src="logo/logo.jpg" alt="WH33LH4X logo" width="240"></p>
+
 # WH33LH4X
 
 **Force feedback for the Hori Force Feedback Racing Wheel DLX in PC racing games.**
