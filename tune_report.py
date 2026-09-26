@@ -27,9 +27,8 @@ import sys
 
 # The force below which this wheel does not move at all, so anything under it is commanded and
 # then silently does nothing. MEASURED on a Hori Force Feedback Racing Wheel DLX (VID 0x0F0D,
-# Xbox mode) with stiction_test.py. Another wheel needs its own run. This is
-# not a
-# constant of the API or of racing wheels in general.
+# Xbox mode) with a breakaway sweep; see docs/hardware.md. Another wheel needs its own run.
+# This is not a constant of the API or of racing wheels in general.
 #
 # Every pass broke away on the FIRST step tried, at --step 0.02 and again at 0.01, so each run
 # only ever reported its own increment. 0.01 is therefore an upper bound rather than a reading,
@@ -41,7 +40,7 @@ import sys
 #     of its output was wasted.
 #   * 0.02 came from a real run whose later passes had walked the wheel into its end stop. A
 #     wheel against the stop cannot move at any force, so those passes measured the stop and
-#     inflated the average. stiction_test.py now recentres before every pass.
+#     inflated the average. A valid sweep recentres before every pass.
 #
 # If you run this against a different wheel, re-measure rather than trusting this number.
 STICTION = 0.01
@@ -53,7 +52,7 @@ FIELD = re.compile(r"(\w+)=([+-]?[\d.]+)")
 
 
 def newest_log():
-    logs = glob.glob(os.path.join(LOG_DIR, "vjoy_bridge_*.log"))
+    logs = glob.glob(os.path.join(LOG_DIR, "bridge_*.log"))
     if not logs:
         return None
     return max(logs, key=os.path.getmtime)

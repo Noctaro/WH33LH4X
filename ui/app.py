@@ -76,6 +76,15 @@ def title_bar(root, dark):
         pass
 
 
+def bundle_version():
+    """The bundle's version, or None in a repo checkout, where nothing writes the file."""
+    try:
+        with open(os.path.join(ROOT, "VERSION.txt"), encoding="utf-8") as handle:
+            return handle.readline().strip() or None
+    except OSError:
+        return None
+
+
 def load_setting(key, default):
     try:
         with open(SETTINGS, encoding="utf-8") as handle:
@@ -109,7 +118,8 @@ class App(object):
         self.problems = {}
         self._write_pending = None
 
-        root.title("WH33LH4X")
+        version = bundle_version()
+        root.title("WH33LH4X %s" % version if version else "WH33LH4X")
         set_icon(root)
         root.minsize(560, 600)
         if sv_ttk is not None:

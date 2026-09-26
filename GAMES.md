@@ -10,9 +10,9 @@ Adding a game? The template and what is worth measuring first are in
 <!-- BEGIN generated from games.json -- edit games.json, not this table -->
 | Game | Status | Needs setup? | Verified |
 |---|---|---|---|
-| [DiRT 4](#dirt-4) | 🟡 Playable: Steering, pedals and force feedback all work: the wheel loads up in a corner and pulls back to centre. | Yes, vJoy must be registered as a wheel | 2026-08-26 |
-| [RaceRoom Racing Experience](#raceroom-racing-experience) | 🟡 Playable: Steering, pedals and force feedback all work, with no file to edit first. | No, just bind steering in the game | 2026-08-27 |
-| [Automobilista 2 Demo](#automobilista-2-demo) | 🟡 Playable: Steering, pedals and force feedback all work, but the game adds a centre deadzone of its own and lets throttle bleed into steering. | Yes, set Controller Damping to 0 | 2026-08-27 |
+| [DiRT 4](#dirt-4) | 🟡 Playable: Steering, pedals and force feedback all work: the wheel loads up in a corner and pulls back to centre. | Yes, vJoy must be registered as a wheel | 2026-09-26 |
+| [RaceRoom Racing Experience](#raceroom-racing-experience) | ⚪ Untested | No, just bind steering in the game | — |
+| [Automobilista 2 Demo](#automobilista-2-demo) | ⚪ Untested | Yes, set Controller Damping to 0 | — |
 <!-- END generated -->
 
 | Status | Meaning |
@@ -20,17 +20,17 @@ Adding a game? The template and what is worth measuring first are in
 | 🟢 Works | Steering and force feedback both correct, no caveats worth listing |
 | 🟡 Playable | Runs and is drivable, but something is degraded or still being worked on |
 | 🔴 Broken | Does not work, and the reason is recorded |
-| ⚪ Untested | Nobody has tried it yet |
+| ⚪ Untested | Nobody has tried it over raw USB yet |
 
-> **Do not use this with a game that has kernel anti-cheat** (EasyAntiCheat, BattlEye). The
-> bridge puts a `dinput8.dll` proxy in the game folder, which is exactly the shape of thing
-> those systems block. Every game listed here ships without one.
+> Only results over raw USB count. RaceRoom and Automobilista 2 worked with the old shim
+> (v0.1.0) and are untested again until someone drives them this way. Games with kernel
+> anti-cheat (EasyAntiCheat, BattlEye) are untested; see [SECURITY.md](SECURITY.md#anti-cheat).
 
 ---
 
 ## DiRT 4
 
-**Tested on:** Steam build, app id 421020, from the packaged bundle.
+**Tested on:** Steam build, app id 421020, over raw USB with `python -m bridge`, 2026-09-26.
 
 ### Setup
 
@@ -61,48 +61,39 @@ axis as two halves.
 **3. In game:** set the input preset to the vJoy wheel, **turn the in-game force feedback
 strength down** before the first drive, and **leave the centring spring off**.
 
-**4. Start the game from Steam**, because its DRM relaunches through the client:
-
-```powershell
-.\play.ps1 -Game "...\DiRT 4\dirt4.exe" -NoLaunch
-```
+**4. In the window,** pick the **DiRT 4** profile and press **Start**, then start the game
+from Steam as usual.
 
 ### Settings
 
+The DiRT 4 profile holds the values the 2026-09-26 drive used:
+
 ```json
-{ "strength": 0.2, "invert": true, "dir_mode": "sin", "max_force": 0.45 }
+{ "strength": 0.449, "invert": true, "dir_mode": "sin", "max_force": 0.45 }
 ```
 
-- **Raise `strength` first.** At 0.2 the game is asking for full scale and getting a fifth of
-  it, with almost nothing clipping. Move it in steps.
-- **`min_force: 0.01`** is optional, and lifts forces too small for the motor to express.
-- These values assume the wheel's own strength setting is on 8. It is worth about 3.5x on its
-  own and is invisible to this software, so match yours first:
+- **Adjust `strength` first**, in small steps, while driving.
+- **`invert` must stay on.** DiRT 4's force points the same way as the steering angle, so
+  applied unchanged it pulls the wheel into the corner.
+- The wheel's own strength setting in the HORI app was measured as a gain stage under the old
+  path. Whether it still applies over raw USB is unmeasured:
   [docs/tuning.md](docs/tuning.md#the-gain-stage-the-software-cannot-see).
 
 ### Known issues
 
 - **Oscillation at high gain.** Too much `strength` makes the wheel hunt, and at worst sweep
   lock to lock. Lower it. An inverted damping force looks identical, so check the sign first.
-- **The motor can go silent while everything reports healthy.** Alt-tab out and back in; that
-  cleared it in 12 of 12 measured runs, and no restart is needed. It has never happened in a
-  real session, only under diagnostics.
 
 ---
 
 ## RaceRoom Racing Experience
 
-**Tested on:** Steam build, from a source checkout. Free to play, no kernel anti-cheat.
+**Tested on:** Steam build, with the old shim (v0.1.0). Not yet driven over raw USB. Free to
+play, no kernel anti-cheat.
 
 ### Setup
 
-Nothing to edit. Two things to know:
-
-**1. Pick `RRREWebBrowser.exe`**, in
-`...\steamapps\common\raceroom racing experience\Game\`. With any other exe the game will not
-let steering be assigned.
-
-**2. Bind steering in the game**, then drive.
+Nothing to edit. Start the bridge, start the game, **bind steering in the game**, then drive.
 
 ### Known issues
 
@@ -112,8 +103,8 @@ None outstanding.
 
 ## Automobilista 2 Demo
 
-**Tested on:** Steam, `AMS2DemoAVX.exe`, no anti-cheat. The full game is untested and may
-differ.
+**Tested on:** Steam, `AMS2DemoAVX.exe`, with the old shim (v0.1.0). Not yet driven over raw
+USB. No anti-cheat. The full game is untested and may differ.
 
 ### Setup
 

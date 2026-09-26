@@ -5,9 +5,8 @@ Force feedback is judged by feel, and a value baked in at startup costs a game r
 drive back to the corner per adjustment. These live in a JSON file the bridge re-reads while
 it runs, so a change is felt mid-corner.
 
-CONSTRAINT: strength scales the force value itself, never the IPC gain field. WGI latches gain
-when the effect loads, so writing it mid-session looks like it works and changes nothing. See
-motor_sink.WgiMotorSink.
+CONSTRAINT: strength scales the force value itself, never the bridge's --gain, which is fixed
+for the session.
 
 CONSTRAINT: never raise. A game is running, and a typo in a JSON file must not take the wheel
 down. Anything unparseable leaves the previous values in place and is reported once.
@@ -266,9 +265,8 @@ class ButtonTuner(object):
     """
     Adjust tuning from the wheel's own buttons, because nothing else can reach us.
 
-    While a game runs it owns the foreground and therefore the keyboard. That gate is the
-    reason this whole project exists. The wheel is the one input device whose state we read
-    directly, over the same shared section the shim publishes position through.
+    While a game runs it owns the foreground and therefore the keyboard. The wheel is the one
+    input device the bridge reads directly, so its buttons still reach it mid-race.
 
     ONE HONEST LIMITATION: there is no display in the car. Stepping a value gives immediate
     physical feedback, which is the entire point, but which parameter is selected does not,

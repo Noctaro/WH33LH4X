@@ -79,13 +79,12 @@ class _Tee(object):
         return getattr(self._stream, item)
 
 
-def start(directory=LOG_DIR, prefix="wgi_probe"):
+def start(directory=LOG_DIR, prefix="session"):
     """
     Begin logging. Returns the log path, or None if it could not be opened.
 
     `prefix` names the file so a session can be told apart from the others in logs/ at a
-    glance: the force feedback spike writes vjoy_ffb_* rather than pretending to be a
-    wgi_probe run.
+    glance: the bridge writes bridge_*, the force feedback spike vjoy_ffb_*.
     """
     global _file, _start_time, _path, _saved_stdout, _saved_stderr
     if _file is not None:

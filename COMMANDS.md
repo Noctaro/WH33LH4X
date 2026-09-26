@@ -6,130 +6,70 @@ the source, so the flags and defaults here are the ones the code actually parses
 Ordered by what you are trying to do rather than alphabetically. If you only ever read one
 section, read the first.
 
-**In the downloadable bundle**, run things through the bundled interpreter, which needs no
-Python installed:
+**In the downloadable bundle**, use the two launchers, or the bundled interpreter, which needs
+no Python installed:
 
 ```
-WH33LH4X.cmd -Game "C:\...\dirt4.exe"
+WH33LH4X-GUI.cmd
 .\python\python.exe vjoy_ffb_spike.py
 ```
 
 **In a source checkout**, use the venv:
 
 ```
-.\play.ps1 -Game "C:\...\dirt4.exe"
+.\.venv\Scripts\pythonw.exe -m ui
 .\.venv\Scripts\python.exe vjoy_ffb_spike.py
 ```
 
-Force feedback tuning is not a flag. It lives in `tune.json` and is re-read within half a
-second of a save, so it changes mid-corner without restarting anything — see
-[docs/tuning.md](docs/tuning.md).
+Force feedback tuning is not a flag. It lives in `user-tune.json`, created from `tune.json` the
+first time, and is re-read within half a second of a save, so it changes mid-corner without
+restarting anything — see [docs/tuning.md](docs/tuning.md).
 
 ---
 
-## 1. Playing a game
+## 1. Driving
 
-### `WH33LH4X-GUI.cmd` — the window
+### `WH33LH4X-GUI.cmd` / `python -m ui` — the window
 
-Ships in the downloadable bundle. Pick a game, press Start, watch three status badges. It shells out to `play.ps1` below
-rather than reimplementing it, so everything true of `play.ps1` is true here too.
+Ships in the downloadable bundle. Pick a profile, press Start, drive. Start and Stop run the bridge below as a hidden process,
+and closing the window stops it too.
 
-What it adds over the command line:
+- **Profiles**: Default, DiRT 4 and RC car, chosen by hand. The sliders apply live; a profile
+  file only changes on Save or Save as new.
+- **Setup checks** for vJoy device 1 and the wheel's WinUSB binding, each with a How to fix.
+  On Linux it checks that xone has let go of the wheel and that USB autosuspend is off.
+- **Test force** pushes the wheel briefly right and left and reports whether it moved the
+  right way.
+- **Restore Microsoft driver** removes the WinUSB driver so Xbox games and the HORI app see the
+  wheel again.
 
-- **Steam titles are handled for you.** It passes `-NoLaunch` and asks the client to start
-  the game, because Steam DRM relaunches the exe as a different process and a direct
-  launch looks like the game quitting instantly.
-- **Per-game notes** from `games.json` — the quirks that otherwise cost you an evening.
-- **Spring, Damper and Friction** sliders, written straight to `tune.json` as you move them.
-- **Status badges** read from the shim's shared section: vJoy, bridge, shim.
+Takes no arguments. Runs under `pythonw.exe` so no console sits behind it.
 
-Takes no arguments. Runs under `pythonw.exe` so no console sits behind it, and it starts
-the bridge with `-Quiet` so none appears for that either.
+### `WH33LH4X.cmd` / `python -m bridge` — the bridge without the window
 
-### `play.ps1` — start the bridge, run a game, clean up after
-
-Ships in the downloadable bundle. Also reachable as `WH33LH4X.cmd`, which is the same script with the PowerShell execution
-policy handled — a `.ps1` that arrived inside a downloaded zip will not run on a double-click
-without it.
-
-Deploys the shim into the game folder before launch and **removes it again when the game
-exits**, even on a crash or Ctrl+C. If another tool's `dinput8.dll` is already there (ReShade
-uses the same filename) it is moved aside and put back afterwards.
-
-Run it with no arguments for usage.
-
-| Parameter | Type | Default | What it does |
-|---|---|---|---|
-| `-Game` | string | — | Path to the game exe. Deploys the shim beside it and launches it. |
-| `-Gain` | double | `1.0` | Motor master gain. LATCHED when the shim loads the effect, so it cannot change while you drive. Leave it open and let `max_force` do the limiting. |
-| `-MaxForce` | double | `0.6` | STARTING cap on commanded force. `tune.json` overrides this live. |
-| `-KeepDll` | switch | — | Leave the shim in the game folder on exit instead of removing it. |
-| `-NoBridge` | switch | — | Deploy the shim but do not start the Python bridge. |
-| `-BridgeOnly` | switch | — | Start the bridge and nothing else. The old no-argument behaviour. |
-| `-NoLaunch` | switch | — | Deploy and start the bridge, but launch the game yourself. What you want for a Steam title. |
-| `-NoFfb` | switch | — | Feed the axes but never take the motor. USE THIS WHILE BINDING CONTROLS. |
-| `-StartTimeout` | int | `120` | Seconds to wait for the game process to appear. Steam can be slow. |
-| `-Quiet` | switch | — | — |
-
-### `WH33LH4X.cmd`
-
-Ships in the downloadable bundle. Takes no arguments of its own — everything is forwarded to `play.ps1` above.
-
----
-
-## 2. The bridge itself
-
-### `vjoy_bridge.py` — present the wheel to DirectInput games through vJoy
-
-Ships in the downloadable bundle. Normally started for you by `play.ps1`. Run it directly to debug, or to use a flag
-`play.ps1` does not expose.
+Ships in the downloadable bundle. Owns the wheel over raw USB (WinUSB on Windows, xone unbound on Linux) and presents it
+through vJoy. For running headless or with flags the window does not expose; `WH33LH4X.cmd`
+passes its arguments through.
 
 | Flag | Default | What it does |
 |---|---|---|
+| `--frontend` `vjoy`/`none` | — | what games see: 'vjoy' (default on Windows) or 'none', the tune file's spring with no game (default elsewhere) |
 | `--device` | `1` | vJoy device id (default 1) |
-| `--sweep` | — | BINDING HELPER: move one vJoy control synthetically, ignoring the real wheel entirely, so a game can bind it while the GAME has focus. Works around the catch-22 where the game only watches for movement while focused but we can only read the wheel while WE are. Bind with this, then play with the normal feeder. |
-| `--sweep-seconds` | `0.0` | stop sweeping after N seconds (default: until Ctrl+C) |
-| `--rate` | `100.0` | feed rate in Hz (default 100) |
-| `--wait` | `30.0` | detection timeout |
-| `--dry-run` | — | read the wheel and report, but write nothing to vJoy |
-| `--no-ffb` | — | input path only; never take the motor |
-| `--sink` `ipc`/`wgi` | `ipc` | where force goes. 'ipc' (default) publishes to the shim inside the game, which is the only thing that works with a game running. 'wgi' drives the motor from this process and only produces torque while this window is in front. Diagnostics only. |
-| `--no-grab` | — | never take the foreground. Force output will be silent unless you click the probe window yourself, but nothing steals your keyboard. |
-| `--run-seconds` | `0.0` | stop automatically after N seconds (default: run until Ctrl+C). Useful because an effect playing takes the foreground, which is also where your Ctrl+C would have gone. |
-| `--gain` | `0.5` | motor master gain 0.0-1.0 (default 0.5). Latched when the effect is loaded, so changing it needs a reload. |
-| `--max-force` | `0.6` | STARTING cap on commanded force 0.0-1.0 (default 0.6). Multiplies with --gain, so the default is about 30%% of what the wheel can do. Unlike --gain this one is live: it seeds tune.json's max_force, and the file wins from then on. |
-| `--tune` | — | live tuning file, re-read while running (default: tune.json next to this script). Edit mid-corner; changes apply within half a second. |
-| `--no-log` | — | — |
-
-### `python -m bridge` — the raw USB bridge, no shim
-
-Owns the wheel over raw USB (WinUSB on Windows, xone unbound on Linux) and presents it through
-vJoy. Not in the bundle yet. See [`evidence/RAW_USB.md`](evidence/RAW_USB.md) for the binding.
-
-| Flag | Default | What it does |
-|---|---|---|
-| `--frontend` `vjoy`/`none` | `vjoy` on Windows | what games see; `none` runs the tune file's spring with no game |
-| `--device` | `1` | vJoy device id |
-| `--rate` | `250.0` | bridge loop rate in Hz |
-| `--gain` | `1.0` | motor gain after `max_force`; the raw USB hard cap 0.35 still applies |
-| `--tune` | `user-tune.json` | live tuning file, re-read while running; created from `tune.json` |
+| `--rate` | `250.0` | bridge loop rate in Hz (default 250, the wheel's write rate) |
+| `--gain` | `1.0` | motor gain 0.0-1.0 after max_force (default 1.0); the raw USB hard cap still applies |
+| `--tune` | — | live tuning file, re-read while running (default: user-tune.json, created from tune.json) |
 | `--stop-file` | — | stop cleanly when this file appears, and delete it |
-| `--run-seconds` | `0.0` | stop after N seconds (default: until Ctrl+C) |
+| `--run-seconds` | `0.0` | stop after N seconds (default: run until Ctrl+C) |
 | `--no-ffb` | — | input only; never command force |
 | `--dry-run` | — | read the wheel and report; write nothing to vJoy, no force |
-| `--trace` | — | write time, position and force per tick, like `wheel_trace.txt` |
+| `--trace` | — | write time, position and force per tick, like wheel_trace.txt |
 | `--no-log` | — | — |
 
 ### `python -m bridge.nudge` — test force
 
-Arms the wheel, pushes it briefly right and then left with a spring in between, and prints
-`nudge ok right=+0.2 left=-0.2`, or `reversed`, `still`, `unclear` or `silent` (no input). Hands off the wheel. The
-window's Test force button runs this. Takes no flags.
-
-### `python -m ui` — the raw USB window
-
-Profiles, Start and Stop for `python -m bridge`, the feel sliders, and setup checks for vJoy
-and the WinUSB binding. `pythonw -m ui` opens it with no console. Not in the bundle yet.
+Ships in the downloadable bundle. Arms the wheel, pushes it briefly right and then left with a spring in between, and prints
+`nudge ok right=+0.2 left=-0.2`, or `reversed`, `still`, `unclear` or `silent` (no input).
+Hands off the wheel. The window's Test force button runs this. Takes no flags.
 
 ### `tune_report.py` — say what the force feedback actually did
 
@@ -144,13 +84,14 @@ felt.
 
 ---
 
-## 3. Checking the setup
+## 2. Checking the setup
 
 ### `vjoy_ffb_spike.py` — does the vJoy force-feedback path work?
 
-Ships in the downloadable bundle. **Run this first when anything is wrong.** It sends DirectInput effects to the virtual
-device and logs what comes back out of vJoy's callback, verifying the whole path without a game
-or the real wheel. If it does not report `PASS`, nothing built on top of vJoy will work.
+Ships in the downloadable bundle. **Run this first when a game gets no force feedback.** It sends DirectInput effects to the
+virtual device and logs what comes back out of vJoy's callback, verifying the whole path
+without a game or the real wheel. If it does not report `PASS`, nothing built on top of vJoy
+will work.
 
 | Flag | Default | What it does |
 |---|---|---|
@@ -163,55 +104,14 @@ or the real wheel. If it does not report `PASS`, nothing built on top of vJoy wi
 | `--gain` | — | DirectInput effect gain 0.0-1.0. Defaults to 0.5 for the packet run and 1.0 for --feel: this gain arrives at the bridge as a byte and multiplies with the bridge's own limits, so 0.5 here is already halved before anything reaches the motor. |
 | `--no-log` | — | do not write a log file |
 
-### `wgi_probe.py` — drive the real motor directly
-
-Ships in the downloadable bundle. Detection, an interactive effect menu, sweeps and calibration, all through
-`Windows.Gaming.Input` with no game and no vJoy involved. Use it to answer "is the wheel itself
-alive?" — and press `k` once per wheel to calibrate, which the software condition effects
-require.
-
-| Flag | Default | What it does |
-|---|---|---|
-| `--gain` | `1.0` | master gain 0.0-1.0, set before each load (default 1.0) |
-| `--magnitude` | `0.3` | effect magnitude 0.0-1.0, the intensity control (default 0.30) |
-| `--duration` | `6.0` | seconds per effect, 0 = hold until Enter (default 6) |
-| `--wait` | `30.0` | detection timeout (default 30) |
-| `--list-only` | — | report only, play nothing |
-| `--no-log` | — | do not write a session log under logs/ |
-
-### `shim/test_proxy.py` — is the dinput8.dll proxy transparent?
-
-Repo only — not in the bundle. Drives the proxy directly and compares its device enumeration against the system DLL in the
-same process, so a crippled proxy is caught here rather than looking like a game bug.
-
-| Flag | Default | What it does |
-|---|---|---|
-| `--keep-log` | — | do not clear the shim log before running |
-
-### `shim/run_shim.py` — exercise the shim without a game
-
-Repo only — not in the bundle. Hosts the shim outside a game so its WGI layer can be tested without launching one.
-
-| Flag | Default | What it does |
-|---|---|---|
-| `--seconds` | `15.0` | how long to keep the host alive (default 15) |
-| `--keep-log` | — | do not clear the shim log first |
-| `--winrt-assist` | — | also subscribe from Python, to test whether the C needs to at all |
-| `--drive` | — | act as the bridge too: publish a force sweep over the section |
-
 ---
 
-## 4. Building
-
-### `shim/build.ps1` — build the dinput8.dll proxy
-
-Repo only — not in the bundle. Needs zig (from `tools/zig`, `$env:ZIG`, or `PATH`) and a Windows SDK for its WinRT headers.
-Takes no parameters.
+## 3. Building
 
 ### `packaging/build_bundle.ps1` — assemble the downloadable bundle
 
 Repo only — not in the bundle. Downloads and verifies embeddable CPython, vendors the pinned dependencies, stages the
-source and the shim, and zips the result.
+source, writes the two launchers, and zips the result.
 
 | Parameter | Type | Default | What it does |
 |---|---|---|---|
@@ -221,70 +121,63 @@ source and the shim, and zips the result.
 
 ---
 
-## 5. Modules with no command line
+## 4. Modules with no command line
 
-Imported by the scripts above; nothing to run.
+Imported by the commands above; nothing to run.
 
 | Module | Purpose | In bundle |
 |---|---|---|
+| `bridge/` | The bridge loop, the wheel over raw USB, the vJoy front-end | yes |
+| `gip/` | The GIP protocol: framing, arming, USB host, input reports | yes |
+| `ui/` | The window: profiles, the bridge process, setup checks | yes |
 | `ffb_render.py` | The force-feedback control laws, in normalised units | yes |
-| `motor_sink.py` | The one place that actually touches the wheel's motor | yes |
-| `live_tune.py` | `tune.json` reloading and the wheel-button tuning controls | yes |
-| `wheel_profile.py` | Per-wheel calibration, saved once and reused | yes |
+| `live_tune.py` | Tuning file reloading and the wheel-button tuning controls | yes |
 | `probe_log.py` | Session logging to `logs/` | yes |
 | `dinput_abi.py` | ctypes transcription of the DirectInput 8 API surface | yes |
-| `gameinput_abi.py` | ctypes transcription of Microsoft's GameInput API (v0 ABI) | no |
-| `gip_protocol.py` | The GIP wire format for this wheel | no |
+| `evidence/gameinput_abi.py` | ctypes transcription of the GameInput API (v0 ABI) | no |
+| `evidence/gip_protocol.py` | The GIP wire format as captured above the driver | no |
 
 ---
 
-## 6. Diagnostics, and the dead ends kept as evidence
+## 5. Tests
 
-None of these ship in the bundle.
+None of these need hardware, and CI runs all four.
 
-Everything below marked with a path lives in [`evidence/`](evidence/README.md) and
-records an API that **does not work** on this wheel. Run those as modules, from the repo
-root, since they import from it, so a direct path will not resolve:
+### `test_ffb_render.py` — the control laws still do what they used to
+
+Run before proposing a change to `ffb_render.py` or `live_tune.py`. No test framework, no
+dependencies: `.\.venv\Scripts\python.exe test_ffb_render.py`. Takes no flags.
+
+### `test_gip.py` — the same bytes still go on the wire
+
+Run before proposing a change to `gip/`. Pins the arming and force bytes that drove the motor,
+and the input report decoding. No pyusb needed: `.\.venv\Scripts\python.exe test_gip.py`.
+
+### `test_bridge_core.py` — the bridge loop against a fake wheel
+
+Run before proposing a change to `bridge/`. Force sign, the stop file, and zero force before
+the wheel is released: `.\.venv\Scripts\python.exe test_bridge_core.py`.
+
+### `test_ui.py` — profiles and the bridge process, without a window
+
+Run before proposing a change to `ui/` or `profiles/`:
+`.\.venv\Scripts\python.exe test_ui.py`.
+
+---
+
+## 6. Evidence
+
+None of these ship in the bundle. They live in [`evidence/`](evidence/README.md): the dead ends
+that prove why the other APIs cannot drive this wheel, and the raw USB instruments the working
+route was found with. Run the Windows ones as modules from the repo root, since they import
+from it:
 
 ```
 .\.venv\Scripts\python.exe -m evidence.hid_probe
 ```
 
 Read [`evidence/README.md`](evidence/README.md) first: it answers each question in a
-sentence, which is usually all anyone needs. The code is there so the answers stay checkable
-against a newer runtime or a different wheel.
-
-### `test_ffb_render.py` — the control laws still do what they used to
-
-Run before proposing a change to `ffb_render.py`. No test framework, no dependencies, no
-hardware: `.\.venv\Scripts\python.exe test_ffb_render.py`. Takes no flags.
-
-### `test_gip.py` — the same bytes still go on the wire
-
-Run before proposing a change to `gip/`. Pins the arming and force bytes that drove the motor,
-and the input report decoding. No hardware, no pyusb: `.\.venv\Scripts\python.exe test_gip.py`.
-Takes no flags.
-
-### `test_bridge_core.py` — the bridge loop against a fake wheel
-
-Run before proposing a change to `bridge/`. Force sign, the stop file, and zero force before the
-wheel is released. No hardware: `.\.venv\Scripts\python.exe test_bridge_core.py`.
-
-### `test_ui.py` — profiles and the bridge process, without a window
-
-Run before proposing a change to `ui/` or `profiles/`. No hardware:
-`.\.venv\Scripts\python.exe test_ui.py`.
-
-### `test_shimview.py` — the GUI must not create the shared section
-
-No hardware, no wheel, no game. Asserts the ORDER that broke a real session rather than
-the parts: a viewer touching the section before any writer must not bring it into
-existence, or every later writer fails with `WinError 87` and the game gets no wheel
-input.
-
-**It skips itself when a bridge is already running.** It opens a real sink, and closing
-one zeroes the bridge heartbeat, and against a live session that is a force feedback
-dropout. Takes no flags.
+sentence, which is usually all anyone needs.
 
 ### `evidence/probe.py` — does GameInput expose force-feedback motors? (**no**)
 
@@ -320,55 +213,10 @@ Reads raw HID report descriptors, and shows *why* the two answers above are no.
 | `--vid` | `3853` | vendor id to inspect (default 0x0F0D, HORI) |
 | `--all` | — | inspect every HID device |
 
-### `evidence/wgi_background_test.py` — does WGI still work when we are not in front? (**no**)
-
-The measurement behind the whole shim design: force output and position reading are both gated
-on foreground, which is why the output stage has to live inside the game's process.
-
-| Flag | Default | What it does |
-|---|---|---|
-| `--seconds` | `12.0` | length of each phase (default 12) |
-| `--no-force` | — | test readings only; never touch the motor |
-| `--force-only` | — | skip the reading phases and run only the A->B->A force gate test |
-| `--reading-only` | — | run only the A->B->A reading gate test; never touch the motor |
-| `--gain` | `0.5` | motor master gain (default 0.5) |
-| `--magnitude` | `0.35` | constant-force magnitude (default 0.35) |
-| `--wait` | `30.0` | detection timeout |
-| `--no-log` | — | — |
-
-### `stiction_test.py` — how much force does it take to move this wheel at all?
-
-Measures the motor's own breakaway friction, which is where `tune.json`'s `min_force` comes
-from.
-
-| Flag | Default | What it does |
-|---|---|---|
-| `--max` | `0.6` | highest force to try, 0.0-1.0 (default 0.60) |
-| `--step` | `0.02` | force increment per attempt (default 0.02). MEASURED 2026-08-25: on a Hori Force Feedback Racing Wheel DLX, 0.02 completed 9 of 9 runs while 0.01 completed 1 to 2 of 4 before the motor stalled, and both report the first step tried, and a finer step buys risk, not detail. Other wheels may take a smaller step safely. |
-| `--passes` | `3` | measurements per direction (default 3); stiction scatters |
-| `--gain` | `1.0` | motor master gain (default 1.0: measure the hardware, not a gain) |
-| `--wait` | `20.0` | device wait timeout |
-| `--selftest` | `0` | skip measuring; probe for torque N times against one held effect and report how many worked. Use this to judge a reliability change. |
-| `--reopen` | — | with --selftest, close and reopen the motor for every probe. This REPRODUCES THE BUG (2/10 on 2026-08-25) and is kept for that. |
-| `--stall-floor` | `0.02` | smallest --step believed safe on THIS wheel (default 0.02, measured on a Hori Force Feedback Racing Wheel DLX). Below it, levels that cannot move the wheel silence the motor for the rest of the process. Raise or lower it for other hardware; it only warns. |
-| `--ramp-in-place` | — | do not free the wheel between levels; push again from the same rotor position. That is what silences the motor, and it is kept only so pre-2026-08-25 runs stay comparable. |
-| `--no-log` | — | — |
-
-### `evidence/gip_trace.py` — watch what WGI sends the wheel
-
-| Flag | Default | What it does |
-|---|---|---|
-| `--hold` | `1.5` | seconds to hold each magnitude (default 1.5) |
-| `--reads` | — | also hook ReadFile/ReadFileEx (noisy; changes timing) |
-| `--wait` | `8.0` | seconds to wait for the wheel to appear (default 8) |
-| `--no-log` | — | do not write a session log |
-| `--dump` | — | write every captured write, in order, for comparison with gip_direct |
-
 ### `evidence/gip_direct.py` — talk to the GIP driver with no WGI in the process (**dead end**)
 
-Talking to the driver's own handle produces no torque: the driver refuses our writes. Raw USB
-does work, and is documented in [`evidence/RAW_USB.md`](evidence/RAW_USB.md); this script is
-kept because it is what proves the driver handle itself is the closed door.
+The arming sequence was replayed byte-for-byte and still produced no torque. Do not retry this
+without new information.
 
 | Flag | Default | What it does |
 |---|---|---|
@@ -380,59 +228,60 @@ kept because it is what proves the driver handle itself is the closed door.
 | `--no-log` | — | do not write a log file |
 | `--dump` | — | write every message sent, in order, for comparison with gip_trace |
 
-### `evidence/gip_diff.py` — compare the two captures above
+### `evidence/gip_diff.py` — compare two GIP captures
 
 | Flag | Default | What it does |
 |---|---|---|
 | `wgi` | — | dump from gip_trace.py --dump (force works) |
 | `ours` | — | dump from gip_direct.py --dump (force does not) |
 
-### `evidence/gip_wheel_driver.py` — a working Linux driver (**Linux only**)
+### `evidence/gip_wheel_driver.py` — the first raw USB driver (**Linux**)
 
-Owns the wheel over raw USB, publishes a virtual joystick other programs can read, and holds a
-spring and damper on the real motor. No Microsoft driver, no authentication, no foreground gate.
-[`evidence/RAW_USB.md`](evidence/RAW_USB.md) explains how it got there and how to set up uinput.
-
-The defaults are the tuned values, so it normally needs no flags at all:
-
-```
-python3 gip_wheel_driver.py
-```
+Owns the wheel over raw USB, publishes a virtual joystick, and holds a spring and damper on
+the motor. The defaults are the tuned values. [`evidence/RAW_USB.md`](evidence/RAW_USB.md)
+explains how it got there.
 
 | Flag | Default | What it does |
 |---|---|---|
-| `--spring` | `0.25` | centring stiffness; 0 leaves the wheel free |
-| `--damper` | `0.08` | resistance to turning speed. This, not coasting, is what stops overshoot smoothly |
-| `--cap` | `0.35` | never command more than this |
-| `--min-force` | `0.05` | smallest magnitude worth commanding, because a proportional spring parks off centre once its demand falls below starting friction |
-| `--floor-ramp` | `0.05` | distance over which `--min-force` fades in from centre. A hard floor flips sign across centre and is felt as a step; 0 restores it |
-| `--force-step` | `0.001` | smallest force change worth sending. Near centre the demand is only 0.01 to 0.03, so a coarse step is a large fraction of it and is felt as notching |
-| `--deadband` | `0` | spring dead zone around centre, and the settle gate that goes with it. 0 disables both, which is what you want |
-| `--release` | `0` | once settled, stay quiet until the wheel is moved this far out |
-| `--coast` | `0` | stop pushing once moving towards centre faster than this. Chops the force on and off; prefer `--damper` |
-| `--refresh` | `0` | seconds between full effect reloads. Each one tears the effect down and rebuilds it, felt as a cogging step. Leave at 0 |
+| `--spring` | `0.25` | centring stiffness; 0 leaves the wheel free (default 0.25) |
+| `--damper` | `0.08` | resistance to turning speed (default 0.08) |
+| `--cap` | — | — |
+| `--min-force` | `0.05` | smallest magnitude worth commanding outside the deadband; 0 disables (default 0.05) |
+| `--force-step` | `0.001` | smallest force change worth sending. Near centre the demand is only 0.01-0.03, so a coarse step is a large fraction of it and is felt as notching (default 0.001) |
+| `--floor-ramp` | `0.05` | distance over which --min-force fades in from centre; a hard floor flips sign across centre and is felt as a step (0 restores the hard floor) |
+| `--coast` | `0.0` | stop pushing once moving towards centre faster than this, so momentum finishes the job (0 disables) |
+| `--release` | `0.0` | once settled near centre, stay quiet until the wheel is moved this far out (default 0.05) |
 | `--no-unstick` | — | do not kick the wheel off cogging detents |
-| `--no-smooth` | — | re-run the full effect load for every change (this is the cogging, kept for comparison) |
-| `--wait-for` | — | after arming, hold still until this FILE appears, so an operator can be prompted at the right moment |
-| `--wait-calibration` | `0` | wait for a firmware calibration sweep. Claiming the device does NOT trigger one, so this normally just times out |
-| `--seconds` | `0` | run for this long; 0 means until Ctrl+C |
-| `--trace` | — | log time, position and demand to `wheel_trace.txt` |
+| `--deadband` | `0.0` | spring dead zone around centre, and the settle gate that goes with it; 0 disables both (default 0) |
+| `--refresh` | `0.0` | seconds between full effect reloads; each one tears the effect down and rebuilds it, felt as a distinct cogging step. 0 = never (default 0) |
+| `--no-smooth` | — | re-run the full effect load for every change |
+| `--trace` | — | log time, position and demand to wheel_trace.txt |
+| `--wait-for` | — | after arming, hold still until this file appears |
+| `--seconds` | `0.0` | run for this long; 0 means until Ctrl+C |
+| `--wait-calibration` | `0.0` | wait for a firmware calibration sweep first. Claiming the device does NOT trigger one, so this normally just times out (default 0) |
 
-### `gip/` — the protocol itself
+### `evidence/gip_hold.py` — drive to a position and hold it (**Linux**)
 
-`gip/arming.py` generates the arming and force sequences from rules, verified 150 of 150
-packets byte-identical to a real USB wire capture. `gip/wire.py` frames messages,
-`gip/host.py` owns the USB interface, `gip/report.py` decodes the input report. Imported by the
-tools and the bridge; not run directly.
+The sweep half of the Linux acceptance test: drives to each target slowly and logs where the
+wheel really is.
+
+| Flag | Default | What it does |
+|---|---|---|
+| `--targets` | `0.5` | comma-separated positions, full scale, positive right; lock is ~180 deg so 0.5 is ~90 deg (default 0.5) |
+| `--settle` | `8.0` | seconds after arming with no force at all (default 8) |
+| `--ramp` | `5.0` | seconds to move out and back |
+| `--hold` | `15.0` | seconds at the target |
+| `--spring` | `2.0` | gain per unit of error |
+| `--damper` | `0.1` | — |
+| `--cap` | `0.35` | — |
 
 ### `evidence/gip_usb_host.py` — the raw USB instrument (**Linux**)
 
-Claiming, power-on, calibration waits, wire replay, force scaling and closed-loop position
-control. This is what the findings were measured with. `--drive K` holds commanded positions,
-`--force-scale` rewrites the magnitude of a replayed session, `--spring` runs a software spring.
+Claiming, power-on, wire replay, force scaling and closed-loop position control. This is what
+the findings were measured with.
 
 ### `evidence/usbpcap_parse.py` — read a USBPcap capture
 
-Parses `DLT_USBPCAP` records and filters by device and endpoint. This is what showed that
-`logs/wgi.txt` is not what reaches the wire, which is the discovery the whole raw USB route
-rests on.
+Parses `DLT_USBPCAP` records and filters by device and endpoint. This is what showed that the
+old WGI capture is not what reaches the wire, which is the discovery the raw USB route rests
+on.

@@ -5,9 +5,6 @@ Flags and defaults are read out of the argparse calls and the PowerShell param()
 so the reference cannot claim a flag the code does not parse. The prose around them is
 written here; only the tables are derived.
 
-This lived in a scratch folder for a while, which meant the one document claiming to be
-generated was the one nobody else could regenerate. It belongs beside gen_games_table.py.
-
 Usage, from anywhere:
     .\.venv\Scripts\python.exe packaging\gen_commands.py
     .\.venv\Scripts\python.exe packaging\gen_commands.py --check   # CI: fail if stale
@@ -32,7 +29,7 @@ BS = chr(92)
 
 # ---- extract argparse flags -------------------------------------------------------------
 flags = {}
-for f in (sorted(glob.glob('*.py')) + sorted(glob.glob('shim/*.py'))
+for f in (sorted(glob.glob('*.py')) + sorted(glob.glob('bridge/*.py'))
           + sorted(glob.glob('evidence/*.py'))):
     tree = ast.parse(open(f, encoding='utf-8').read())
     rows = []
@@ -62,7 +59,7 @@ for f in (sorted(glob.glob('*.py')) + sorted(glob.glob('shim/*.py'))
 
 # ---- extract PowerShell param() blocks ---------------------------------------------------
 ps_params = {}
-for f in ['play.ps1', 'shim/build.ps1', 'packaging/build_bundle.ps1']:
+for f in ['packaging/build_bundle.ps1']:
     try:
         src = io.open(f, encoding='utf-8').read()
     except OSError:
@@ -98,17 +95,6 @@ def flag_table(path):
 
 # Condensed from the explanatory comments already sitting above each param in the source.
 PS_HELP = {
-    'Game': 'Path to the game exe. Deploys the shim beside it and launches it.',
-    'Gain': 'Motor master gain. LATCHED when the shim loads the effect, so it cannot change '
-            'while you drive. Leave it open and let `max_force` do the limiting.',
-    'MaxForce': 'STARTING cap on commanded force. `tune.json` overrides this live.',
-    'KeepDll': 'Leave the shim in the game folder on exit instead of removing it.',
-    'NoBridge': 'Deploy the shim but do not start the Python bridge.',
-    'BridgeOnly': 'Start the bridge and nothing else. The old no-argument behaviour.',
-    'NoLaunch': 'Deploy and start the bridge, but launch the game yourself. What you want '
-                'for a Steam title.',
-    'NoFfb': 'Feed the axes but never take the motor. USE THIS WHILE BINDING CONTROLS.',
-    'StartTimeout': 'Seconds to wait for the game process to appear. Steam can be slow.',
     'OutDir': 'Where to build. Defaults to `dist/`.',
     'CacheDir': 'Where the embeddable Python zip is cached between runs.',
     'SkipZip': 'Leave the staged folder, skip creating the archive.',
@@ -148,73 +134,58 @@ the source, so the flags and defaults here are the ones the code actually parses
 Ordered by what you are trying to do rather than alphabetically. If you only ever read one
 section, read the first.
 
-**In the downloadable bundle**, run things through the bundled interpreter, which needs no
-Python installed:
+**In the downloadable bundle**, use the two launchers, or the bundled interpreter, which needs
+no Python installed:
 
 ```
-WH33LH4X.cmd -Game "C:\\...\\dirt4.exe"
+WH33LH4X-GUI.cmd
 .\\python\\python.exe vjoy_ffb_spike.py
 ```
 
 **In a source checkout**, use the venv:
 
 ```
-.\\play.ps1 -Game "C:\\...\\dirt4.exe"
+.\\.venv\\Scripts\\pythonw.exe -m ui
 .\\.venv\\Scripts\\python.exe vjoy_ffb_spike.py
 ```
 
-Force feedback tuning is not a flag. It lives in `tune.json` and is re-read within half a
-second of a save, so it changes mid-corner without restarting anything — see
-[docs/tuning.md](docs/tuning.md).
+Force feedback tuning is not a flag. It lives in `user-tune.json`, created from `tune.json` the
+first time, and is re-read within half a second of a save, so it changes mid-corner without
+restarting anything — see [docs/tuning.md](docs/tuning.md).
 
 ---
 
-## 1. Playing a game
+## 1. Driving
 
-### `WH33LH4X-GUI.cmd` — the window
+### `WH33LH4X-GUI.cmd` / `python -m ui` — the window
 
-%s Pick a game, press Start, watch three status badges. It shells out to `play.ps1` below
-rather than reimplementing it, so everything true of `play.ps1` is true here too.
+%s Pick a profile, press Start, drive. Start and Stop run the bridge below as a hidden process,
+and closing the window stops it too.
 
-What it adds over the command line:
+- **Profiles**: Default, DiRT 4 and RC car, chosen by hand. The sliders apply live; a profile
+  file only changes on Save or Save as new.
+- **Setup checks** for vJoy device 1 and the wheel's WinUSB binding, each with a How to fix.
+  On Linux it checks that xone has let go of the wheel and that USB autosuspend is off.
+- **Test force** pushes the wheel briefly right and left and reports whether it moved the
+  right way.
+- **Restore Microsoft driver** removes the WinUSB driver so Xbox games and the HORI app see the
+  wheel again.
 
-- **Steam titles are handled for you.** It passes `-NoLaunch` and asks the client to start
-  the game, because Steam DRM relaunches the exe as a different process and a direct
-  launch looks like the game quitting instantly.
-- **Per-game notes** from `games.json` — the quirks that otherwise cost you an evening.
-- **Spring, Damper and Friction** sliders, written straight to `tune.json` as you move them.
-- **Status badges** read from the shim's shared section: vJoy, bridge, shim.
+Takes no arguments. Runs under `pythonw.exe` so no console sits behind it.
 
-Takes no arguments. Runs under `pythonw.exe` so no console sits behind it, and it starts
-the bridge with `-Quiet` so none appears for that either.
+### `WH33LH4X.cmd` / `python -m bridge` — the bridge without the window
 
-### `play.ps1` — start the bridge, run a game, clean up after
-
-%s Also reachable as `WH33LH4X.cmd`, which is the same script with the PowerShell execution
-policy handled — a `.ps1` that arrived inside a downloaded zip will not run on a double-click
-without it.
-
-Deploys the shim into the game folder before launch and **removes it again when the game
-exits**, even on a crash or Ctrl+C. If another tool's `dinput8.dll` is already there (ReShade
-uses the same filename) it is moved aside and put back afterwards.
-
-Run it with no arguments for usage.
+%s Owns the wheel over raw USB (WinUSB on Windows, xone unbound on Linux) and presents it
+through vJoy. For running headless or with flags the window does not expose; `WH33LH4X.cmd`
+passes its arguments through.
 
 %s
-### `WH33LH4X.cmd`
+### `python -m bridge.nudge` — test force
 
-%s Takes no arguments of its own — everything is forwarded to `play.ps1` above.
+%s Arms the wheel, pushes it briefly right and then left with a spring in between, and prints
+`nudge ok right=+0.2 left=-0.2`, or `reversed`, `still`, `unclear` or `silent` (no input).
+Hands off the wheel. The window's Test force button runs this. Takes no flags.
 
----
-
-## 2. The bridge itself
-
-### `vjoy_bridge.py` — present the wheel to DirectInput games through vJoy
-
-%s Normally started for you by `play.ps1`. Run it directly to debug, or to use a flag
-`play.ps1` does not expose.
-
-%s
 ### `tune_report.py` — say what the force feedback actually did
 
 %s Reads a bridge session log and reports which effects the game sent, whether output ever
@@ -225,99 +196,85 @@ felt.
 %s
 ---
 
-## 3. Checking the setup
+## 2. Checking the setup
 
 ### `vjoy_ffb_spike.py` — does the vJoy force-feedback path work?
 
-%s **Run this first when anything is wrong.** It sends DirectInput effects to the virtual
-device and logs what comes back out of vJoy's callback, verifying the whole path without a game
-or the real wheel. If it does not report `PASS`, nothing built on top of vJoy will work.
-
-%s
-### `wgi_probe.py` — drive the real motor directly
-
-%s Detection, an interactive effect menu, sweeps and calibration, all through
-`Windows.Gaming.Input` with no game and no vJoy involved. Use it to answer "is the wheel itself
-alive?" — and press `k` once per wheel to calibrate, which the software condition effects
-require.
-
-%s
-### `shim/test_proxy.py` — is the dinput8.dll proxy transparent?
-
-%s Drives the proxy directly and compares its device enumeration against the system DLL in the
-same process, so a crippled proxy is caught here rather than looking like a game bug.
-
-%s
-### `shim/run_shim.py` — exercise the shim without a game
-
-%s Hosts the shim outside a game so its WGI layer can be tested without launching one.
+%s **Run this first when a game gets no force feedback.** It sends DirectInput effects to the
+virtual device and logs what comes back out of vJoy's callback, verifying the whole path
+without a game or the real wheel. If it does not report `PASS`, nothing built on top of vJoy
+will work.
 
 %s
 ---
 
-## 4. Building
-
-### `shim/build.ps1` — build the dinput8.dll proxy
-
-%s Needs zig (from `tools/zig`, `$env:ZIG`, or `PATH`) and a Windows SDK for its WinRT headers.
-Takes no parameters.
+## 3. Building
 
 ### `packaging/build_bundle.ps1` — assemble the downloadable bundle
 
 %s Downloads and verifies embeddable CPython, vendors the pinned dependencies, stages the
-source and the shim, and zips the result.
+source, writes the two launchers, and zips the result.
 
 %s
 ---
 
-## 5. Modules with no command line
+## 4. Modules with no command line
 
-Imported by the scripts above; nothing to run.
+Imported by the commands above; nothing to run.
 
 | Module | Purpose | In bundle |
 |---|---|---|
+| `bridge/` | The bridge loop, the wheel over raw USB, the vJoy front-end | yes |
+| `gip/` | The GIP protocol: framing, arming, USB host, input reports | yes |
+| `ui/` | The window: profiles, the bridge process, setup checks | yes |
 | `ffb_render.py` | The force-feedback control laws, in normalised units | yes |
-| `motor_sink.py` | The one place that actually touches the wheel's motor | yes |
-| `live_tune.py` | `tune.json` reloading and the wheel-button tuning controls | yes |
-| `wheel_profile.py` | Per-wheel calibration, saved once and reused | yes |
+| `live_tune.py` | Tuning file reloading and the wheel-button tuning controls | yes |
 | `probe_log.py` | Session logging to `logs/` | yes |
 | `dinput_abi.py` | ctypes transcription of the DirectInput 8 API surface | yes |
-| `gameinput_abi.py` | ctypes transcription of Microsoft's GameInput API (v0 ABI) | no |
-| `gip_protocol.py` | The GIP wire format for this wheel | no |
+| `evidence/gameinput_abi.py` | ctypes transcription of the GameInput API (v0 ABI) | no |
+| `evidence/gip_protocol.py` | The GIP wire format as captured above the driver | no |
 
 ---
 
-## 6. Diagnostics, and the dead ends kept as evidence
+## 5. Tests
 
-None of these ship in the bundle.
-
-Everything below marked with a path lives in [`evidence/`](evidence/README.md) and
-records an API that **does not work** on this wheel. Run those as modules, from the repo
-root, since they import from it, so a direct path will not resolve:
-
-```
-.\.venv\Scripts\python.exe -m evidence.hid_probe
-```
-
-Read [`evidence/README.md`](evidence/README.md) first: it answers each question in a
-sentence, which is usually all anyone needs. The code is there so the answers stay checkable
-against a newer runtime or a different wheel.
+None of these need hardware, and CI runs all four.
 
 ### `test_ffb_render.py` — the control laws still do what they used to
 
-Run before proposing a change to `ffb_render.py`. No test framework, no dependencies, no
-hardware: `.\\.venv\\Scripts\\python.exe test_ffb_render.py`. Takes no flags.
+Run before proposing a change to `ffb_render.py` or `live_tune.py`. No test framework, no
+dependencies: `.\\.venv\\Scripts\\python.exe test_ffb_render.py`. Takes no flags.
 
-### `test_shimview.py` — the GUI must not create the shared section
+### `test_gip.py` — the same bytes still go on the wire
 
-No hardware, no wheel, no game. Asserts the ORDER that broke a real session rather than
-the parts: a viewer touching the section before any writer must not bring it into
-existence, or every later writer fails with `WinError 87` and the game gets no wheel
-input.
+Run before proposing a change to `gip/`. Pins the arming and force bytes that drove the motor,
+and the input report decoding. No pyusb needed: `.\\.venv\\Scripts\\python.exe test_gip.py`.
 
-**It skips itself when a bridge is already running.** It opens a real sink, and closing
-one zeroes the bridge heartbeat, and against a live session that is a force feedback
-dropout. Takes no flags.
+### `test_bridge_core.py` — the bridge loop against a fake wheel
+
+Run before proposing a change to `bridge/`. Force sign, the stop file, and zero force before
+the wheel is released: `.\\.venv\\Scripts\\python.exe test_bridge_core.py`.
+
+### `test_ui.py` — profiles and the bridge process, without a window
+
+Run before proposing a change to `ui/` or `profiles/`:
+`.\\.venv\\Scripts\\python.exe test_ui.py`.
+
+---
+
+## 6. Evidence
+
+None of these ship in the bundle. They live in [`evidence/`](evidence/README.md): the dead ends
+that prove why the other APIs cannot drive this wheel, and the raw USB instruments the working
+route was found with. Run the Windows ones as modules from the repo root, since they import
+from it:
+
+```
+.\\.venv\\Scripts\\python.exe -m evidence.hid_probe
+```
+
+Read [`evidence/README.md`](evidence/README.md) first: it answers each question in a
+sentence, which is usually all anyone needs.
 
 ### `evidence/probe.py` — does GameInput expose force-feedback motors? (**no**)
 
@@ -330,43 +287,49 @@ dropout. Takes no flags.
 Reads raw HID report descriptors, and shows *why* the two answers above are no.
 
 %s
-### `evidence/wgi_background_test.py` — does WGI still work when we are not in front? (**no**)
-
-The measurement behind the whole shim design: force output and position reading are both gated
-on foreground, which is why the output stage has to live inside the game's process.
-
-%s
-### `stiction_test.py` — how much force does it take to move this wheel at all?
-
-Measures the motor's own breakaway friction, which is where `tune.json`'s `min_force` comes
-from.
-
-%s
-### `evidence/gip_trace.py` — watch what WGI sends the wheel
-
-%s
 ### `evidence/gip_direct.py` — talk to the GIP driver with no WGI in the process (**dead end**)
 
 The arming sequence was replayed byte-for-byte and still produced no torque. Do not retry this
 without new information.
 
 %s
-### `evidence/gip_diff.py` — compare the two captures above
+### `evidence/gip_diff.py` — compare two GIP captures
 
-%s""" % (
+%s
+### `evidence/gip_wheel_driver.py` — the first raw USB driver (**Linux**)
+
+Owns the wheel over raw USB, publishes a virtual joystick, and holds a spring and damper on
+the motor. The defaults are the tuned values. [`evidence/RAW_USB.md`](evidence/RAW_USB.md)
+explains how it got there.
+
+%s
+### `evidence/gip_hold.py` — drive to a position and hold it (**Linux**)
+
+The sweep half of the Linux acceptance test: drives to each target slowly and logs where the
+wheel really is.
+
+%s
+### `evidence/gip_usb_host.py` — the raw USB instrument (**Linux**)
+
+Claiming, power-on, wire replay, force scaling and closed-loop position control. This is what
+the findings were measured with.
+
+### `evidence/usbpcap_parse.py` — read a USBPcap capture
+
+Parses `DLT_USBPCAP` records and filters by device and endpoint. This is what showed that the
+old WGI capture is not what reaches the wire, which is the discovery the raw USB route rests
+on.
+""" % (
     BUNDLED,
-    BUNDLED, ps_table('play.ps1'), BUNDLED,
-    BUNDLED, flag_table('vjoy_bridge.py'),
+    BUNDLED, flag_table('bridge/__main__.py'),
+    BUNDLED,
     BUNDLED, TUNE_REPORT_ARGS,
     BUNDLED, flag_table('vjoy_ffb_spike.py'),
-    BUNDLED, flag_table('wgi_probe.py'),
-    REPO, flag_table('shim/test_proxy.py'),
-    REPO, flag_table('shim/run_shim.py'),
-    REPO, REPO, ps_table('packaging/build_bundle.ps1'),
+    REPO, ps_table('packaging/build_bundle.ps1'),
     flag_table('evidence/probe.py'), flag_table('evidence/dinput_probe.py'),
-    flag_table('evidence/hid_probe.py'), flag_table('evidence/wgi_background_test.py'),
-    flag_table('stiction_test.py'), flag_table('evidence/gip_trace.py'),
+    flag_table('evidence/hid_probe.py'),
     flag_table('evidence/gip_direct.py'), flag_table('evidence/gip_diff.py'),
+    flag_table('evidence/gip_wheel_driver.py'), flag_table('evidence/gip_hold.py'),
 ))
 
 new = '\n'.join(doc)

@@ -5,11 +5,12 @@ records what each one is, who holds copyright, and under what terms — everythi
 distribution has to carry.
 
 Compiled from the installed package metadata and the upstream license files, checked
-2026-08-24. Where a license text could not be found upstream, this file says so rather than
-assuming.
+2026-08-24 and updated 2026-09-26 for the raw USB bundle. Where a license text could not be
+found upstream, this file says so rather than assuming.
 
 **Not redistributed:** the vJoy kernel driver (`vJoy.sys`) is installed by the user from its
-own project. Zig and Ruff are build- and development-time only. Neither is shipped.
+own project, and so is Zadig, which installs the WinUSB driver. Ruff is development-time only.
+None of them is shipped.
 
 ## What the downloadable bundle actually contains
 
@@ -19,15 +20,17 @@ Source alone carries no third-party binaries. The bundle built by
 | Binary | Origin | Terms |
 |---|---|---|
 | `python\*` (embeddable CPython 3.11.9) | python.org | PSF; ships its own `LICENSE.txt` |
-| `lib\winrt\*.pyd`, `lib\winrt\msvcp140.dll` | inside the PyWinRT wheels | MIT for PyWinRT; `msvcp140.dll` is Microsoft's C++ runtime, redistributed as PyWinRT ships it |
+| `lib\libusb_package\libusb-1.0.dll` | libusb 1.0.30, unmodified, inside the `libusb-package` wheel | **LGPL-2.1-or-later**; text in `LICENSES\libusb-LGPL-2.1.txt`, see below |
 | `lib\pyvjoy\lib\x64\vJoyInterface.dll` (and `x86`) | inside the `pyvjoyffb` wheel | MIT, (c) 2017 Shaul Eizikovich |
-| `shim\dinput8.dll` | built from `shim/*.c` in this repo | ours, MIT |
 | `python\_tkinter.pyd`, `python\tcl86t.dll`, `python\tk86t.dll`, `lib\tkinter\*`, `lib\tcl8.6\*`, `lib\tk8.6\*` | CPython 3.11.9 **full Windows install** | PSF for the Python parts; Tcl/Tk is BSD-style, text in `python\LICENSE.txt` |
 
-`msvcp140.dll` is worth calling out because it contradicts a reasonable assumption: the **shim**
-needs no VC++ redistributable, since zig links it against OS API sets only. That remains true.
-The Python side is separate — PyWinRT bundles the C++ runtime beside its extension modules, and
-the bundle carries it because PyWinRT does.
+**libusb is the one LGPL component**, and the only one with an obligation beyond passing on a
+notice. The bundle carries the DLL exactly as the `libusb-package` wheel ships it, built from
+libusb's tagged release [v1.0.30](https://github.com/libusb/libusb/releases/tag/v1.0.30), which
+is where its source is. It is loaded at runtime from its own file, so it can be replaced with
+any compatible build of `libusb-1.0.dll` by overwriting that file. The licence text is
+`LICENSES/libusb-LGPL-2.1.txt`, copied verbatim from that tag, because the wheel does not carry
+it.
 
 **Tcl/Tk is the one row that does not come from a downloaded artifact.** The embeddable
 distribution ships no tkinter at all, so `packaging/build_bundle.ps1` copies those six paths out
@@ -45,7 +48,7 @@ in the folder" is true here but is not a safe reflex in general.
 |---|---|---|
 | vJoy / `vJoyInterface.dll` | Copyright (c) 2017 Shaul Eizikovich | [shauleiz/vJoy](https://github.com/shauleiz/vJoy) |
 | vJoy 2.2.x forks (effect block index, Win11 signing) | as above, per fork | [njz3/vJoy](https://github.com/njz3/vJoy), [BrunnerInnovation/vJoy](https://github.com/BrunnerInnovation/vJoy) |
-| PyWinRT (`winrt-runtime`, `winrt-Windows.*`) | Copyright (c) Microsoft Corporation. All rights reserved.<br>Copyright (c) 2021-2025 David Lechner \<david@pybricks.com\> | [pywinrt/pywinrt](https://github.com/pywinrt/pywinrt) |
+| sv-ttk (Sun Valley ttk theme) | Copyright (c) rdbende | [rdbende/Sun-Valley-ttk-theme](https://github.com/rdbende/Sun-Valley-ttk-theme) |
 | pyvjoyffb | Yannick Richter — **see the note below** | [Ultrawipf/pyvjoy](https://github.com/Ultrawipf/pyvjoy) |
 
 The MIT License text, which applies to each of the above:
@@ -115,11 +118,22 @@ Three ways out, in the order they should be tried:
 | Component | License | Source |
 |---|---|---|
 | CPython | PSF License Agreement | [python.org](https://www.python.org/) |
-| `typing_extensions` | PSF-2.0 | [python/typing_extensions](https://github.com/python/typing_extensions) |
 
-Both ship their full license text in their own distributions — CPython's embeddable
-distribution contains `LICENSE.txt`, and `typing_extensions` ships its license inside the
-wheel. A binary release carries those files as they are, unmodified.
+CPython's embeddable distribution contains `LICENSE.txt`, and a binary release carries it as it
+is, unmodified.
+
+---
+
+## Other permissive components
+
+Each ships its full licence text inside its own `.dist-info` folder in `lib\`, and the bundle
+carries those folders unmodified.
+
+| Component | License | Copyright | Source |
+|---|---|---|---|
+| pyusb | BSD-3-Clause | Copyright 2009–2017 Wander Lairson Costa; Copyright 2009–2021 PyUSB contributors | [pyusb/pyusb](https://github.com/pyusb/pyusb) |
+| libusb-package (the Python wrapper around the DLL) | Apache-2.0 | its authors, per the wheel | [pyocd/libusb-package](https://github.com/pyocd/libusb-package) |
+| importlib_resources | Apache-2.0 | its authors, per the wheel | [python/importlib_resources](https://github.com/python/importlib_resources) |
 
 ---
 
@@ -129,9 +143,7 @@ Not part of any distribution, listed because the build depends on them.
 
 | Component | License | Source |
 |---|---|---|
-| Zig | MIT | [ziglang.org](https://ziglang.org/) |
 | Ruff | MIT | [astral-sh/ruff](https://github.com/astral-sh/ruff) |
-| Windows SDK WinRT headers | Microsoft SDK licence; build input only | Windows SDK |
 
 ## Trademarks
 
