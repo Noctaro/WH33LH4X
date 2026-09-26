@@ -28,7 +28,6 @@ Usage:
 import argparse
 import asyncio
 import os
-import queue
 import sys
 import time
 
@@ -40,58 +39,21 @@ except ImportError:
 import ffb_render as render
 import probe_log as log
 from live_tune import ButtonTuner, LiveTune
-from motor_sink import IpcMotorSink, RateLimiter, RawUsbMotorSink, WgiMotorSink, clamp
+from bridge.device import RawUsbWheel
+from motor_sink import IpcMotorSink, RateLimiter, WgiMotorSink
 
 try:
     import pyvjoy
     import pyvjoy._sdk as sdk
-    from pyvjoy.constants import (
-        CTRL_DEVCONT, CTRL_DEVPAUSE, CTRL_DEVRST, CTRL_DISACT, CTRL_ENACT, CTRL_STOPALL,
-        EFF_STOP,
-        HID_USAGE_RX, HID_USAGE_RY, HID_USAGE_X, HID_USAGE_Y, HID_USAGE_Z,
-        PT_BLKFRREP, PT_CONDREP, PT_CONSTREP, PT_CTRLREP, PT_EFFREP, PT_EFOPREP,
-        PT_ENVREP, PT_GAINREP, PT_NEWEFREP, PT_PRIDREP, PT_RAMPREP,
-        VJD_STAT_BUSY, VJD_STAT_FREE, VJD_STAT_MISS, VJD_STAT_OWN,
+
+    from bridge.vjoy import (
+        AXIS_MAP, AXIS_NAMES, EffectDecoder, VJoyFeeder, bidirectional, report_directions,
     )
 except ImportError:
     sys.exit("pyvjoyffb is not installed. Run:\n"
              "    .\\.venv\\Scripts\\python.exe -m pip install pyvjoyffb")
 
 from wgi_probe import PumpThread, has_motor, report, rule, wait_for_devices
-
-# vJoy axis range. The SDK takes 0x1..0x8000; 0x4000 is centre for a bidirectional axis.
-AXIS_MIN = 0x0001
-AXIS_MAX = 0x8000
-AXIS_MID = 0x4000
-
-STATUS_NAMES = {VJD_STAT_OWN: "owned by us", VJD_STAT_FREE: "free",
-                VJD_STAT_BUSY: "busy (another app owns it)", VJD_STAT_MISS: "missing"}
-
-
-def bidirectional(value):
-    """-1.0..+1.0 -> full vJoy axis range, centred."""
-    return int(round(AXIS_MID + clamp(value) * (AXIS_MAX - AXIS_MID)))
-
-
-def unidirectional(value):
-    """0.0..1.0 -> full vJoy axis range. Pedals rest at zero, not at centre."""
-    return int(round(AXIS_MIN + max(0.0, min(1.0, value)) * (AXIS_MAX - AXIS_MIN)))
-
-
-# Which real-wheel control drives which vJoy axis.
-#
-# CONSTRAINT: only X, Y, Z, RX, RY and RZ arrive. The vJoy SDK advertises nine axes but
-# DirectInput enumerates six, and anything beyond them writes successfully and never arrives.
-# Pedals get their own axes: a sim can rebind an axis but cannot un-combine two that were
-# summed before they arrived.
-AXIS_MAP = [
-    # (reading attribute, vJoy usage, label, converter)
-    ("wheel", HID_USAGE_X, "steering", bidirectional),
-    ("throttle", HID_USAGE_Y, "throttle", unidirectional),
-    ("brake", HID_USAGE_Z, "brake", unidirectional),
-    ("clutch", HID_USAGE_RX, "clutch", unidirectional),
-    ("handbrake", HID_USAGE_RY, "handbrake", unidirectional),
-]
 
 
 class WheelReader(object):
@@ -158,286 +120,6 @@ class WheelReader(object):
         except Exception:
             caps["max_wheel_angle"] = None
         return caps
-
-
-class VJoyFeeder(object):
-    """Writes axis and button state into the vJoy device."""
-
-    def __init__(self, rid, dry_run=False):
-        self.rid = rid
-        self.dry_run = dry_run
-        self.device = None
-        self.writes = 0
-        self.failures = 0
-        self.button_count = 0
-        self.axes = []
-
-    def open(self):
-        status = sdk.GetVJDStatus(self.rid)
-        if status in (VJD_STAT_MISS, VJD_STAT_BUSY):
-            raise RuntimeError("vJoy device %d is %s. Configure or free it in vJoyConf."
-                               % (self.rid, STATUS_NAMES.get(status, status)))
-
-        # Which of our mapped axes this device actually has configured. Writing to an axis
-        # that is not enabled fails per call; better to know once, up front, and say so.
-        self.axes = [(attr, usage, label, conv) for attr, usage, label, conv in AXIS_MAP
-                     if sdk._vj.GetVJDAxisExist(self.rid, usage)]
-        self.button_count = int(sdk._vj.GetVJDButtonNumber(self.rid))
-
-        if not self.dry_run:
-            self.device = pyvjoy.VJoyDevice(self.rid)
-        return self
-
-    def close(self):
-        if self.device is not None:
-            try:
-                sdk.ResetVJD(self.rid)
-            except Exception:
-                pass
-            self.device = None
-
-    def feed(self, reading, caps):
-        """Push one reading into vJoy. Returns the values written, for display."""
-        written = []
-        for attr, usage, label, conv in self.axes:
-            # Skip controls the wheel does not have: leaving them at rest is right, whereas
-            # writing a stale or zero value would look to the game like a pedal held down.
-            if caps.get(attr) is False:
-                continue
-            try:
-                raw = getattr(reading, attr)
-            except Exception:
-                continue
-            value = conv(raw)
-            written.append((label, raw, value))
-            if self.device is not None:
-                try:
-                    self.device.set_axis(usage, value)
-                    self.writes += 1
-                except Exception:
-                    self.failures += 1
-
-        if self.device is not None and self.button_count:
-            try:
-                self._feed_buttons(int(reading.buttons))
-            except Exception:
-                self.failures += 1
-        return written
-
-    def _feed_buttons(self, mask):
-        """
-        RacingWheelButtons is a flags enum; map set bits onto vJoy buttons 1..N.
-
-        The mapping is positional, not semantic: bit 0 becomes button 1 and so on. Games let
-        you rebind buttons, so a stable arbitrary order is worth more than a guess at which
-        physical button "should" be A.
-        """
-        for index in range(self.button_count):
-            self.device.set_button(index + 1, 1 if mask & (1 << index) else 0)
-
-
-# vJoy effect-type byte -> the kind names ffb_render uses.
-EFFECT_KINDS = {
-    1: "constant", 2: "ramp", 3: "square", 4: "sine", 5: "triangle",
-    6: "sawtoothup", 7: "sawtoothdown",
-    8: "spring", 9: "damper", 10: "inertia", 11: "friction",
-}
-
-
-class EffectDecoder(object):
-    """
-    Turns vJoy's force feedback packets into ffb_render effects.
-
-    CONSTRAINT: vJoy delivers packets on its own thread. Nothing here may touch WinRT, and the
-    render loop must not have effect state mutated mid-computation, so packets are queued and
-    applied by the bridge thread between ticks.
-
-    CONSTRAINT: the wire format is not what DirectInput was handed. Gain arrives as a 0-255
-    byte, duration in milliseconds with 0xFFFF meaning infinite, magnitudes and coefficients
-    unchanged at +-10000 full scale. Getting gain or duration wrong is a silent factor of 40,
-    not a crash. vjoy_ffb_spike.py re-measures this on every run.
-
-    CONSTRAINT: how a game signs a force depends on the game, so direction is a mode. See
-    docs/tuning.md#how-dir_mode-reads-a-games-direction-field.
-    """
-
-    def __init__(self, mixer, clock=time.monotonic):
-        self.mixer = mixer
-        self.clock = clock
-        self.queue = queue.Queue(maxsize=4096)
-        self.received = 0
-        self.dropped = 0
-        self.unknown = 0
-
-        # Which convention this game uses. Counted rather than logged per packet: they
-        # arrive about 66 times a second and only the distinct values matter.
-        self.dir_counts = {}
-        # An effect's shape is set once and only its magnitude is streamed after, so the
-        # defining packet is logged whenever it says something new.
-        self.effect_seen = set()
-        self.mag_min = 0.0
-        self.mag_max = 0.0
-        # The most recent direction, for per-tick telemetry. Its correlation with steering
-        # is what identifies the encoding, so the current value has to reach the tick line.
-        self.last_dir = 0
-        self.last_dir_x = 0.0
-
-    # -- called on vJoy's thread -------------------------------------------
-
-    def on_packet(self, data, reptype):
-        """vJoy callback. Does the minimum possible and gets off this thread."""
-        try:
-            self.queue.put_nowait((self.clock(), reptype, _snapshot(data)))
-            self.received += 1
-        except queue.Full:
-            # Dropping is better than blocking vJoy's thread. Counted, because a bridge
-            # that silently sheds a game's effect updates would feel like random FFB.
-            self.dropped += 1
-
-    # -- called on the bridge thread ---------------------------------------
-
-    def drain(self):
-        """Apply every queued packet. Returns how many were applied."""
-        applied = 0
-        while True:
-            try:
-                stamp, reptype, fields = self.queue.get_nowait()
-            except queue.Empty:
-                return applied
-            try:
-                self._apply(stamp, reptype, fields)
-            except Exception as exc:                              # noqa: BLE001
-                log.event("decode.error", reptype=reptype, error=repr(exc))
-            applied += 1
-
-    def _apply(self, stamp, reptype, f):
-        mixer = self.mixer
-
-        if reptype == PT_CTRLREP:
-            self._control(f)
-            return
-        if reptype == PT_GAINREP:
-            # Device gain is the game's master volume for force feedback, 0-255.
-            mixer.device_gain = _byte_fraction(f)
-            log.event("decode.device_gain", gain=round(mixer.device_gain, 3))
-            return
-        if reptype == PT_NEWEFREP:
-            return                      # allocation only; the block index arrives later
-        if reptype == PT_BLKFRREP:
-            mixer.free(int(f))
-            return
-
-        block = f.get("EffectBlockIndex", 0) if isinstance(f, dict) else 0
-        if not block:
-            self.unknown += 1
-            return
-        effect = mixer.get(block)
-
-        if reptype == PT_EFFREP:
-            kind = EFFECT_KINDS.get(f["EffectType"])
-            if kind is None:
-                self.unknown += 1
-                return
-            effect.kind = kind
-            effect.gain = f["Gain"] / 255.0                  # BYTE, not 0..10000
-            effect.duration = render.duration_seconds(f["Duration"])
-            effect.start_delay = f.get("StartDelay", 0) / 1000.0
-            seen = (block, kind, f["Duration"])
-            if seen not in self.effect_seen:
-                self.effect_seen.add(seen)
-                log.event("decode.effect", block=block, kind=kind,
-                          raw_duration=f["Duration"],
-                          seconds=effect.duration or "infinite",
-                          gain=round(effect.gain, 3))
-            dir_raw = f["DirX"]
-            effect.direction = render.direction_x(dir_raw)
-            self.last_dir = dir_raw
-            self.last_dir_x = effect.direction
-            # First sighting of a direction value is worth a line; the next ten thousand are
-            # not. Two distinct values here means the game steers with the ANGLE.
-            if dir_raw not in self.dir_counts:
-                log.event("decode.direction", dirx=dir_raw,
-                          degrees=round(360.0 * (dir_raw % 32768) / 32768.0, 1),
-                          x=round(effect.direction, 3))
-                self.dir_counts[dir_raw] = 0
-            self.dir_counts[dir_raw] += 1
-        elif reptype == PT_CONSTREP:
-            raw = f["Magnitude"]
-            # The extremes are the measurement: a magnitude that never goes negative means the
-            # sign is being carried somewhere else (or thrown away).
-            self.mag_min = min(self.mag_min, raw)
-            self.mag_max = max(self.mag_max, raw)
-            effect.magnitude = raw / render.DI_FULL_SCALE
-        elif reptype == PT_RAMPREP:
-            effect.ramp_start = f["Start"] / render.DI_FULL_SCALE
-            effect.ramp_end = f["End"] / render.DI_FULL_SCALE
-        elif reptype == PT_PRIDREP:
-            effect.periodic_magnitude = f["Magnitude"] / render.DI_FULL_SCALE
-            effect.periodic_offset = f["Offset"] / render.DI_FULL_SCALE
-            # Phase is assumed to be DirectInput's hundredths of a degree. Only phase 0 has
-            # been observed, so this is the one conversion here that is NOT measured.
-            effect.periodic_phase_deg = f["Phase"] / 100.0
-            effect.periodic_period = f["Period"] / 1000.0
-        elif reptype == PT_CONDREP:
-            # CONSTRAINT: a positive coefficient resists. Measured, the firmware spring
-            # centres on +1/+1, and ffb_render.condition_force negates the formula to match.
-            # If a game's spring drives the wheel outward, flip it here at the decode
-            # boundary, not in the control law.
-            axis = 1 if f["isY"] else 0
-            effect.conditions[axis] = render.ConditionParams.from_di(
-                offset=f["CenterPointOffset"],
-                pos_coeff=f["PosCoeff"], neg_coeff=f["NegCoeff"],
-                pos_saturation=f["PosSatur"], neg_saturation=f["NegSatur"],
-                deadband=f["DeadBand"])
-        elif reptype == PT_ENVREP:
-            effect.attack_level = f["AttackLevel"] / render.DI_FULL_SCALE
-            effect.attack_time = f["AttackTime"] / 1000.0
-            effect.fade_level = f["FadeLevel"] / render.DI_FULL_SCALE
-            effect.fade_time = f["FadeTime"] / 1000.0
-        elif reptype == PT_EFOPREP:
-            op = f["EffectOp"]
-            if op == EFF_STOP:
-                effect.stop()
-            else:
-                effect.start(stamp, f.get("LoopCount", 1))
-            log.event("decode.effect_op", block=block, op=op, kind=effect.kind or "?")
-        else:
-            self.unknown += 1
-
-    def _control(self, value):
-        mixer = self.mixer
-        if value == CTRL_DEVRST:
-            mixer.reset()
-        elif value == CTRL_STOPALL:
-            mixer.stop_all()
-        elif value == CTRL_DEVPAUSE:
-            mixer.paused = True
-        elif value == CTRL_DEVCONT:
-            mixer.paused = False
-        elif value == CTRL_ENACT:
-            mixer.actuators_enabled = True
-        elif value == CTRL_DISACT:
-            mixer.actuators_enabled = False
-        log.event("decode.control", control=value)
-
-
-def _snapshot(data):
-    """
-    Copy a packet out of vJoy's structure before returning from the callback.
-
-    The decoded structs belong to the callback's stack frame; queuing one and reading it a
-    tick later would be reading whatever vJoy put there since.
-    """
-    if isinstance(data, sdk.PacketStruct):
-        return data.to_dict()
-    return data
-
-
-def _byte_fraction(value):
-    try:
-        return max(0.0, min(1.0, int(value) / 255.0))
-    except (TypeError, ValueError):
-        return 1.0
 
 
 SWEEP_CHOICES = [label for _a, _u, label, _c in AXIS_MAP] + ["buttons"]
@@ -617,7 +299,7 @@ def main():
         if use_raw:
             # WinUSB hides the wheel from WGI entirely, so there is nothing to enumerate: the
             # sink is the reader's source and the motor both, as with the shim.
-            sink = RawUsbMotorSink(max_force=1.0, gain=args.gain).open()
+            sink = RawUsbWheel(max_force=1.0, gain=args.gain).open()
             identity = {"name": "HORI racing wheel, raw USB"}
         else:
             raw, wheels = wait_for_devices(args.wait, pump)
@@ -666,8 +348,7 @@ def main():
         rule("vJoy device %d" % args.device)
         print("  axes mapped : %s"
               % ", ".join("%s->%s" % (lbl, nm) for _a, _u, lbl, _c in feeder.axes
-                          for nm in [{0x30: "X", 0x31: "Y", 0x32: "Z",
-                                      0x33: "RX", 0x34: "RY", 0x35: "RZ"}[_u]]))
+                          for nm in [AXIS_NAMES[_u]]))
         print("  buttons     : %d" % feeder.button_count)
         skipped = [lbl for attr, _u, lbl, _c in AXIS_MAP if caps.get(attr) is False]
         if skipped:
@@ -825,7 +506,7 @@ def main():
                         # diagnostic. One number alone cannot tell a game sending nothing from
                         # a tuning value eating everything.
                         extra = ("  game %+.2f -> out %+.2f  fx=%d  pkt=%d"
-                                 % (raw_force, sink._last or 0.0, len(running),
+                                 % (raw_force, sink.last_force or 0.0, len(running),
                                     decoder.received))
                         if decoder.dropped:
                             extra += " DROPPED=%d" % decoder.dropped
@@ -841,7 +522,7 @@ def main():
                     # centring works. See tune_report.py.
                     log.event("bridge.tick", hz=round(limiter.achieved_hz, 1),
                               writes=feeder.writes, failures=feeder.failures,
-                              force=(sink._last or 0.0) if sink else 0.0,
+                              force=(sink.last_force or 0.0) if sink else 0.0,
                               game=raw_force if sink else 0.0,
                               pos=state.position, vel=state.velocity,
                               dirx=decoder.last_dir if decoder else 0,
@@ -876,29 +557,7 @@ def main():
             sink.close()
             print("  motor released: %d writes, %d failures" % (sink.writes, sink.failures))
         if decoder is not None:
-            print("  ffb packets %d received, %d dropped, %d unrecognised"
-                  % (decoder.received, decoder.dropped, decoder.unknown))
-            # THE MEASUREMENT. Which convention did this game actually use to point a force?
-            # Two or more directions means it steers with the angle and the magnitude stays
-            # positive; one direction plus a magnitude that goes negative means the sign rides
-            # in the magnitude. Printed at exit because it is a property of the whole session.
-            if decoder.dir_counts:
-                shown = sorted(decoder.dir_counts.items(), key=lambda kv: -kv[1])[:6]
-                print("  directions seen: %s"
-                      % ", ".join("%d (%.0f deg) x%d"
-                                  % (d, 360.0 * (d % 32768) / 32768.0, n) for d, n in shown))
-                print("  raw magnitude range: %+d .. %+d"
-                      % (decoder.mag_min, decoder.mag_max))
-                if len(decoder.dir_counts) > 1:
-                    print("  -> the game POINTS forces with the angle. The sign fix in "
-                          "ffb_render.direction_x is the one that matters.")
-                elif decoder.mag_min < 0:
-                    print("  -> the game SIGNS forces in the magnitude, single direction.")
-                else:
-                    print("  -> one direction and a never-negative magnitude: this game sent "
-                          "no directional force at all during this run.")
-                log.event("decode.summary", directions=len(decoder.dir_counts),
-                          mag_min=decoder.mag_min, mag_max=decoder.mag_max)
+            report_directions(decoder)
         if feeder is not None:
             print("  vJoy writes %d, failures %d" % (feeder.writes, feeder.failures))
             feeder.close()
