@@ -124,7 +124,7 @@ WinUSB a one-minute job.
 Input Protocol made the wheel's USB traffic readable.
 
 **[Sun Valley ttk theme](https://github.com/rdbende/Sun-Valley-ttk-theme)**, rdbende, MIT, which
-makes the window look like it belongs on Windows 11.
+makes the window look like it should.
 
 No HORI code or assets are used anywhere in this project.
 
