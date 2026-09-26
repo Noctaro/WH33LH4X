@@ -70,6 +70,10 @@ jobs:
       - name: Wire checks
         run: python test_gip.py
 
+      # The bridge loop against a fake wheel: force sign, stop file, zero on close.
+      - name: Bridge checks
+        run: python test_bridge_core.py
+
   shim:
     name: build dinput8.dll
     runs-on: windows-latest

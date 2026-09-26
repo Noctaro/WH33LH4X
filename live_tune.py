@@ -32,6 +32,10 @@ DEFAULTS = {
     "spring": 0.0,          # synthetic centring, from real wheel position. 0 = off
     "damper": 0.0,          # synthetic damping, from real wheel velocity. 0 = off
     "friction": 0.0,        # synthetic drag whenever the wheel moves at all. 0 = off
+    # "linear" adds spring and damper as they are; "tuned" is ffb_render.CentringLaw, which
+    # needs the bridge package to observe the wheel.
+    "centring": "linear",
+    "centring_floor": 0.05,     # tuned only: smallest centring force away from centre
 
     # Wheel buttons that adjust tuning while driving, as 1-based bit numbers; 0 = unassigned.
     # A game holds the foreground and every keystroke with it, so the wheel is the only input
@@ -77,6 +81,7 @@ class LiveTune(object):
         self.path = path
         self.poll_seconds = poll_seconds
         self.values = dict(DEFAULTS)
+        self.centring_law = render.CentringLaw()
         self.loads = 0
         self.errors = 0
         self.last_error = None
@@ -217,10 +222,13 @@ class LiveTune(object):
             spring = self.values["spring"]
             damper = self.values["damper"]
             friction = self.values["friction"]
-            if spring:
-                out += -state.position * spring
-            if damper:
-                out += -state.velocity * damper
+            if self.values["centring"] == "tuned":
+                out += self.centring_law.force(spring, damper, self.values["centring_floor"])
+            else:
+                if spring:
+                    out += -state.position * spring
+                if damper:
+                    out += -state.velocity * damper
             if friction:
                 # Not -sign(velocity) * gain written out again. ffb_render already holds the
                 # law that was fitted to this wheel, dead band included, and the dead band

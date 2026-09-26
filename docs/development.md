@@ -29,6 +29,7 @@ None of these need hardware:
 ```powershell
 .\.venv\Scripts\python.exe test_ffb_render.py    # the control laws still do what they did
 .\.venv\Scripts\python.exe test_gip.py            # the same bytes still go on the wire
+.\.venv\Scripts\python.exe test_bridge_core.py    # the bridge loop against a fake wheel
 .\.venv\Scripts\python.exe test_shimview.py      # the GUI must not CREATE the shared section
 .\.venv\Scripts\python.exe -m ruff check .
 .\.venv\Scripts\python.exe packaging\gen_commands.py --check
@@ -230,6 +231,8 @@ The short version:
 | `games.json` | Per-game notes and quirks. Source for the GUI's panel **and** for GAMES.md's status table |
 | `vjoy_bridge.py` | Feeds the wheel's position into vJoy, and force back out through the shim |
 | `motor_sink.py` | The two ways to reach the motor: WGI directly, or the shim over shared memory |
+| `bridge/` | The raw USB bridge, `python -m bridge`: loop, wheel over USB, vJoy front-end |
+| `gip/` | The GIP protocol over raw USB: framing, arming, USB host, input reports |
 | `ffb_render.py` | The control laws: spring, damper, friction, inertia, periodics, envelopes |
 | `wgi_probe.py` | The tool: detection, message pump, effect menu, sweeps, cleanup |
 | `wheel_profile.py` | Calibration, `wheel_profile.json` persistence, software condition effects |

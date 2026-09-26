@@ -101,6 +101,25 @@ Ships in the downloadable bundle. Normally started for you by `play.ps1`. Run it
 | `--tune` | — | live tuning file, re-read while running (default: tune.json next to this script). Edit mid-corner; changes apply within half a second. |
 | `--no-log` | — | — |
 
+### `python -m bridge` — the raw USB bridge, no shim
+
+Owns the wheel over raw USB (WinUSB on Windows, xone unbound on Linux) and presents it through
+vJoy. Not in the bundle yet. See [`evidence/RAW_USB.md`](evidence/RAW_USB.md) for the binding.
+
+| Flag | Default | What it does |
+|---|---|---|
+| `--frontend` `vjoy`/`none` | `vjoy` on Windows | what games see; `none` runs the tune file's spring with no game |
+| `--device` | `1` | vJoy device id |
+| `--rate` | `250.0` | bridge loop rate in Hz |
+| `--gain` | `1.0` | motor gain after `max_force`; the raw USB hard cap 0.35 still applies |
+| `--tune` | `tune.json` | live tuning file, re-read while running |
+| `--stop-file` | — | stop cleanly when this file appears, and delete it |
+| `--run-seconds` | `0.0` | stop after N seconds (default: until Ctrl+C) |
+| `--no-ffb` | — | input only; never command force |
+| `--dry-run` | — | read the wheel and report; write nothing to vJoy, no force |
+| `--trace` | — | write time, position and force per tick, like `wheel_trace.txt` |
+| `--no-log` | — | — |
+
 ### `tune_report.py` — say what the force feedback actually did
 
 Ships in the downloadable bundle. Reads a bridge session log and reports which effects the game sent, whether output ever
@@ -234,6 +253,11 @@ hardware: `.\.venv\Scripts\python.exe test_ffb_render.py`. Takes no flags.
 Run before proposing a change to `gip/`. Pins the arming and force bytes that drove the motor,
 and the input report decoding. No hardware, no pyusb: `.\.venv\Scripts\python.exe test_gip.py`.
 Takes no flags.
+
+### `test_bridge_core.py` — the bridge loop against a fake wheel
+
+Run before proposing a change to `bridge/`. Force sign, the stop file, and zero force before the
+wheel is released. No hardware: `.\.venv\Scripts\python.exe test_bridge_core.py`.
 
 ### `test_shimview.py` — the GUI must not create the shared section
 

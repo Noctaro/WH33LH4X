@@ -156,6 +156,37 @@ def legacy_condition_params(kind, gain, offset=0.0, deadband=0.10):
                            deadband=0.0)
 
 
+class CentringLaw(object):
+    """The tuned Linux spring: linear spring, a floor faded in from centre, and a damper."""
+
+    # Velocity is sampled per input report and refreshed after STALE, as in
+    # evidence/gip_wheel_driver.py, so the smoothing does not depend on the loop rate.
+    STALE = 0.02
+    FLOOR_RAMP = 0.05       # distance over which the floor fades in; see evidence/RAW_USB.md
+
+    def __init__(self):
+        self.state = WheelState()
+        self._fed = None
+
+    def observe(self, position, now, fresh=True):
+        """Feed the position every tick; fresh means it came from a new input report."""
+        if fresh or self._fed is None or now - self._fed > self.STALE:
+            self.state.update(position, now)
+            self._fed = now
+
+    def force(self, spring, damper, floor):
+        state = self.state
+        centring = condition_force("spring", legacy_condition_params("spring", spring), state)
+        if floor:
+            ramp = floor * math.tanh(abs(state.position) / self.FLOOR_RAMP)
+            if abs(centring) < ramp:
+                centring = -ramp if state.position > 0 else ramp
+        if damper:
+            centring += condition_force("damper", legacy_condition_params("damper", damper),
+                                        state)
+        return centring
+
+
 # ---------------------------------------------------------------------------
 # Periodic waveforms
 # ---------------------------------------------------------------------------

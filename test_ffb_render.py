@@ -19,9 +19,11 @@ No test framework. One file with no dependencies:
     .\.venv\Scripts\python.exe test_ffb_render.py
 """
 
+import math
 import sys
 
 import ffb_render as R
+from live_tune import LiveTune
 
 # Fitted to this wheel; mirrors wheel_profile.CONDITION_GAINS.
 GAINS = {"spring": 2.0, "damper": 1.0, "friction": 1.0, "inertia": 0.10}
@@ -294,11 +296,75 @@ def test_infinite_duration():
     return ok
 
 
+def linux_demand(state, spring, damper, min_force=0.05, floor_ramp=0.05):
+    """The force of evidence/gip_wheel_driver.py run() at its defaults, copied verbatim."""
+    centring = R.condition_force("spring", R.legacy_condition_params("spring", spring), state)
+    floor = min_force * math.tanh(abs(state.position) / floor_ramp)
+    if abs(centring) < floor:
+        centring = -floor if state.position > 0 else floor
+    demand = centring
+    if damper:
+        demand += R.condition_force("damper", R.legacy_condition_params("damper", damper),
+                                    state)
+    return demand
+
+
+def test_centring_law():
+    """CentringLaw gives the Linux driver's force for the same reports, at any loop rate."""
+    print("\ncentring law (tuned Linux spring)")
+    ok = True
+    for rate in (60.0, 250.0):
+        law = R.CentringLaw()
+        linux = R.WheelState()
+        fed = None
+        worst = 0.0
+        position = 0.0
+        for i in range(int(rate * 3)):
+            now = i / rate
+            # Reports arrive every third tick while turning, then stop for the last second.
+            fresh = i % 3 == 0 and now < 2.0
+            if fresh:
+                position = 0.6 * math.sin(now * 2.0)
+            law.observe(position, now, fresh)
+            if fresh or fed is None or now - fed > 0.02:
+                linux.update(position, now)
+                fed = now
+            worst = max(worst, abs(law.force(0.25, 0.08, 0.05)
+                                   - linux_demand(linux, 0.25, 0.08)))
+        ok &= check("matches the Linux driver at %.0f Hz (worst %.1e)" % (rate, worst),
+                    worst == 0.0)
+        ok &= check("velocity decays once reports stop at %.0f Hz (%.4f)"
+                    % (rate, law.state.velocity), abs(law.state.velocity) < 0.01)
+
+    law = R.CentringLaw()
+    law.observe(0.0, 0.0)
+    ok &= check("no force at exact centre", law.force(0.25, 0.08, 0.05) == 0.0)
+    law.observe(0.002, 0.004)
+    small = law.force(0.25, 0.0, 0.05)
+    ok &= check("floor fades in near centre (%.4f)" % small, -0.005 < small < 0.0)
+    return ok
+
+
+def test_linear_unchanged():
+    """centring "linear" keeps LiveTune's spring and damper bit-identical."""
+    print("\nlinear centring unchanged")
+    tune = LiveTune("does-not-exist.json")
+    tune.values.update(spring=0.3, damper=0.1, max_force=1.0)
+    ok = True
+    for position in (-0.8, -0.1, 0.0, 0.05, 0.7):
+        for velocity in (-2.0, 0.0, 1.5):
+            state = FakeState(position, velocity, 0.0)
+            expected = max(-1.0, min(1.0, 0.2 + -position * 0.3 + -velocity * 0.1))
+            ok &= tune.apply(0.2, state) == expected
+    return check("apply() equals -position*spring - velocity*damper", ok)
+
+
 def main():
     print("ffb_render control-law checks")
     results = [test_matches_legacy(), test_friction_is_a_step(), test_di_conversion(),
                test_saturation_and_sign(), test_periodics(), test_direction_sign(),
-               test_envelope(), test_wheel_state(), test_infinite_duration()]
+               test_envelope(), test_wheel_state(), test_infinite_duration(),
+               test_centring_law(), test_linear_unchanged()]
     print()
     if all(results):
         print("ALL CHECKS PASSED")

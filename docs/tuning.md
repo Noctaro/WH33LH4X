@@ -17,6 +17,7 @@ to restart anything to try a value.
 | `max_force` | Ceiling on commanded force. Live, unlike `--gain` |
 | `min_force` | Floor on non-zero output, so small forces still overcome the motor's own stiction instead of vanishing |
 | `spring`, `damper`, `friction` | Synthetic centring, damping and drag, computed from real wheel position. For games that send none, and DiRT 4 sends a single constant force and nothing else. `0` is off |
+| `centring` | `"linear"` adds `spring` and `damper` as they are. `"tuned"` is the Linux driver's law: the same spring plus a floor of `centring_floor` faded in from centre, and velocity sampled per input report. Needs `python -m bridge` |
 | `btn_down`, `btn_up`, `btn_next` | Wheel buttons that adjust tuning mid corner, as 1-based bit numbers. A game owns the foreground and the keyboard with it, so the wheel is the only device that can still reach the bridge. Run it, press buttons, and each new bitfield is printed |
 
 `invert` and `dir_mode` are properties of the **game**, not of your taste, so their known good
