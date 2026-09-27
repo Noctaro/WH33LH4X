@@ -178,10 +178,21 @@ def test_tuned_centring():
                  abs(wheel.forces[-2] + 0.1) < 1e-3)
 
 
+def test_input_delay():
+    print("\ninput delay")
+    wheel = FakeWheel(0.1)
+    bridge, clock = make(wheel, NullFrontend())
+    wheel.read_at = clock.now - 0.003
+    bridge.run(0.1)
+    summary = bridge.close()
+    return check("report to front-end measured once per fresh report (%.1f ms)"
+                 % summary["input_ms"], summary["input_ms"] == summary["input_max_ms"] == 3.0)
+
+
 def main():
     print("bridge core checks")
     results = [test_spring_opposes_position(), test_game_force(), test_max_force_counted(),
-               test_no_ffb(), test_stop_file(), test_tuned_centring()]
+               test_no_ffb(), test_stop_file(), test_tuned_centring(), test_input_delay()]
     print()
     if all(results):
         print("ALL CHECKS PASSED")

@@ -68,6 +68,10 @@ jobs:
       - name: Bridge checks
         run: python test_bridge_core.py
 
+      # The Linux front-end's effect decoding: units, direction and replay, without evdev.
+      - name: Evdev decoder checks
+        run: python test_evdev_decoder.py
+
       # Profiles, the bridge process handling and the force test verdict, without a window.
       - name: UI checks
         run: python test_ui.py

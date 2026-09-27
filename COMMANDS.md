@@ -53,7 +53,7 @@ passes its arguments through.
 
 | Flag | Default | What it does |
 |---|---|---|
-| `--frontend` `vjoy`/`none` | — | what games see: 'vjoy' (default on Windows) or 'none', the tune file's spring with no game (default elsewhere) |
+| `--frontend` `vjoy`/`uinput`/`none` | — | what games see: 'vjoy' (default on Windows), 'uinput' (default on Linux), or 'none', the tune file's spring with no game |
 | `--device` | `1` | vJoy device id (default 1) |
 | `--rate` | `250.0` | bridge loop rate in Hz (default 250, the wheel's write rate) |
 | `--gain` | `1.0` | motor gain 0.0-1.0 after max_force (default 1.0); the raw USB hard cap still applies |
@@ -61,7 +61,7 @@ passes its arguments through.
 | `--stop-file` | — | stop cleanly when this file appears, and delete it |
 | `--run-seconds` | `0.0` | stop after N seconds (default: run until Ctrl+C) |
 | `--no-ffb` | — | input only; never command force |
-| `--dry-run` | — | read the wheel and report; write nothing to vJoy, no force |
+| `--dry-run` | — | read the wheel and report; no virtual wheel input, no force |
 | `--trace` | — | write time, position and force per tick, like wheel_trace.txt |
 | `--no-log` | — | — |
 
@@ -157,6 +157,11 @@ and the input report decoding. No pyusb needed: `.\.venv\Scripts\python.exe test
 
 Run before proposing a change to `bridge/`. Force sign, the stop file, and zero force before
 the wheel is released: `.\.venv\Scripts\python.exe test_bridge_core.py`.
+
+### `test_evdev_decoder.py` — Linux game effects, without evdev
+
+Run before proposing a change to `bridge/uinput.py`. Units, direction, replay length and the
+uinput ioctl numbers: `.\.venv\Scripts\python.exe test_evdev_decoder.py`.
 
 ### `test_ui.py` — profiles and the bridge process, without a window
 

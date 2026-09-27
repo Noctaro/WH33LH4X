@@ -29,12 +29,13 @@ Python installed. That is what a release is. CI builds the same bundle on every 
 
 ## Tests
 
-None of these need hardware, and CI runs the first four:
+None of these need hardware, and CI runs the first five:
 
 ```powershell
 .\.venv\Scripts\python.exe test_ffb_render.py    # the control laws still do what they did
 .\.venv\Scripts\python.exe test_gip.py            # the same bytes still go on the wire
 .\.venv\Scripts\python.exe test_bridge_core.py    # the bridge loop against a fake wheel
+.\.venv\Scripts\python.exe test_evdev_decoder.py  # Linux game effects into ffb_render units
 .\.venv\Scripts\python.exe test_ui.py             # profiles and the bridge process
 .\.venv\Scripts\python.exe -m ruff check .
 .\.venv\Scripts\python.exe packaging\gen_commands.py --check
@@ -51,6 +52,9 @@ wheel --USB--> bridge/device.py --reading--> bridge/core.py --axes--> bridge/vjo
 wheel <--USB-- bridge/device.py <--force---- bridge/core.py <--effects-- bridge/vjoy.py <-- vJoy <-- game
 ```
 
+On Linux `bridge/uinput.py` takes vJoy's place, and the game sees a virtual wheel under
+`/dev/uinput` instead.
+
 - `gip/` is the protocol: message framing, the generated arming and force sequences, the USB
   interface, the input report.
 - `bridge/device.py` owns the wheel: a reader thread for input reports and a writer thread that
@@ -60,6 +64,9 @@ wheel <--USB-- bridge/device.py <--force---- bridge/core.py <--effects-- bridge/
   the stop file itself, so every way of stopping zeroes the motor first.
 - `bridge/vjoy.py` is the Windows front-end: the vJoy feeder and the decoder that turns vJoy's
   force feedback packets into `ffb_render` effects.
+- `bridge/uinput.py` is the Linux front-end: a virtual wheel under `/dev/uinput` with vJoy's
+  IDs, and the decoder for the evdev effects games upload to it. Uploads are answered on a
+  thread of their own, because a game's upload blocks until it is answered.
 - `ui/` is the window. It runs the bridge as a hidden child process and never holds the USB
   interface itself; Test force is a child process too (`bridge/nudge.py`).
 
@@ -194,7 +201,7 @@ The short version:
 | File | Purpose |
 |---|---|
 | `ui/` | The window, `python -m ui`: profiles, the bridge process, setup checks |
-| `bridge/` | The bridge, `python -m bridge`: the loop, the wheel over USB, the vJoy front-end, Test force |
+| `bridge/` | The bridge, `python -m bridge`: the loop, the wheel over USB, the vJoy and uinput front-ends, Test force |
 | `gip/` | The GIP protocol over raw USB: framing, arming, USB host, input reports |
 | `profiles/` | The window's profiles: Default, DiRT 4, RC car |
 | `ffb_render.py` | The control laws: spring, damper, friction, inertia, periodics, envelopes, the tuned centring |
