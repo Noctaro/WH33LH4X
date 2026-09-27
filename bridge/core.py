@@ -82,11 +82,13 @@ class Bridge(object):
         if reading is None:
             return
         fresh = reading is not self._reading
+        # The first reading can date from arming, before this loop ran.
+        timed = fresh and self._reading is not None
         self._reading = reading
         self.ticks += 1
         self._written = self.frontend.feed(reading)
         stamp = getattr(self.device, "read_at", None)
-        if fresh and stamp is not None:
+        if timed and stamp is not None:
             delay = self.clock() - stamp
             self._delays.append(delay)
             self._worst_delay = max(self._worst_delay, delay)

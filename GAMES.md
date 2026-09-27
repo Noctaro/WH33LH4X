@@ -30,7 +30,9 @@ Adding a game? The template and what is worth measuring first are in
 
 ## DiRT 4
 
-**Tested on:** Steam build, app id 421020, over raw USB with `python -m bridge`, 2026-09-26.
+**Tested on:** Steam build, app id 421020, over raw USB with `python -m bridge`: on Windows
+2026-09-26, and on Linux 2026-09-27, both as Feral's Linux port and as the Windows version
+under Proton. The Linux differences are [at the end of this section](#dirt-4-on-linux).
 
 ### Setup
 
@@ -73,8 +75,9 @@ The DiRT 4 profile holds the values the 2026-09-26 drive used:
 ```
 
 - **Adjust `strength` first**, in small steps, while driving.
-- **`invert` must stay on.** DiRT 4's force points the same way as the steering angle, so
-  applied unchanged it pulls the wheel into the corner.
+- **On Windows, `invert` must stay on.** Read through vJoy, DiRT 4's force points the same way
+  as the steering angle, so applied unchanged it pulls the wheel into the corner. On Linux it
+  arrives the right way round and `invert` stays off.
 - The wheel's own strength setting in the HORI app was measured as a gain stage under the old
   path. Whether it still applies over raw USB is unmeasured:
   [docs/tuning.md](docs/tuning.md#the-gain-stage-the-software-cannot-see).
@@ -83,6 +86,30 @@ The DiRT 4 profile holds the values the 2026-09-26 drive used:
 
 - **Oscillation at high gain.** Too much `strength` makes the wheel hunt, and at worst sweep
   lock to lock. Lower it. An inverted damping force looks identical, so check the sign first.
+
+### DiRT 4 on Linux
+
+Steam offers two versions, and both work with the **DiRT 4 (Linux)** profile. On Linux the
+game's wheel exists only while the bridge runs, so **press Start before starting the game**.
+`<game>` is the folder Steam opens under *Manage > Browse local files*.
+
+**Feral's Linux port**, what Steam installs by default. It only accepts wheels on its own
+list, so add ours in `<game>/share/inputdevices.json`, as the first entry after the
+`_Comment` line:
+
+```json
+{"Name": "WH33LH4X virtual wheel", "VendorID": "0x1234", "ProductIDs": ["0xbead"], "Category": "Wheel", "Type": "ThrustmasterWheel"},
+```
+
+Then do steps 1 and 2 above, with the files under `<game>/share/data/input/` instead of
+`<game>\input\`. The port sends one constant force.
+
+**The Windows version under Proton**, chosen under *Properties > Compatibility* by forcing a
+Proton version. Steps 1 and 2 above apply unchanged, in `<game>/input/`. This version also
+sends friction, spring and damper, as it does on Windows.
+
+The on-screen wheel does not turn as far as the real one: DiRT 4 maps the full axis onto each
+car's own steering lock and has no setting to match a wheel's rotation.
 
 ---
 

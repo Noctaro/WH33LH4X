@@ -1,9 +1,9 @@
 {
-  "name": "DiRT 4",
-  "notes": "On Windows DiRT 4 sends one constant force that follows the steering, so invert is on. Needs the device_defines.xml entry in GAMES.md.",
+  "name": "DiRT 4 (Linux)",
+  "notes": "On Linux, Feral's port and the Windows version under Proton both send their force the right way round, so invert is off. Setup is in GAMES.md.",
   "tune": {
     "strength": 0.449,
-    "invert": true,
+    "invert": false,
     "dir_mode": "sin",
     "max_force": 0.45,
     "min_force": 0.0,
