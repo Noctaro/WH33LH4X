@@ -1,5 +1,6 @@
 """The bridge loop: wheel readings go to the front-end, game force comes back to the wheel."""
 
+import collections
 import os
 import time
 
@@ -62,6 +63,9 @@ class Bridge(object):
         self._reading = None
         self._buttons = 0
         self._written = []
+        # Seconds from an input report to the front-end: the latest ones, and the worst ever.
+        self._delays = collections.deque(maxlen=5000)
+        self._worst_delay = 0.0
         self._started = None
         self._next_print = 0.0
         self._next_stop_poll = 0.0
@@ -78,9 +82,16 @@ class Bridge(object):
         if reading is None:
             return
         fresh = reading is not self._reading
+        # The first reading can date from arming, before this loop ran.
+        timed = fresh and self._reading is not None
         self._reading = reading
         self.ticks += 1
         self._written = self.frontend.feed(reading)
+        stamp = getattr(self.device, "read_at", None)
+        if timed and stamp is not None:
+            delay = self.clock() - stamp
+            self._delays.append(delay)
+            self._worst_delay = max(self._worst_delay, delay)
         self.state.update(reading.wheel, now)
         self.tune.centring_law.observe(reading.wheel, now, fresh)
         self._buttons_changed(reading.buttons)
@@ -182,9 +193,18 @@ class Bridge(object):
             else:
                 next_tick = self.clock()
 
+    def input_delay_ms(self):
+        """Recent median and overall worst time from a report to the front-end, in ms."""
+        if not self._delays:
+            return 0.0, 0.0
+        ordered = sorted(self._delays)
+        return 1000.0 * ordered[len(ordered) // 2], 1000.0 * self._worst_delay
+
     def summary(self):
         device = self.device
+        median, worst = self.input_delay_ms()
         return {"ticks": self.ticks, "hz": round(self.achieved_hz, 1),
+                "input_ms": round(median, 2), "input_max_ms": round(worst, 2),
                 "opposed": self.opposed, "counted": self.counted, "at_max": self.at_max,
                 "clipped": getattr(device, "clipped", 0),
                 "blocks": getattr(device, "blocks", 0),
@@ -209,5 +229,8 @@ class Bridge(object):
               % (summary["opposed"], summary["counted"], summary["hz"], summary["write_hz"],
                  summary["blocks"], summary["failures"], summary["at_max"],
                  summary["clipped"]))
+        if self._delays:
+            print("  input: report to %s in %.1f ms median, %.1f ms worst"
+                  % (self.frontend.name, summary["input_ms"], summary["input_max_ms"]))
         log.event("bridge.summary", **summary)
         return summary

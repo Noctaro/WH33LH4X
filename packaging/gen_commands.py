@@ -255,6 +255,11 @@ and the input report decoding. No pyusb needed: `.\\.venv\\Scripts\\python.exe t
 Run before proposing a change to `bridge/`. Force sign, the stop file, and zero force before
 the wheel is released: `.\\.venv\\Scripts\\python.exe test_bridge_core.py`.
 
+### `test_evdev_decoder.py` — Linux game effects, without evdev
+
+Run before proposing a change to `bridge/uinput.py`. Units, direction, replay length and the
+uinput ioctl numbers: `.\\.venv\\Scripts\\python.exe test_evdev_decoder.py`.
+
 ### `test_ui.py` — profiles and the bridge process, without a window
 
 Run before proposing a change to `ui/` or `profiles/`:

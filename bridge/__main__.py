@@ -1,7 +1,7 @@
 """
 python -m bridge: drive the wheel over raw USB and present it to games.
 
-    python -m bridge                          # vJoy device 1, force at 250 Hz
+    python -m bridge                          # vJoy on Windows, uinput on Linux, 250 Hz
     python -m bridge --frontend none          # no game: the tune file's spring alone
     python -m bridge --stop-file stop.request # stops when that file appears
 """
@@ -19,10 +19,10 @@ def parse_args():
     p = argparse.ArgumentParser(prog="python -m bridge",
                                 description="Drive the wheel over raw USB and present it to "
                                             "games through a virtual wheel")
-    p.add_argument("--frontend", choices=("vjoy", "none"),
-                   default="vjoy" if sys.platform == "win32" else "none",
-                   help="what games see: 'vjoy' (default on Windows) or 'none', the tune "
-                        "file's spring with no game (default elsewhere)")
+    p.add_argument("--frontend", choices=("vjoy", "uinput", "none"),
+                   default="vjoy" if sys.platform == "win32" else "uinput",
+                   help="what games see: 'vjoy' (default on Windows), 'uinput' (default on "
+                        "Linux), or 'none', the tune file's spring with no game")
     p.add_argument("--device", type=int, default=1, help="vJoy device id (default 1)")
     p.add_argument("--rate", type=float, default=250.0,
                    help="bridge loop rate in Hz (default 250, the wheel's write rate)")
@@ -38,7 +38,7 @@ def parse_args():
                    help="stop after N seconds (default: run until Ctrl+C)")
     p.add_argument("--no-ffb", action="store_true", help="input only; never command force")
     p.add_argument("--dry-run", action="store_true",
-                   help="read the wheel and report; write nothing to vJoy, no force")
+                   help="read the wheel and report; no virtual wheel input, no force")
     p.add_argument("--trace", metavar="FILE",
                    help="write time, position and force per tick, like wheel_trace.txt")
     p.add_argument("--no-log", action="store_true")
@@ -48,6 +48,9 @@ def parse_args():
 def make_frontend(args):
     if args.frontend == "none":
         return NullFrontend()
+    if args.frontend == "uinput":
+        from bridge.uinput import UInputFrontend    # needs python-evdev
+        return UInputFrontend(dry_run=args.dry_run)
     from bridge.vjoy import VJoyFrontend    # needs pyvjoyffb, so only when asked for
     return VJoyFrontend(args.device, dry_run=args.dry_run)
 
@@ -70,7 +73,7 @@ def main():
             print("  Log: %s" % log_path)
         device = RawUsbWheel(gain=args.gain)
         frontend = make_frontend(args)
-        frontend.open(device.CAPABILITIES, ffb=ffb)     # a missing vJoy fails before arming
+        frontend.open(device.CAPABILITIES, ffb=ffb)     # fails before arming the wheel
         device.open()
 
         if args.tune == USER_TUNE and ensure_user_tune():

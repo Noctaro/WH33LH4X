@@ -50,6 +50,10 @@ LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
 # Structured log lines are `key=value` pairs; floats are written %+.3f by probe_log.event.
 FIELD = re.compile(r"(\w+)=([+-]?[\d.]+)")
 
+# The kind names bridge/uinput.py counts in its decode.summary event.
+EFFECT_KINDS = ("constant", "ramp", "sine", "square", "triangle", "sawtoothup",
+                "sawtoothdown", "spring", "damper", "friction", "inertia")
+
 
 def newest_log():
     logs = glob.glob(os.path.join(LOG_DIR, "bridge_*.log"))
@@ -60,6 +64,7 @@ def newest_log():
 
 def read(path):
     ticks, kinds, directions, tunes = [], {}, [], []
+    frontend = "vjoy"
     # Logs written before the telemetry was widened have no `game` field. Reporting those as
     # a force of zero would read as "the game asked for nothing", which is a different and
     # much more alarming claim than "this log predates the field".
@@ -75,6 +80,13 @@ def read(path):
                                   float(d.get("dirx", 0.0)), float(d.get("vel", 0.0))))
                 except (KeyError, ValueError):
                     pass
+            elif "frontend.open" in line:
+                m = re.search(r"frontend=(\w+)", line)
+                frontend = m.group(1) if m else frontend
+            elif "decode.summary" in line and frontend == "uinput":
+                for kind, count in FIELD.findall(line):
+                    if kind in EFFECT_KINDS:
+                        kinds[kind] = int(float(count))
             elif "decode.effect_op" in line:
                 m = re.search(r"kind=(\S+)", line)
                 if m:
@@ -83,7 +95,7 @@ def read(path):
                 directions.append(line.strip())
             elif "tune.changed" in line:
                 tunes.append(line.strip())
-    return ticks, kinds, directions, tunes, have_game
+    return ticks, kinds, directions, tunes, have_game, frontend
 
 
 def correlation(pairs):
@@ -116,7 +128,7 @@ def main():
         print("No bridge log found. Run the bridge first.")
         return 1
 
-    ticks, kinds, directions, tunes, have_game = read(path)
+    ticks, kinds, directions, tunes, have_game, frontend = read(path)
     print("session: %s" % os.path.basename(path))
     print("samples: %d" % len(ticks))
     if not ticks:
@@ -275,7 +287,9 @@ def main():
     # Does the direction field track STEERING? If it does, it is a steering axis and must be
     # read as a span; a true polar angle would not follow the wheel. This is the measurement
     # that tells the two encodings apart without another drive per guess.
-    aimed = [(t[0], t[4]) for t in ticks if t[4] > 0 and abs(t[1]) > 0.02]
+    # Only vJoy's field needs this; an evdev direction is a plain angle, decoded as such.
+    aimed = [(t[0], t[4]) for t in ticks
+             if frontend == "vjoy" and t[4] > 0 and abs(t[1]) > 0.02]
     if aimed:
         angles = [a for _s, a in aimed]
         print("\ndirection encoding")

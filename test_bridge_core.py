@@ -178,10 +178,26 @@ def test_tuned_centring():
                  abs(wheel.forces[-2] + 0.1) < 1e-3)
 
 
+def test_input_delay():
+    print("\ninput delay")
+    wheel = FakeWheel(0.1)
+    bridge, clock = make(wheel, NullFrontend())
+    wheel.read_at = clock.now - 3.0         # a report from arming, before the loop
+    bridge.tick(clock.now)
+    wheel.reading = Reading(0.2, 0.0, 0.0, 0.0, 0.0, 0)
+    wheel.read_at = clock.now - 0.003
+    bridge.tick(clock.now)
+    bridge.tick(clock.now)
+    summary = bridge.close()
+    median, worst = summary["input_ms"], summary["input_max_ms"]
+    return check("only a report during the loop is measured, once (%.1f ms worst)" % worst,
+                 median == worst == 3.0)
+
+
 def main():
     print("bridge core checks")
     results = [test_spring_opposes_position(), test_game_force(), test_max_force_counted(),
-               test_no_ffb(), test_stop_file(), test_tuned_centring()]
+               test_no_ffb(), test_stop_file(), test_tuned_centring(), test_input_delay()]
     print()
     if all(results):
         print("ALL CHECKS PASSED")

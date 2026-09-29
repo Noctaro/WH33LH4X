@@ -60,6 +60,7 @@ class RawUsbWheel(object):
         self._started = None
         self._demand = 0.0
         self._reading = None
+        self.read_at = None     # monotonic time of the latest input report
 
     def open(self):
         """Claim, power on, arm, load at zero, start the threads. Raises RuntimeError."""
@@ -136,6 +137,7 @@ class RawUsbWheel(object):
         for name, flag in self.BUTTONS:
             if name in report.buttons:
                 buttons |= flag
+        self.read_at = time.monotonic()
         self._reading = Reading(clamp(report.steering), report.throttle, report.brake,
                                 report.clutch, 0.0, buttons)
 

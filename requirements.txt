@@ -24,3 +24,6 @@ importlib_resources==7.1.0
 
 # The window's theme (Sun Valley ttk theme). Pure Tcl, MIT.
 sv-ttk==2.6.1
+
+# Linux only: the virtual wheel under /dev/uinput. Ubuntu's python3-evdev is the same version.
+evdev==1.7.0 ; sys_platform == "linux"
