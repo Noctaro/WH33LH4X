@@ -2,6 +2,7 @@
 
 import importlib.util
 import os
+import sys
 
 SYSFS = "/sys/bus/usb/devices"
 USB_NODES = "/dev/bus/usb"
@@ -77,7 +78,11 @@ def uinput_check(node=UINPUT, evdev=None):
     if evdev is None:
         evdev = importlib.util.find_spec("evdev") is not None
     if not evdev:
+        # apt installs it for /usr/bin/python3 only; pyenv or a venv is another interpreter.
         return (False, "python-evdev missing", "python-evdev is not installed",
-                "Install it with:\n\n  sudo apt install python3-evdev\n\n"
-                "or pip install evdev.")
+                "This window runs on %s, which has no python-evdev. Either start it with the "
+                "system Python after installing it there:\n\n"
+                "  sudo apt install python3-usb python3-evdev\n  /usr/bin/python3 -m ui\n\n"
+                "or install it into this Python:\n\n  %s -m pip install evdev pyusb"
+                % (sys.executable, sys.executable))
     return (True, "OK", None, None)

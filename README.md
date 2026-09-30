@@ -63,7 +63,8 @@ sudo sh packaging/linux/setup.sh
 
 The setup script is needed once. It gives your user access to the wheel and to `/dev/uinput`
 and keeps the wheel awake. Log out and back in, replug the wheel, let its calibration sweep
-finish, then run `python3 -m ui` and carry on from step 4. If `xone` is installed it keeps
+finish, then run `/usr/bin/python3 -m ui` and carry on from step 4. The full path matters when
+pyenv or a venv is active: apt installs the packages for the system Python only. If `xone` is installed it keeps
 working for your other controllers; the bridge takes the wheel from it at Start, and a replug
 hands it back.
 
