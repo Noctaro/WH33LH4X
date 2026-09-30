@@ -27,7 +27,9 @@ reload_rules() {
 
 wheel_dir() {
     for dir in "$SYSFS"/*; do
-        [ -r "$dir/idVendor" ] && [ -r "$dir/idProduct" ] || continue
+        if [ ! -r "$dir/idVendor" ] || [ ! -r "$dir/idProduct" ]; then
+            continue
+        fi
         if [ "$(cat "$dir/idVendor")" = 0f0d ] && [ "$(cat "$dir/idProduct")" = 015c ]; then
             echo "$dir"
             return
@@ -83,7 +85,9 @@ if [ ! -e /dev/uinput ]; then
 fi
 # A later rule that sets the group or mode of the same node wins over this one.
 for other in "$RULES_DIR"/*.rules; do
-    [ -e "$other" ] && [ "$other" != "$RULES_DIR/$RULE" ] || continue
+    if [ ! -e "$other" ] || [ "$other" = "$RULES_DIR/$RULE" ]; then
+        continue
+    fi
     if grep -q -e uinput -e 015c "$other"; then
         echo "  - $other also covers uinput or the wheel; remove it if access is still missing."
     fi
