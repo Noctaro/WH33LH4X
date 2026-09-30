@@ -5,7 +5,7 @@ records what each one is, who holds copyright, and under what terms — everythi
 distribution has to carry.
 
 Compiled from the installed package metadata and the upstream license files, checked
-2026-08-24 and updated 2026-09-26 for the raw USB bundle. Where a license text could not be
+2026-08-24 and updated 2026-09-26 for the raw USB bundle and 2026-09-30 for the Flatpak. Where a license text could not be
 found upstream, this file says so rather than assuming.
 
 **Not redistributed:** the vJoy kernel driver (`vJoy.sys`) is installed by the user from its
@@ -23,6 +23,21 @@ Source alone carries no third-party binaries. The bundle built by
 | `lib\libusb_package\libusb-1.0.dll` | libusb 1.0.30, unmodified, inside the `libusb-package` wheel | **LGPL-2.1-or-later**; text in `LICENSES\libusb-LGPL-2.1.txt`, see below |
 | `lib\pyvjoy\lib\x64\vJoyInterface.dll` (and `x86`) | inside the `pyvjoyffb` wheel | MIT, (c) 2017 Shaul Eizikovich |
 | `python\_tkinter.pyd`, `python\tcl86t.dll`, `python\tk86t.dll`, `lib\tkinter\*`, `lib\tcl8.6\*`, `lib\tk8.6\*` | CPython 3.11.9 **full Windows install** | PSF for the Python parts; Tcl/Tk is BSD-style, text in `python\LICENSE.txt` |
+
+### The Linux Flatpak
+
+`packaging/linux/io.github.Noctaro.WH33LH4X.yml` builds these into the Flatpak. Python and
+libusb come from the Freedesktop runtime, which is installed from Flathub and not
+redistributed here.
+
+| Component | Origin | Terms |
+|---|---|---|
+| Tcl/Tk 8.6.15 | built from the upstream source archives | BSD-style; `license.terms` in `/app/share/licenses/tcl` and `tk` |
+| `_tkinter` and `tkinter` | [iwalton3/tkinter-standalone](https://github.com/iwalton3/tkinter-standalone), taken from CPython 3.13 | PSF; `LICENSE` in `/app/share/licenses/tkinter` |
+| pyusb, sv-ttk | the same pinned wheels as the Windows bundle | as in the tables below |
+| python-evdev 1.7.0 | built from its PyPI source | BSD-3-Clause, text in its `.dist-info` folder; [gvalkov/python-evdev](https://github.com/gvalkov/python-evdev) |
+
+### Notes on the Windows bundle
 
 **libusb is the one LGPL component**, and the only one with an obligation beyond passing on a
 notice. The bundle carries the DLL exactly as the `libusb-package` wheel ships it, built from

@@ -25,6 +25,8 @@ import os
 import re
 import sys
 
+import paths
+
 # The force below which this wheel does not move at all, so anything under it is commanded and
 # then silently does nothing. MEASURED on a Hori Force Feedback Racing Wheel DLX (VID 0x0F0D,
 # Xbox mode) with a breakaway sweep; see docs/hardware.md. Another wheel needs its own run.
@@ -45,7 +47,7 @@ import sys
 # If you run this against a different wheel, re-measure rather than trusting this number.
 STICTION = 0.01
 
-LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+LOG_DIR = paths.LOGS
 
 # Structured log lines are `key=value` pairs; floats are written %+.3f by probe_log.event.
 FIELD = re.compile(r"(\w+)=([+-]?[\d.]+)")

@@ -1,0 +1,126 @@
+# The Linux release: a Flatpak with its own Tcl/Tk, tkinter, pyusb and python-evdev.
+# The host still needs setup.sh once, because a Flatpak cannot install udev rules.
+app-id: io.github.Noctaro.WH33LH4X
+runtime: org.freedesktop.Platform
+runtime-version: '25.08'
+sdk: org.freedesktop.Sdk
+command: wh33lh4x
+finish-args:
+  - --socket=x11          # Tk has no Wayland backend; XWayland serves it there
+  - --share=ipc
+  - --device=all          # the wheel under /dev/bus/usb and /dev/uinput; no narrower option
+
+modules:
+  # The runtime's Python has no tkinter; Tcl/Tk 8.6 as in Thonny's Flathub build and the
+  # Windows bundle, _tkinter from Python 3.13's sources to match runtime 25.08.
+  - name: tcl
+    buildsystem: autotools
+    subdir: unix
+    post-install:
+      - chmod +w ${FLATPAK_DEST}/lib/libtcl*.so
+      - install -Dm644 ../license.terms ${FLATPAK_DEST}/share/licenses/tcl/license.terms
+    build-options:
+      cflags: -DTCL_UTF_MAX=4
+    cleanup:
+      - /bin
+      - /lib/pkgconfig
+      - /man
+    sources:
+      - type: archive
+        url: https://prdownloads.sourceforge.net/tcl/tcl8.6.15-src.tar.gz
+        sha256: 861e159753f2e2fbd6ec1484103715b0be56be3357522b858d3cbb5f893ffef1
+
+  - name: tk
+    buildsystem: autotools
+    subdir: unix
+    post-install:
+      - chmod +w ${FLATPAK_DEST}/lib/libtk*.so
+      - install -Dm644 ../license.terms ${FLATPAK_DEST}/share/licenses/tk/license.terms
+    build-options:
+      cflags: -DTCL_UTF_MAX=4
+    cleanup:
+      - /bin
+      - /lib/pkgconfig
+      - /man
+    sources:
+      - type: archive
+        url: https://prdownloads.sourceforge.net/tcl/tk8.6.15-src.tar.gz
+        sha256: 550969f35379f952b3020f3ab7b9dd5bfd11c1ef7c9b7c6a75f5c49aca793fec
+
+  - name: tkinter
+    buildsystem: simple
+    build-commands:
+      - pip3 install --prefix=${FLATPAK_DEST} --no-build-isolation .
+      - install -Dm644 LICENSE ${FLATPAK_DEST}/share/licenses/tkinter/LICENSE
+    sources:
+      - type: git
+        url: https://github.com/iwalton3/tkinter-standalone
+        commit: 8e78e38ef0cceb44a3a0062e1c314a4ff3f981db
+
+  # The same pins as requirements.txt; the build is offline, so each file is fetched by hash.
+  - name: python-packages
+    buildsystem: simple
+    build-commands:
+      - pip3 install --no-index --find-links=. --prefix=${FLATPAK_DEST} --no-build-isolation
+        pyusb==1.3.1 evdev==1.7.0 sv-ttk==2.6.1
+    sources:
+      - type: file
+        url: https://files.pythonhosted.org/packages/28/b8/27e6312e86408a44fe16bd28ee12dd98608b39f7e7e57884a24e8f29b573/pyusb-1.3.1-py3-none-any.whl
+        sha256: bf9b754557af4717fe80c2b07cc2b923a9151f5c08d17bdb5345dac09d6a0430
+      - type: file
+        url: https://files.pythonhosted.org/packages/f3/0c/c87b141250a650ee53d4e9957e905b17c144cda6dc4187cbe89a641a1b34/evdev-1.7.0.tar.gz
+        sha256: 95bd2a1e0c6ce2cd7a2ecc6e6cd9736ff794b3ad5cb54d81d8cbc2e414d0b870
+      - type: file
+        url: https://files.pythonhosted.org/packages/5b/36/32629d8bab9bccd54a36716a960ba1148fca4c1fd453370dba0b42d712ea/sv_ttk-2.6.1-py3-none-any.whl
+        sha256: 8ca5944f95431a911986b00c54e7f44608f3f811382cd985fd14bb3e65f95d97
+
+  # An allowlist, like the Windows bundle: a new file does not ship until it is named here.
+  - name: wh33lh4x
+    buildsystem: simple
+    build-commands:
+      - mkdir -p ${FLATPAK_DEST}/share/wh33lh4x
+      - cp -r bridge gip ui profiles ffb_render.py live_tune.py paths.py probe_log.py
+        tune_report.py tune.json ${FLATPAK_DEST}/share/wh33lh4x/
+      - install -Dm755 wh33lh4x.sh ${FLATPAK_DEST}/bin/wh33lh4x
+      - install -Dm644 ${FLATPAK_ID}.desktop
+        ${FLATPAK_DEST}/share/applications/${FLATPAK_ID}.desktop
+      - install -Dm644 ui/icon.png
+        ${FLATPAK_DEST}/share/icons/hicolor/192x192/apps/${FLATPAK_ID}.png
+      - install -Dm644 -t ${FLATPAK_DEST}/share/licenses/${FLATPAK_ID} LICENSE
+        THIRD-PARTY-NOTICES.md
+    sources:
+      - type: dir
+        path: ../../bridge
+        dest: bridge
+        skip: [__pycache__]
+      - type: dir
+        path: ../../gip
+        dest: gip
+        skip: [__pycache__]
+      - type: dir
+        path: ../../ui
+        dest: ui
+        skip: [__pycache__]
+      - type: dir
+        path: ../../profiles
+        dest: profiles
+      - type: file
+        path: ../../ffb_render.py
+      - type: file
+        path: ../../live_tune.py
+      - type: file
+        path: ../../paths.py
+      - type: file
+        path: ../../probe_log.py
+      - type: file
+        path: ../../tune_report.py
+      - type: file
+        path: ../../tune.json
+      - type: file
+        path: ../../LICENSE
+      - type: file
+        path: ../../THIRD-PARTY-NOTICES.md
+      - type: file
+        path: wh33lh4x.sh
+      - type: file
+        path: io.github.Noctaro.WH33LH4X.desktop

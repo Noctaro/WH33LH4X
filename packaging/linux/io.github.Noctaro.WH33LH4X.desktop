@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=WH33LH4X
+Comment=Force feedback for the HORI Force Feedback Racing Wheel
+Exec=wh33lh4x
+Icon=io.github.Noctaro.WH33LH4X
+Terminal=false
+Categories=Game;

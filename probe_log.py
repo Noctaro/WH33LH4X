@@ -25,7 +25,9 @@ import threading
 import time
 from datetime import datetime
 
-LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+import paths
+
+LOG_DIR = paths.LOGS
 
 _lock = threading.Lock()
 _file = None

@@ -71,6 +71,29 @@ def test_apply_and_save():
         shutil.rmtree(folder)
 
 
+def test_read_only_install():
+    print("\nprofiles in a read-only install")
+    folder = tempfile.mkdtemp()
+    saved = profiles.USER_DIR, profiles.writable
+    try:
+        builtin = os.path.join(folder, "app")
+        profiles.USER_DIR = os.path.join(folder, "data")
+        os.makedirs(builtin)
+        profiles.Profile("Road", os.path.join(builtin, "road.json"), {}).save({"spring": 0.2})
+        profiles.writable = lambda path: os.path.abspath(path) != os.path.abspath(builtin)
+        road = profiles.load_all(builtin, profiles.USER_DIR)[0]
+        road.save({"spring": 0.4})
+        ok = check("saving a built-in writes a copy to the data folder",
+                   os.path.dirname(road.path) == profiles.USER_DIR)
+        again = profiles.load_all(builtin, profiles.USER_DIR)
+        ok &= check("the copy shadows the built-in",
+                    len(again) == 1 and again[0].values["spring"] == 0.4)
+        return ok
+    finally:
+        profiles.USER_DIR, profiles.writable = saved
+        shutil.rmtree(folder)
+
+
 class FakeProc(object):
     def __init__(self):
         self.code = None
@@ -197,8 +220,8 @@ def test_linux_setup():
 
 def main():
     print("ui checks")
-    results = [test_builtin_profiles(), test_apply_and_save(), test_bridge_process(),
-               test_nudge_verdict(), test_linux_setup()]
+    results = [test_builtin_profiles(), test_apply_and_save(), test_read_only_install(),
+               test_bridge_process(), test_nudge_verdict(), test_linux_setup()]
     print()
     if all(results):
         print("ALL CHECKS PASSED")

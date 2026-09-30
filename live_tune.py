@@ -17,10 +17,10 @@ import os
 import shutil
 
 import ffb_render as render
+import paths
 
-ROOT = os.path.dirname(os.path.abspath(__file__))
-TEMPLATE = os.path.join(ROOT, "tune.json")          # tracked: the starting values
-USER_TUNE = os.path.join(ROOT, "user-tune.json")    # local: what the bridge and window change
+TEMPLATE = os.path.join(paths.APP, "tune.json")         # tracked: the starting values
+USER_TUNE = os.path.join(paths.DATA, "user-tune.json")  # local: what bridge and window change
 
 # Every tunable, with the value that means "unchanged from how the game sent it". Anything not
 # in here is ignored, so a stray key in the file is a typo rather than a silent new setting.

@@ -7,6 +7,7 @@ import sys
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 
+import paths
 from live_tune import ensure_user_tune
 from ui import profiles, service
 
@@ -22,8 +23,8 @@ else:
     from ui import setup_linux as setup
     SETUP_ROWS = [("uinput", "uinput"), ("wheel", "Wheel")]
 
-ROOT = profiles.ROOT
-SETTINGS = os.path.join(ROOT, "gui_settings.json")
+ROOT = paths.APP
+SETTINGS = os.path.join(paths.DATA, "gui_settings.json")
 HERE = os.path.dirname(os.path.abspath(__file__))
 ICON_ICO = os.path.join(HERE, "icon.ico")     # 16 to 192 px, from logo/icons
 ICON_PNG = os.path.join(HERE, "icon.png")

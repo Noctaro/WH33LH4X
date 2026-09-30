@@ -67,7 +67,7 @@ $staging = Join-Path $OutDir 'WH33LH4X'
 # Runtime modules, then the diagnostics a user actually needs; evidence\ stays in the repo. This
 # is an ALLOWLIST: a new file in the repo does not reach the bundle until it is named here.
 $sourceFiles = @(
-    'ffb_render.py', 'probe_log.py', 'live_tune.py',
+    'ffb_render.py', 'probe_log.py', 'live_tune.py', 'paths.py',
     'vjoy_ffb_spike.py', 'dinput_abi.py', 'tune_report.py',
     # tune.json is the template user-tune.json is created from on first start, so a user's own
     # tuning survives when a new bundle is extracted over this one.
