@@ -13,7 +13,8 @@ python -m venv .venv
 ```
 
 The wheel must be bound to WinUSB for anything that talks to it; see the
-[Quickstart](../README.md#quickstart).
+[Quickstart](../README.md#quickstart). On Linux, `sudo sh packaging/linux/setup.sh` takes that
+place: a udev rule for access to the wheel and `/dev/uinput`, and it keeps the wheel awake.
 
 Then run the window with `.\.venv\Scripts\pythonw.exe -m ui`, or the bridge alone with
 `.\.venv\Scripts\python.exe -m bridge`.
@@ -36,7 +37,7 @@ None of these need hardware, and CI runs the first five:
 .\.venv\Scripts\python.exe test_gip.py            # the same bytes still go on the wire
 .\.venv\Scripts\python.exe test_bridge_core.py    # the bridge loop against a fake wheel
 .\.venv\Scripts\python.exe test_evdev_decoder.py  # Linux game effects into ffb_render units
-.\.venv\Scripts\python.exe test_ui.py             # profiles and the bridge process
+.\.venv\Scripts\python.exe test_ui.py             # profiles, the bridge process, Linux setup
 .\.venv\Scripts\python.exe -m ruff check .
 .\.venv\Scripts\python.exe packaging\gen_commands.py --check
 .\.venv\Scripts\python.exe packaging\gen_games_table.py --check

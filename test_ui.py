@@ -1,5 +1,5 @@
 """
-test_ui.py: profiles, the bridge process handling and the force test verdict, no window.
+test_ui.py: profiles, the bridge process, the force test verdict, Linux setup; no window.
 
     python test_ui.py
 """
@@ -12,7 +12,7 @@ import tempfile
 
 from bridge.nudge import verdict
 from live_tune import DEFAULTS
-from ui import profiles, service
+from ui import profiles, service, setup_linux
 
 
 def check(name, condition, detail=""):
@@ -132,10 +132,73 @@ def test_nudge_verdict():
     return ok
 
 
+def fake_wheel(folder, control="on", node=True):
+    """A sysfs tree and a device node folder holding one HORI wheel on bus 1, device 9."""
+    sysfs, nodes = os.path.join(folder, "sys"), os.path.join(folder, "dev")
+    os.makedirs(os.path.join(sysfs, "1-1", "power"))
+    os.makedirs(os.path.join(nodes, "001"))
+    for name, text in (("idVendor", "0f0d"), ("idProduct", "015c"), ("busnum", "1"),
+                       ("devnum", "9"), (os.path.join("power", "control"), control)):
+        with open(os.path.join(sysfs, "1-1", name), "w") as handle:
+            handle.write(text + "\n")
+    if node:
+        with open(os.path.join(nodes, "001", "009"), "w"):
+            pass
+    return sysfs, nodes
+
+
+def test_linux_setup():
+    print("\nLinux setup checks")
+    folder = tempfile.mkdtemp()
+    try:
+        empty = os.path.join(folder, "empty")
+        os.makedirs(empty)
+        ok = check("no wheel is not connected",
+                   setup_linux.wheel_check(empty, empty)[1] == "not connected")
+
+        sysfs, nodes = fake_wheel(os.path.join(folder, "a"))
+        ok &= check("a free, awake, reachable wheel is OK",
+                    setup_linux.wheel_check(sysfs, nodes)[0])
+        if sys.platform == "win32":
+            print("  SKIP a bound driver (Windows allows no ':' in a file name)")
+        else:
+            os.makedirs(os.path.join(sysfs, "1-1:1.0"))
+            os.symlink(os.path.join(folder, "xone-wired"),
+                       os.path.join(sysfs, "1-1:1.0", "driver"))
+            result = setup_linux.wheel_check(sysfs, nodes)
+            ok &= check("a bound driver is OK and named",
+                        result[0] and "xone-wired" in result[1])
+
+        sysfs, nodes = fake_wheel(os.path.join(folder, "b"), control="auto")
+        result = setup_linux.wheel_check(sysfs, nodes)
+        ok &= check("autosuspend is reported, with the setup script",
+                    result[1] == "autosuspend on" and "setup.sh" in result[3])
+
+        sysfs, nodes = fake_wheel(os.path.join(folder, "c"), node=False)
+        result = setup_linux.wheel_check(sysfs, nodes)
+        ok &= check("an unreachable device node is no access",
+                    result[1] == "no access" and "setup.sh" in result[3])
+
+        ok &= check("the setup script exists where the guidance says",
+                    os.path.isfile(setup_linux.SCRIPT))
+        node = os.path.join(folder, "uinput")
+        ok &= check("a missing uinput node is not loaded",
+                    setup_linux.uinput_check(node, evdev=True)[1] == "not loaded")
+        with open(node, "w"):
+            pass
+        ok &= check("a writable uinput node is OK",
+                    setup_linux.uinput_check(node, evdev=True)[0])
+        ok &= check("python-evdev missing is reported",
+                    setup_linux.uinput_check(node, evdev=False)[1] == "python-evdev missing")
+        return ok
+    finally:
+        shutil.rmtree(folder)
+
+
 def main():
     print("ui checks")
     results = [test_builtin_profiles(), test_apply_and_save(), test_bridge_process(),
-               test_nudge_verdict()]
+               test_nudge_verdict(), test_linux_setup()]
     print()
     if all(results):
         print("ALL CHECKS PASSED")

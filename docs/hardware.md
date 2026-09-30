@@ -31,8 +31,8 @@ code are these.
   runs the wheel sends no input and ignores force.
 - **On Linux, USB autosuspend triggers that sweep every time.** With no kernel driver bound,
   Linux suspends the wheel two seconds after its last use, and every resume boots it into the
-  sweep. Setting the device's `power/control` to `on` keeps it awake; the window's wheel check
-  prints the command.
+  sweep. Setting the device's `power/control` to `on` keeps it awake; the udev rule from
+  `packaging/linux/setup.sh` does that on every plug-in.
 - **The first input report of a session is junk** and is discarded.
 
 ## Effect support

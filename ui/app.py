@@ -17,8 +17,10 @@ except ImportError:
 
 if sys.platform == "win32":
     from ui import setup_win as setup
+    SETUP_ROWS = [("vjoy", "vJoy"), ("wheel", "Wheel")]
 else:
     from ui import setup_linux as setup
+    SETUP_ROWS = [("uinput", "uinput"), ("wheel", "Wheel")]
 
 ROOT = profiles.ROOT
 SETTINGS = os.path.join(ROOT, "gui_settings.json")
@@ -202,10 +204,7 @@ class App(object):
         box = ttk.LabelFrame(parent, text="Setup", padding=10)
         box.pack(fill="x", pady=(10, 0))
         self.badges = {}
-        rows = [("wheel", "Wheel")]
-        if sys.platform == "win32":
-            rows.insert(0, ("vjoy", "vJoy"))
-        for key, label in rows:
+        for key, label in SETUP_ROWS:
             row = ttk.Frame(box)
             row.pack(fill="x", pady=1)
             ttk.Label(row, text=label, width=10).pack(side="left")
@@ -393,15 +392,12 @@ class App(object):
     # -- setup ---------------------------------------------------------------
 
     def _check_setup(self):
-        checks = {"wheel": setup.wheel_check}
-        if sys.platform == "win32":
-            checks["vjoy"] = setup.vjoy_check
-        for key, check in checks.items():
+        for key, _label in SETUP_ROWS:
             # The bridge holds the wheel while it runs, so its state is the better answer.
             if key == "wheel" and self.bridge.running():
                 continue
             try:
-                ok, badge, title, guidance = check()
+                ok, badge, title, guidance = getattr(setup, key + "_check")()
             except Exception as exc:                          # noqa: BLE001
                 ok, badge, title, guidance = False, "check failed", "Check failed", str(exc)
             var, fix = self.badges[key]

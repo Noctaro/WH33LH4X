@@ -165,7 +165,7 @@ and closing the window stops it too.
 - **Profiles**: Default, DiRT 4 and RC car, chosen by hand. The sliders apply live; a profile
   file only changes on Save or Save as new.
 - **Setup checks** for vJoy device 1 and the wheel's WinUSB binding, each with a How to fix.
-  On Linux it checks that xone has let go of the wheel and that USB autosuspend is off.
+  On Linux it checks access to `/dev/uinput` and to the wheel, and that USB autosuspend is off.
 - **Test force** pushes the wheel briefly right and left and reports whether it moved the
   right way.
 - **Restore Microsoft driver** removes the WinUSB driver so Xbox games and the HORI app see the
@@ -175,9 +175,9 @@ Takes no arguments. Runs under `pythonw.exe` so no console sits behind it.
 
 ### `WH33LH4X.cmd` / `python -m bridge` — the bridge without the window
 
-%s Owns the wheel over raw USB (WinUSB on Windows, xone unbound on Linux) and presents it
-through vJoy. For running headless or with flags the window does not expose; `WH33LH4X.cmd`
-passes its arguments through.
+%s Owns the wheel over raw USB (WinUSB on Windows; on Linux it detaches xone itself) and
+presents it through vJoy, or uinput on Linux. For running headless or with flags the window
+does not expose; `WH33LH4X.cmd` passes its arguments through.
 
 %s
 ### `python -m bridge.nudge` — test force
@@ -206,6 +206,13 @@ without a game or the real wheel. If it does not report `PASS`, nothing built on
 will work.
 
 %s
+### `packaging/linux/setup.sh` — one-time Linux host setup
+
+%s Run once with `sudo sh packaging/linux/setup.sh`. Installs a udev rule that gives the
+desktop user and the `wh33lh4x` group access to the wheel and to `/dev/uinput` and keeps the
+wheel awake, adds you to that group, and loads `uinput` at boot. It ends by printing what is
+still to do. `--remove` undoes all of it.
+
 ---
 
 ## 3. Building
@@ -260,7 +267,7 @@ the wheel is released: `.\\.venv\\Scripts\\python.exe test_bridge_core.py`.
 Run before proposing a change to `bridge/uinput.py`. Units, direction, replay length and the
 uinput ioctl numbers: `.\\.venv\\Scripts\\python.exe test_evdev_decoder.py`.
 
-### `test_ui.py` — profiles and the bridge process, without a window
+### `test_ui.py` — profiles, the bridge process and the Linux setup checks, without a window
 
 Run before proposing a change to `ui/` or `profiles/`:
 `.\\.venv\\Scripts\\python.exe test_ui.py`.
@@ -330,6 +337,7 @@ on.
     BUNDLED,
     BUNDLED, TUNE_REPORT_ARGS,
     BUNDLED, flag_table('vjoy_ffb_spike.py'),
+    REPO,
     REPO, ps_table('packaging/build_bundle.ps1'),
     flag_table('evidence/probe.py'), flag_table('evidence/dinput_probe.py'),
     flag_table('evidence/hid_probe.py'),

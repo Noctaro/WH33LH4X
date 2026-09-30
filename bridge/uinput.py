@@ -288,7 +288,8 @@ class UInputFrontend(object):
                              bustype=ecodes.BUS_USB)
         except (UInputError, OSError) as exc:
             raise RuntimeError("cannot create the virtual wheel: %s. /dev/uinput must be "
-                               "writable for this user." % exc)
+                               "writable for this user; run once: "
+                               "sudo sh packaging/linux/setup.sh" % exc)
         if ffb:
             upload_size = ctypes.sizeof(ff.UInputUpload)
             erase_size = ctypes.sizeof(ff.UInputErase)
@@ -300,8 +301,12 @@ class UInputFrontend(object):
             self._running = True
             self._thread = threading.Thread(target=self._serve, name="uinput-ff", daemon=True)
             self._thread.start()
-        log.event("frontend.open", frontend=self.name, device=self.ui.device.path, ffb=ffb)
+        log.event("frontend.open", frontend=self.name, device=self._node(), ffb=ffb)
         return self
+
+    def _node(self):
+        # python-evdev opens the new event node to learn its path: None when it may not read.
+        return self.ui.device.path if self.ui.device else "an event node it cannot read"
 
     # -- the uinput thread -------------------------------------------------
 
@@ -396,7 +401,7 @@ class UInputFrontend(object):
         if self.dry_run:
             return ["dry run: no virtual wheel is created"]
         lines = ["virtual wheel %s at %s (%04x:%04x), %d buttons"
-                 % (NAME, self.ui.device.path, VENDOR, PRODUCT, BUTTON_COUNT)]
+                 % (NAME, self._node(), VENDOR, PRODUCT, BUTTON_COUNT)]
         skipped = [label for attr, _c, label, _f, _z in self.axes
                    if self.caps.get(attr) is False]
         if skipped:

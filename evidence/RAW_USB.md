@@ -84,12 +84,13 @@ Two traps inside it, both self-inflicted and both expensive:
 
 ```
 sudo apt install -y python3-usb python3-evdev
-sudo modprobe uinput
-echo 'KERNEL=="uinput", MODE="0660", GROUP="plugdev"' | sudo tee /etc/udev/rules.d/99-uinput.rules
-sudo udevadm control --reload && sudo udevadm trigger
+sudo sh packaging/linux/setup.sh
 ```
 
-Then, with the wheel unbound from `xone`:
+The script installs the udev rule for the wheel and `/dev/uinput`; log in again and replug the
+wheel afterwards. The tools detach `xone` from the wheel themselves. A plain libusb detach
+with no reattach passed Test force, the sweep and the spring on 2026-09-30, as long as the
+wheel is kept awake, which the rule does. Then:
 
 ```
 python3 evidence/gip_wheel_driver.py
