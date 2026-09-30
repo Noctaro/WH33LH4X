@@ -1,5 +1,7 @@
 """The HORI wheel over raw USB: a reader thread for input, a writer thread for force."""
 
+import errno
+import sys
 import threading
 import time
 from collections import namedtuple
@@ -15,7 +17,7 @@ class RawUsbWheel(object):
     """
     Owns the wheel over GIP with no Microsoft driver and no foreground gate.
 
-    Needs WinUSB on Windows, or xone unbound on Linux; see evidence/RAW_USB.md. The effect
+    Needs WinUSB on Windows, or the udev rule on Linux; see evidence/RAW_USB.md. The effect
     loads once at zero and every change after that is a bare parameter block, with no
     periodic reload, which is felt as a step.
 
@@ -71,20 +73,20 @@ class RawUsbWheel(object):
             raise RuntimeError("raw USB needs pyusb and libusb_package: %s" % exc)
         self._arming, self._report, self._wire = arming, report, wire
 
-        wheel = Wheel(verbose=False)    # WheelNotFound is a RuntimeError
-        try:
-            bound = wheel.dev.is_kernel_driver_active(0)
-        except Exception:
-            bound = False
-        if bound:
-            raise RuntimeError("xone still holds the wheel; unbind it first "
-                               "(evidence/RAW_USB.md)")
+        # On Linux open() detaches xone and nothing reattaches it: torque, sweep and spring
+        # passed that way on 2026-09-30, and a reattach costs the next run its torque.
+        wheel = Wheel(verbose=False, reattach=False)    # WheelNotFound is a RuntimeError
         try:
             wheel.open()
         except Exception as exc:
+            if sys.platform != "win32" and getattr(exc, "errno", None) == errno.EACCES:
+                raise RuntimeError("no access to the wheel over USB; run once: "
+                                   "sudo sh packaging/linux/setup.sh")
             raise RuntimeError("could not claim the wheel over USB (bound to WinUSB?): %s"
                                % exc)
         self._wheel = wheel
+        if wheel.detached:
+            log.event("sink.detached", interface=0)
         try:
             wheel.power_on()
             time.sleep(0.3)

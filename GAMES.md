@@ -89,7 +89,8 @@ The DiRT 4 profile holds the values the 2026-09-26 drive used:
 
 ### DiRT 4 on Linux
 
-Steam offers two versions, and both work with the **DiRT 4 (Linux)** profile. On Linux the
+Do the [one-time Linux setup](README.md#on-linux) first. Steam offers two versions, and both
+work with the **DiRT 4 (Linux)** profile. On Linux the
 game's wheel exists only while the bridge runs, so **press Start before starting the game**.
 `<game>` is the folder Steam opens under *Manage > Browse local files*.
 

@@ -76,10 +76,30 @@ jobs:
       - name: UI checks
         run: python test_ui.py
 
+  # The Linux host setup is a root script and a udev rule, so both are linted where they run.
+  linux-setup:
+    name: Linux setup checks
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Shellcheck
+        run: shellcheck packaging/linux/setup.sh
+
+      # udevadm verify fails on a group the machine lacks, so the rule's group is made first.
+      - name: Verify the udev rule
+        run: |
+          sudo groupadd --system wh33lh4x
+          udevadm verify packaging/linux/70-wh33lh4x.rules
+
+      # The bound-driver check needs a sysfs-style name with a colon, which Windows refuses.
+      - name: UI checks on Linux
+        run: python3 test_ui.py
+
   bundle:
     name: assemble bundle
     runs-on: windows-latest
-    needs: [checks]
+    needs: [checks, linux-setup]
     steps:
       - uses: actions/checkout@v7
 
