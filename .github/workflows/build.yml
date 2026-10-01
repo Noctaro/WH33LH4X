@@ -118,10 +118,11 @@ jobs:
           upload-artifact: false
 
       # The runtime's Python must import what the manifest built; flatpak_app is the action's
-      # build folder.
+      # build folder. The container has no FUSE, as in the action's own build.
       - name: Verify the bundled runtime imports
         run: |
-          flatpak-builder --run flatpak_app packaging/linux/io.github.Noctaro.WH33LH4X.yml \
+          flatpak-builder --disable-rofiles-fuse --run flatpak_app \
+            packaging/linux/io.github.Noctaro.WH33LH4X.yml \
             python3 -c "import tkinter, usb, evdev, sv_ttk; print('tk', tkinter.TkVersion)"
 
       - name: Stage the Linux release files
