@@ -50,6 +50,9 @@ modules:
   - name: tkinter
     buildsystem: simple
     build-commands:
+      # This commit links Tcl/Tk 9.0; CPython 3.13's _tkinter builds against 8.6 as well.
+      - sed -i 's/"tcl9.0", "tcl9tk9.0"/"tcl8.6", "tk8.6"/' pyproject.toml
+      - grep -q '"tcl8.6", "tk8.6"' pyproject.toml
       - pip3 install --prefix=${FLATPAK_DEST} --no-build-isolation .
       - install -Dm644 LICENSE ${FLATPAK_DEST}/share/licenses/tkinter/LICENSE
     sources:
