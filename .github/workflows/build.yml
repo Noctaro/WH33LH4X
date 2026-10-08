@@ -116,14 +116,8 @@ jobs:
           manifest-path: packaging/linux/io.github.Noctaro.WH33LH4X.yml
           cache-key: flatpak-builder-${{ hashFiles('packaging/linux/io.github.Noctaro.WH33LH4X.yml') }}
           upload-artifact: false
-
-      # The runtime's Python must import what the manifest built; flatpak_app is the action's
-      # build folder. The container has no FUSE, as in the action's own build.
-      - name: Verify the bundled runtime imports
-        run: |
-          flatpak-builder --disable-rofiles-fuse --run flatpak_app \
-            packaging/linux/io.github.Noctaro.WH33LH4X.yml \
-            python3 -c "import tkinter, usb, evdev, sv_ttk; print('tk', tkinter.TkVersion)"
+          # The manifest's test-commands import every bundled module inside the build sandbox.
+          run-tests: true
 
       - name: Stage the Linux release files
         run: |

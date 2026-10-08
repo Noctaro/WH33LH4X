@@ -9,6 +9,13 @@ finish-args:
   - --socket=x11          # Tk has no Wayland backend; XWayland serves it there
   - --share=ipc
   - --device=all          # the wheel under /dev/bus/usb and /dev/uinput; no narrower option
+# Build-time only: headers, static libraries, manuals, and the Tcl/Tk config scripts.
+cleanup:
+  - /include
+  - /lib/*.a
+  - /lib/*Config.sh
+  - /man
+  - /share/man
 
 modules:
   # The runtime's Python has no tkinter; Tcl/Tk 8.6 as in Thonny's Flathub build and the
@@ -64,8 +71,8 @@ modules:
   - name: python-packages
     buildsystem: simple
     build-commands:
-      - pip3 install --no-index --find-links=. --prefix=${FLATPAK_DEST} --no-build-isolation
-        pyusb==1.3.1 evdev==1.7.0 sv-ttk==2.6.1
+      - pip3 install --no-index --no-deps --find-links=. --prefix=${FLATPAK_DEST}
+        --no-build-isolation pyusb==1.3.1 evdev==1.7.0 sv-ttk==2.6.1
     sources:
       - type: file
         url: https://files.pythonhosted.org/packages/28/b8/27e6312e86408a44fe16bd28ee12dd98608b39f7e7e57884a24e8f29b573/pyusb-1.3.1-py3-none-any.whl
@@ -80,6 +87,11 @@ modules:
   # An allowlist, like the Windows bundle: a new file does not ship until it is named here.
   - name: wh33lh4x
     buildsystem: simple
+    # Runs in the build sandbox after install, so a broken module fails the build itself.
+    run-tests: true
+    test-commands:
+      - cd ${FLATPAK_DEST}/share/wh33lh4x && python3 -c "import tkinter, usb, evdev, sv_ttk,
+        bridge.core, bridge.uinput, gip.host, ui.profiles; print('tk', tkinter.TkVersion)"
     build-commands:
       - mkdir -p ${FLATPAK_DEST}/share/wh33lh4x
       - cp -r bridge gip ui profiles ffb_render.py live_tune.py paths.py probe_log.py

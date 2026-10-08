@@ -475,7 +475,8 @@ def main():
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("WH33LH4X")
         except (AttributeError, OSError):
             pass
-    root = tk.Tk()
+    # The window class Linux desktops match to the desktop entry's StartupWMClass.
+    root = tk.Tk(className="WH33LH4X")
     App(root)
     root.mainloop()
     return 0

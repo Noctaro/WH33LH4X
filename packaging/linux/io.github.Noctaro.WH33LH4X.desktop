@@ -6,3 +6,4 @@ Exec=wh33lh4x
 Icon=io.github.Noctaro.WH33LH4X
 Terminal=false
 Categories=Game;
+StartupWMClass=WH33LH4X
