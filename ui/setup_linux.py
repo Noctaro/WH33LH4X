@@ -12,8 +12,11 @@ XBOX_PID = "015c"
 
 SCRIPT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                       "packaging", "linux", "setup.sh")
+# The Flatpak carries no setup script: it runs on the host, so the release ships it alongside.
 RUN_SETUP = ("Run the setup script once:\n\n  sudo sh %s\n\n"
-             "Then log out and back in, and replug the wheel." % SCRIPT)
+             "Then log out and back in, and replug the wheel."
+             % (SCRIPT if os.path.exists(SCRIPT)
+                else "wh33lh4x-setup.sh\n\nwith wh33lh4x-setup.sh from the release page"))
 
 
 def _read(*parts):

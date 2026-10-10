@@ -5,9 +5,11 @@ import subprocess
 import sys
 import time
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-STOP_FILE = os.path.join(ROOT, "stop.request")
-LOGS = os.path.join(ROOT, "logs")
+import paths
+
+ROOT = paths.APP
+STOP_FILE = os.path.join(paths.DATA, "stop.request")
+LOGS = paths.LOGS
 STOP_GRACE = 10.0       # arming takes ~5 s before the bridge first looks at the stop file
 CREATE_NO_WINDOW = 0x08000000
 

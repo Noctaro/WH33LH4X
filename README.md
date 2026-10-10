@@ -52,21 +52,22 @@ Prefer a terminal? `WH33LH4X.cmd` runs the bridge without the window. See
 
 ### On Linux
 
-There is no download yet, so it runs from a checkout. No driver swap is needed, and games see
-a virtual wheel through uinput instead of vJoy.
+No driver swap and no vJoy: games see a virtual wheel through uinput. Download
+`WH33LH4X.flatpak` and `wh33lh4x-setup.sh` from [Releases](../../releases), then:
 
 ```
-git clone https://github.com/Noctaro/WH33LH4X.git && cd WH33LH4X
-sudo apt install python3-usb python3-evdev python3-tk
-sudo sh packaging/linux/setup.sh
+sudo sh wh33lh4x-setup.sh
+flatpak install --user WH33LH4X.flatpak
 ```
 
-The setup script is needed once. It gives your user access to the wheel and to `/dev/uinput`
-and keeps the wheel awake. Log out and back in, replug the wheel, let its calibration sweep
-finish, then run `/usr/bin/python3 -m ui` and carry on from step 4. The full path matters when
-pyenv or a venv is active: apt installs the packages for the system Python only. If `xone` is installed it keeps
-working for your other controllers; the bridge takes the wheel from it at Start, and a replug
-hands it back.
+The setup script is needed once, because a Flatpak cannot give itself access to devices. It
+lets your user open the wheel and `/dev/uinput` and keeps the wheel awake. Log out and back in,
+replug the wheel, let its calibration sweep finish, then start **WH33LH4X** from the app menu
+and carry on from step 4. If `xone` is installed it keeps working for your other controllers;
+the bridge takes the wheel from it at Start, and a replug hands it back.
+
+Headless, over SSH: `flatpak run io.github.Noctaro.WH33LH4X bridge`, with any of the bridge's
+flags after it.
 
 ## Tuning
 

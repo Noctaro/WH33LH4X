@@ -11,6 +11,7 @@ import sys
 import tempfile
 
 from bridge.nudge import verdict
+import live_tune
 from live_tune import DEFAULTS
 from ui import profiles, service, setup_linux
 
@@ -23,10 +24,17 @@ def check(name, condition, detail=""):
 
 def test_builtin_profiles():
     print("\nbuilt-in profiles")
-    loaded = profiles.load_all()
+    loaded = profiles.load_all(platform=None)
     names = [p.name for p in loaded]
     ok = check("Default comes first (%s)" % names, names[:1] == ["Default"])
-    ok &= check("DiRT 4 and RC car exist", "DiRT 4" in names and "RC car" in names)
+    ok &= check("DiRT 4, DiRT 4 (Linux) and RC car exist",
+                {"DiRT 4", "DiRT 4 (Linux)", "RC car"} <= set(names))
+    windows = [p.name for p in profiles.load_all(platform="windows")]
+    linux = [p.name for p in profiles.load_all(platform="linux")]
+    ok &= check("Windows lists DiRT 4, not the Linux one",
+                "DiRT 4" in windows and "DiRT 4 (Linux)" not in windows)
+    ok &= check("Linux lists DiRT 4 (Linux), not the Windows one",
+                "DiRT 4 (Linux)" in linux and "DiRT 4" not in linux)
     for profile in loaded:
         unknown = set(profile.values) - set(profiles.KEYS)
         ok &= check("%s sets only known keys" % profile.name, not unknown, str(unknown))
@@ -68,6 +76,44 @@ def test_apply_and_save():
             ok &= check("create refuses a taken name", True)
         return ok
     finally:
+        shutil.rmtree(folder)
+
+
+def test_read_only_install():
+    print("\nprofiles in a read-only install")
+    folder = tempfile.mkdtemp()
+    saved = profiles.USER_DIR, profiles.writable
+    try:
+        builtin = os.path.join(folder, "app")
+        profiles.USER_DIR = os.path.join(folder, "data")
+        os.makedirs(builtin)
+        profiles.Profile("Road", os.path.join(builtin, "road.json"), {}).save({"spring": 0.2})
+        profiles.writable = lambda path: os.path.abspath(path) != os.path.abspath(builtin)
+        road = profiles.load_all(builtin, profiles.USER_DIR)[0]
+        road.save({"spring": 0.4})
+        ok = check("saving a built-in writes a copy to the data folder",
+                   os.path.dirname(road.path) == profiles.USER_DIR)
+        again = profiles.load_all(builtin, profiles.USER_DIR)
+        ok &= check("the copy shadows the built-in",
+                    len(again) == 1 and again[0].values["spring"] == 0.4)
+
+        # A copy saved before profiles had a platform still hides with its built-in.
+        profiles.writable = lambda path: True
+        profiles.Profile("Win", os.path.join(builtin, "win.json"), {},
+                         platform="windows").save({})
+        profiles.Profile("Win", os.path.join(profiles.USER_DIR, "win.json"), {}).save({})
+        ok &= check("an old copy keeps the platform of its built-in",
+                    "Win" not in [p.name for p in profiles.load_all(
+                        builtin, profiles.USER_DIR, platform="linux")])
+
+        tune = os.path.join(folder, "user-tune.json")
+        linux = os.path.join(profiles.PROFILE_DIR, "dirt_4_linux.json")
+        live_tune.ensure_user_tune(tune, linux)
+        ok &= check("a first start from a profile file takes its values",
+                    profiles.read_tune(tune).get("invert") is False)
+        return ok
+    finally:
+        profiles.USER_DIR, profiles.writable = saved
         shutil.rmtree(folder)
 
 
@@ -197,8 +243,8 @@ def test_linux_setup():
 
 def main():
     print("ui checks")
-    results = [test_builtin_profiles(), test_apply_and_save(), test_bridge_process(),
-               test_nudge_verdict(), test_linux_setup()]
+    results = [test_builtin_profiles(), test_apply_and_save(), test_read_only_install(),
+               test_bridge_process(), test_nudge_verdict(), test_linux_setup()]
     print()
     if all(results):
         print("ALL CHECKS PASSED")

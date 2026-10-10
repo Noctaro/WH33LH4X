@@ -7,6 +7,7 @@ import sys
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 
+import paths
 from live_tune import ensure_user_tune
 from ui import profiles, service
 
@@ -22,11 +23,11 @@ else:
     from ui import setup_linux as setup
     SETUP_ROWS = [("uinput", "uinput"), ("wheel", "Wheel")]
 
-ROOT = profiles.ROOT
-SETTINGS = os.path.join(ROOT, "gui_settings.json")
+ROOT = paths.APP
+SETTINGS = os.path.join(paths.DATA, "gui_settings.json")
 HERE = os.path.dirname(os.path.abspath(__file__))
-ICON_ICO = os.path.join(HERE, "icon.ico")     # 16 to 192 px, from logo/icons
-ICON_PNG = os.path.join(HERE, "icon.png")
+ICON_ICO = os.path.join(HERE, "icon.ico")     # 16 to 256 px, rendered from logo/logo.svg
+ICON_PNG = os.path.join(HERE, "icon.png")     # 256 px, the same
 
 POLL_MS = 250
 CHECK_MS = 2000         # setup checks enumerate USB and read the registry
@@ -474,7 +475,8 @@ def main():
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("WH33LH4X")
         except (AttributeError, OSError):
             pass
-    root = tk.Tk()
+    # The window class Linux desktops match to the desktop entry's StartupWMClass.
+    root = tk.Tk(className="WH33LH4X")
     App(root)
     root.mainloop()
     return 0

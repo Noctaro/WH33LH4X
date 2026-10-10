@@ -106,10 +106,18 @@ will work.
 
 ### `packaging/linux/setup.sh` — one-time Linux host setup
 
-Repo only — not in the bundle. Run once with `sudo sh packaging/linux/setup.sh`. Installs a udev rule that gives the
-desktop user and the `wh33lh4x` group access to the wheel and to `/dev/uinput` and keeps the
-wheel awake, adds you to that group, and loads `uinput` at boot. It ends by printing what is
-still to do. `--remove` undoes all of it.
+Repo only — not in the bundle. Released as `wh33lh4x-setup.sh` next to the Flatpak. Run once with `sudo sh`. Installs a
+udev rule that gives the desktop user and the `wh33lh4x` group access to the wheel, to
+`/dev/uinput` and to the virtual wheel, and keeps the wheel awake; adds you to that group, and
+loads `uinput` at boot. It ends by printing what is still to do. `--remove` undoes all of it,
+and `--print-rule` prints the rule without installing anything.
+
+### `flatpak run io.github.Noctaro.WH33LH4X` — the Linux release
+
+With no arguments it opens the window. With a module name and flags it runs that module
+instead, for example `flatpak run io.github.Noctaro.WH33LH4X bridge --run-seconds 10` or
+`... bridge.nudge`. Tuning, saved profiles and logs are in
+`~/.var/app/io.github.Noctaro.WH33LH4X/data`.
 
 ---
 
@@ -140,6 +148,7 @@ Imported by the commands above; nothing to run.
 | `ffb_render.py` | The force-feedback control laws, in normalised units | yes |
 | `live_tune.py` | Tuning file reloading and the wheel-button tuning controls | yes |
 | `probe_log.py` | Session logging to `logs/` | yes |
+| `paths.py` | Where the app's files are and where it writes | yes |
 | `dinput_abi.py` | ctypes transcription of the DirectInput 8 API surface | yes |
 | `evidence/gameinput_abi.py` | ctypes transcription of the GameInput API (v0 ABI) | no |
 | `evidence/gip_protocol.py` | The GIP wire format as captured above the driver | no |

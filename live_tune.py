@@ -14,13 +14,16 @@ down. Anything unparseable leaves the previous values in place and is reported o
 
 import json
 import os
-import shutil
+import sys
 
 import ffb_render as render
+import paths
 
-ROOT = os.path.dirname(os.path.abspath(__file__))
-TEMPLATE = os.path.join(ROOT, "tune.json")          # tracked: the starting values
-USER_TUNE = os.path.join(ROOT, "user-tune.json")    # local: what the bridge and window change
+TEMPLATE = os.path.join(paths.APP, "tune.json")         # tracked: the starting values
+if sys.platform != "win32":
+    # tune.json holds Windows DiRT 4 values; on Linux the same game needs invert off.
+    TEMPLATE = os.path.join(paths.APP, "profiles", "dirt_4_linux.json")
+USER_TUNE = os.path.join(paths.DATA, "user-tune.json")  # local: what bridge and window change
 
 # Every tunable, with the value that means "unchanged from how the game sent it". Anything not
 # in here is ignored, so a stray key in the file is a typo rather than a silent new setting.
@@ -70,12 +73,15 @@ def ensure_user_tune(path=USER_TUNE, template=TEMPLATE):
     """Create the local tuning file from the template if it is missing. True if created."""
     if os.path.exists(path):
         return False
-    if os.path.exists(template):
-        shutil.copyfile(template, path)
-    else:
-        with open(path, "w", encoding="utf-8") as handle:
-            json.dump(DEFAULTS, handle, indent=2)
-            handle.write("\n")
+    try:
+        with open(template, encoding="utf-8") as handle:
+            values = json.load(handle)
+        values = values.get("tune", values)     # a profile file keeps its values under "tune"
+    except (OSError, ValueError, AttributeError):
+        values = DEFAULTS
+    with open(path, "w", encoding="utf-8", newline="\n") as handle:
+        json.dump(values, handle, indent=2)
+        handle.write("\n")
     return True
 
 

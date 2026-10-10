@@ -15,6 +15,14 @@ python -m venv .venv
 The wheel must be bound to WinUSB for anything that talks to it; see the
 [Quickstart](../README.md#quickstart). On Linux, `sudo sh packaging/linux/setup.sh` takes that
 place: a udev rule for access to the wheel and `/dev/uinput`, and it keeps the wheel awake.
+A checkout runs on the system Python there:
+
+```
+sudo apt install python3-usb python3-evdev python3-tk
+/usr/bin/python3 -m ui
+```
+
+The full path matters when pyenv or a venv is active: apt installs for the system Python only.
 
 Then run the window with `.\.venv\Scripts\pythonw.exe -m ui`, or the bridge alone with
 `.\.venv\Scripts\python.exe -m bridge`.
@@ -27,6 +35,16 @@ Then run the window with `.\.venv\Scripts\pythonw.exe -m ui`, or the bridge alon
 
 The bundle carries its own embeddable CPython, so a built `dist\WH33LH4X` needs no venv and no
 Python installed. That is what a release is. CI builds the same bundle on every push.
+
+The Linux release is a Flatpak, built by CI from `packaging/linux/io.github.Noctaro.WH33LH4X.yml`
+on the Freedesktop 25.08 runtime. The runtime's Python has no tkinter, so the manifest builds
+Tcl/Tk 8.6 and `_tkinter` itself. `/app` is read-only, so the launcher sets `WH33LH4X_DATA` and
+`paths.py` sends tuning, settings, saved profiles and logs to the sandbox's data folder. On a
+machine with `flatpak-builder` and the SDK:
+
+```
+flatpak-builder --user --install --force-clean build packaging/linux/io.github.Noctaro.WH33LH4X.yml
+```
 
 ## Tests
 
@@ -212,6 +230,7 @@ The short version:
 | `vjoy_ffb_spike.py` | Verifies the vJoy force feedback path the bridge is built on |
 | `tune_report.py` | Reads a bridge log and reports what the force feedback actually did |
 | `probe_log.py` | Session logging to `logs/` |
+| `paths.py` | Where the app's files are and where it writes: the same folder, except in the Flatpak |
 | `dinput_abi.py` | ctypes binding for DirectInput 8, used by `vjoy_ffb_spike.py` |
 | [`evidence/`](../evidence/README.md) | Why the other APIs cannot drive this wheel, and the raw USB instruments |
 

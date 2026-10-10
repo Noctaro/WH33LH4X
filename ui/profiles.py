@@ -3,23 +3,27 @@
 import json
 import os
 import re
+import sys
 
+import paths
 from live_tune import DEFAULTS, USER_TUNE
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PROFILE_DIR = os.path.join(ROOT, "profiles")
+PROFILE_DIR = os.path.join(paths.APP, "profiles")   # the built-in ones
+USER_DIR = os.path.join(paths.DATA, "profiles")     # where saves go; the same in a checkout
 TUNE = USER_TUNE
+PLATFORM = "windows" if sys.platform == "win32" else "linux"
 
 # Button assignments belong to the wheel, not to a profile, so switching leaves them alone.
 KEYS = [key for key in DEFAULTS if not key.startswith("btn_")]
 
 
 class Profile(object):
-    def __init__(self, name, path, values, notes=""):
+    def __init__(self, name, path, values, notes="", platform=None):
         self.name = name
         self.path = path
         self.values = values
         self.notes = notes
+        self.platform = platform    # None for both; DiRT 4 needs invert only on Windows
 
     def complete(self):
         """Every key, defaults filled in, so a switch leaves nothing behind."""
@@ -31,7 +35,13 @@ class Profile(object):
 
     def save(self, values):
         self.values = {key: values.get(key, DEFAULTS[key]) for key in KEYS}
-        _write_json(self.path, {"name": self.name, "notes": self.notes, "tune": self.values})
+        if not writable(os.path.dirname(self.path)):
+            # A built-in profile in a read-only install is saved as a copy that shadows it.
+            self.path = os.path.join(USER_DIR, os.path.basename(self.path))
+        data = {"name": self.name, "notes": self.notes, "tune": self.values}
+        if self.platform:
+            data["platform"] = self.platform
+        _write_json(self.path, data)
 
 
 def _same(a, b):
@@ -41,48 +51,60 @@ def _same(a, b):
     return a == b
 
 
+def writable(folder):
+    return os.access(folder, os.W_OK)
+
+
 def _write_json(path, data):
     """Write through a temporary file, so a reader never sees half a file."""
     temp = path + ".tmp"
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(temp, "w", encoding="utf-8", newline="\n") as handle:
         json.dump(data, handle, indent=2)
         handle.write("\n")
     os.replace(temp, path)
 
 
-def load_all(directory=PROFILE_DIR):
-    """Every readable profile, Default first, then by name."""
-    profiles = []
-    try:
-        names = sorted(os.listdir(directory))
-    except OSError:
-        return profiles
-    for filename in names:
-        if not filename.endswith(".json"):
-            continue
-        path = os.path.join(directory, filename)
+def load_all(*directories, platform=PLATFORM):
+    """This platform's profiles (None: all), Default first, then by name; later folders win."""
+    found = {}
+    for directory in directories or (PROFILE_DIR, USER_DIR):
         try:
-            with open(path, encoding="utf-8") as handle:
-                data = json.load(handle)
-            values = {key: value for key, value in data.get("tune", {}).items()
-                      if key in KEYS}
-            profiles.append(Profile(str(data["name"]), path, values, data.get("notes", "")))
-        except (OSError, ValueError, KeyError, AttributeError):
+            names = sorted(os.listdir(directory))
+        except OSError:
             continue
-    profiles.sort(key=lambda p: (p.name != "Default", p.name.lower()))
-    return profiles
+        for filename in names:
+            if not filename.endswith(".json"):
+                continue
+            path = os.path.join(directory, filename)
+            try:
+                with open(path, encoding="utf-8") as handle:
+                    data = json.load(handle)
+                values = {key: value for key, value in data.get("tune", {}).items()
+                          if key in KEYS}
+                # A saved copy keeps the platform of the built-in it shadows.
+                shadowed = found.get(filename)
+                found[filename] = Profile(
+                    str(data["name"]), path, values, data.get("notes", ""),
+                    data.get("platform", shadowed.platform if shadowed else None))
+            except (OSError, ValueError, KeyError, AttributeError):
+                continue
+    shown = [p for p in found.values() if platform is None or p.platform in (None, platform)]
+    return sorted(shown, key=lambda p: (p.name != "Default", p.name.lower()))
 
 
-def create(name, values, directory=PROFILE_DIR):
+def create(name, values, directory=USER_DIR):
     """A new profile file for name. Raises ValueError if the name is empty or taken."""
     name = name.strip()
     slug = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
     if not slug:
         raise ValueError("a profile needs a name")
-    if any(p.name.lower() == name.lower() for p in load_all(directory)):
+    # Every platform's names and files, so a new profile never shadows a hidden built-in.
+    taken = load_all(PROFILE_DIR, directory, platform=None)
+    if any(p.name.lower() == name.lower() for p in taken):
         raise ValueError("a profile called %s already exists" % name)
     path = os.path.join(directory, slug + ".json")
-    if os.path.exists(path):
+    if os.path.exists(path) or os.path.exists(os.path.join(PROFILE_DIR, slug + ".json")):
         raise ValueError("%s already exists" % os.path.basename(path))
     profile = Profile(name, path, {})
     profile.save(values)
