@@ -26,8 +26,8 @@ else:
 ROOT = paths.APP
 SETTINGS = os.path.join(paths.DATA, "gui_settings.json")
 HERE = os.path.dirname(os.path.abspath(__file__))
-ICON_ICO = os.path.join(HERE, "icon.ico")     # 16 to 192 px, from logo/icons
-ICON_PNG = os.path.join(HERE, "icon.png")
+ICON_ICO = os.path.join(HERE, "icon.ico")     # 16 to 256 px, rendered from logo/logo.svg
+ICON_PNG = os.path.join(HERE, "icon.png")     # 256 px, the same
 
 POLL_MS = 250
 CHECK_MS = 2000         # setup checks enumerate USB and read the registry
