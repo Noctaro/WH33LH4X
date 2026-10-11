@@ -11,18 +11,24 @@ racing games drive wheels through DirectInput. The result is a force feedback wh
 force feedback in any PC sim.
 
 This closes that gap. It talks to the wheel directly over USB, presents it to games as an
-ordinary DirectInput force feedback wheel through vJoy, and drives the real motor itself.
-Nothing is injected into the game.
+ordinary force feedback wheel, through vJoy on Windows and uinput on Linux, and drives the real
+motor itself. Nothing is injected into the game.
+
+**This is a beta.** It has been tested on one wheel, one Windows PC and one Linux machine, with
+DiRT 4. If you try it, please [report how it went](../../issues/new?template=test-report.yml),
+whether it worked or not: that is what decides when it becomes 1.0.
 
 ## Does this work for me?
 
 - **The wheel** is a Hori Force Feedback Racing Wheel DLX (`VID 0x0F0D`), in **Xbox mode**
   (`PID 0x015C`). A long press of the PROFILE button switches out of PC mode.
 - **The game** has to be one that works. [GAMES.md](GAMES.md) has the list and the per-game
-  setup. DiRT 4 is confirmed on hardware.
-- **The wheel belongs to this tool while it is set up.** Talking to it over USB means swapping
-  Microsoft's Xbox driver for WinUSB, and while WinUSB is bound, Xbox games and the HORI app no
-  longer see the wheel. The window can put the Microsoft driver back in one click.
+  setup. DiRT 4 is confirmed on hardware, on Windows and Linux.
+- **On Windows the wheel belongs to this tool while it is set up.** Talking to it over USB means
+  swapping Microsoft's Xbox driver for WinUSB, and while WinUSB is bound, Xbox games and the
+  HORI app no longer see the wheel. The window can put the Microsoft driver back in one click.
+- **On Linux nothing is swapped.** A one-time setup script gives your user access to the wheel,
+  and `xone`, if installed, keeps working for your other controllers.
 
 ## Quickstart
 
@@ -71,7 +77,7 @@ flags after it.
 
 ## Tuning
 
-Pick a **profile** (Default, DiRT 4, RC car), then adjust. The sliders work **while you
+Pick a **profile** (Default, DiRT 4, RC car; on Linux DiRT 4 (Linux)), then adjust. The sliders work **while you
 drive**: a change reaches the wheel within half a second, mid corner. **Save** keeps it in the
 profile, **Save as new** makes your own.
 

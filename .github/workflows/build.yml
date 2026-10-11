@@ -237,7 +237,10 @@ jobs:
           # to from the local git remote. Without this it fails with "not a git repository".
           GH_REPO: ${{ github.repository }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
+          # A tag with a suffix, such as v1.0.0-beta.1, is a test release.
+          prerelease=""
+          case "$GITHUB_REF_NAME" in *-*) prerelease="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" $prerelease \
             dist/WH33LH4X-windows-x64.zip \
             dist/SHA256SUMS.txt \
             dist/WH33LH4X.flatpak \
