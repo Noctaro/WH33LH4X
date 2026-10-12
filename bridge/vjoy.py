@@ -142,7 +142,7 @@ class EffectDecoder(object):
     CONSTRAINT: gain arrives as a 0-255 byte and duration in milliseconds with 0xFFFF meaning
     infinite; magnitudes stay at +-10000. A wrong unit is a silent factor of 40, not a crash.
     vjoy_ffb_spike.py re-measures this. Direction is a mode, see
-    docs/tuning.md#how-dir_mode-reads-a-games-direction-field.
+    docs/development.md#how-dir_mode-reads-a-games-direction-field.
     """
 
     def __init__(self, mixer, clock=time.monotonic):

@@ -57,11 +57,9 @@ def wheel_check(sysfs=SYSFS, nodes=USB_NODES):
     control = os.path.join(sysfs, device, "power", "control")
     if _read(control) == "auto":
         return (False, "autosuspend on", "Linux suspends the wheel between uses",
-                "Every time the bridge opens a suspended wheel, it boots and sweeps through a "
-                "calibration that ignores force. %s\n\n"
+                "Each wake-up runs a calibration sweep that ignores force. %s\n\n"
                 "Or keep it awake until the next replug with:\n\n"
-                "  echo on | sudo tee %s\n\n"
-                "It sweeps once as it wakes." % (RUN_SETUP, control))
+                "  echo on | sudo tee %s" % (RUN_SETUP, control))
     # A bound kernel driver is no problem: the bridge detaches it when it opens the wheel.
     driver = os.path.join(sysfs, device + ":1.0", "driver")
     if os.path.islink(driver):
@@ -74,10 +72,10 @@ def uinput_check(node=UINPUT, evdev=None):
     """(ok, badge, title, guidance) for the virtual wheel games see."""
     if not os.path.exists(node):
         return (False, "not loaded", "The uinput module is not loaded",
-                "Games see the wheel through %s, which does not exist. %s" % (node, RUN_SETUP))
+                "Games see the wheel through %s. %s" % (node, RUN_SETUP))
     if not _usable(node):
         return (False, "no access", "This user may not create a virtual wheel",
-                "%s is not writable for this user. %s" % (node, RUN_SETUP))
+                RUN_SETUP)
     if evdev is None:
         evdev = importlib.util.find_spec("evdev") is not None
     if not evdev:

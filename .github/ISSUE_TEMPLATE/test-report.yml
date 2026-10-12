@@ -1,0 +1,70 @@
+name: Test report
+description: Tried WH33LH4X with your wheel? Tell us how it went, working or not.
+title: "Test report: "
+labels: ["test report"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing. A report that says "it all worked" is just as useful as one that
+        says it did not: both decide when this becomes 1.0.
+
+  - type: input
+    id: version
+    attributes:
+      label: WH33LH4X version
+      description: The release you downloaded, for example v1.0.0-beta.1.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: system
+    attributes:
+      label: System
+      options:
+        - Windows (zip)
+        - Linux (Flatpak)
+        - Linux (from a checkout)
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system and version
+      description: For example Windows 11 24H2, Ubuntu 24.04, Fedora 42, SteamOS 3.7.
+    validations:
+      required: true
+
+  - type: textarea
+    id: setup
+    attributes:
+      label: Setup
+      description: What the window's Setup rows showed, and anything you had to do to make them OK.
+
+  - type: input
+    id: nudge
+    attributes:
+      label: Test force result
+      description: The line the window showed after Test force, for example "Test force passed".
+
+  - type: textarea
+    id: games
+    attributes:
+      label: Games
+      description: |
+        Which games you drove, with which profile, and how the force felt. Did the wheel push
+        you out of corners, or pull you into them?
+
+  - type: textarea
+    id: log
+    attributes:
+      label: Bridge log
+      description: |
+        Drag in the newest `bridge_*.log`. On Windows it is in the `logs` folder next to
+        `WH33LH4X-GUI.cmd`; with the Flatpak in `~/.var/app/io.github.Noctaro.WH33LH4X/data/logs`.
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else
