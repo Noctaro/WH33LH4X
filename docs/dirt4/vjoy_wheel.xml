@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  vJoy virtual wheel, fed by the WH33LH4X bridge (vjoy_bridge.py).
+  vJoy virtual wheel, fed by the WH33LH4X bridge (python -m bridge).
 
   Steering is declared here so a fresh install has working steering without going near the
   settings screen. The engine wants left and right as the two halves of ONE axis, which is
@@ -11,7 +11,7 @@
   menu: with the device_defines.xml entry in place, rebinding from the game's own UI works
   (re-tested 2026-08-26).
 
-  Axis assignment comes from vjoy_bridge.AXIS_MAP:
+  Axis assignment comes from bridge/vjoy.py AXIS_MAP:
     di_x_axis           steering   (bidirectional, centred)
     di_y_axis           throttle   (rests low, rises when pressed)
     di_z_axis           brake

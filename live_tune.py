@@ -5,9 +5,8 @@ Force feedback is judged by feel, and a value baked in at startup costs a game r
 drive back to the corner per adjustment. These live in a JSON file the bridge re-reads while
 it runs, so a change is felt mid-corner.
 
-CONSTRAINT: strength scales the force value itself, never the IPC gain field. WGI latches gain
-when the effect loads, so writing it mid-session looks like it works and changes nothing. See
-motor_sink.WgiMotorSink.
+CONSTRAINT: strength scales the force value itself, never the bridge's --gain, which is fixed
+for the session.
 
 CONSTRAINT: never raise. A game is running, and a typo in a JSON file must not take the wheel
 down. Anything unparseable leaves the previous values in place and is reported once.
@@ -15,8 +14,16 @@ down. Anything unparseable leaves the previous values in place and is reported o
 
 import json
 import os
+import sys
 
 import ffb_render as render
+import paths
+
+TEMPLATE = os.path.join(paths.APP, "tune.json")         # tracked: the starting values
+if sys.platform != "win32":
+    # tune.json holds Windows DiRT 4 values; on Linux the same game needs invert off.
+    TEMPLATE = os.path.join(paths.APP, "profiles", "dirt_4_linux.json")
+USER_TUNE = os.path.join(paths.DATA, "user-tune.json")  # local: what bridge and window change
 
 # Every tunable, with the value that means "unchanged from how the game sent it". Anything not
 # in here is ignored, so a stray key in the file is a typo rather than a silent new setting.
@@ -32,6 +39,10 @@ DEFAULTS = {
     "spring": 0.0,          # synthetic centring, from real wheel position. 0 = off
     "damper": 0.0,          # synthetic damping, from real wheel velocity. 0 = off
     "friction": 0.0,        # synthetic drag whenever the wheel moves at all. 0 = off
+    # "linear" adds spring and damper as they are; "tuned" is ffb_render.CentringLaw, which
+    # needs the bridge package to observe the wheel.
+    "centring": "linear",
+    "centring_floor": 0.05,     # tuned only: smallest centring force away from centre
 
     # Wheel buttons that adjust tuning while driving, as 1-based bit numbers; 0 = unassigned.
     # A game holds the foreground and every keystroke with it, so the wheel is the only input
@@ -58,6 +69,22 @@ STEPS = [
 SILENCE = 0.005
 
 
+def ensure_user_tune(path=USER_TUNE, template=TEMPLATE):
+    """Create the local tuning file from the template if it is missing. True if created."""
+    if os.path.exists(path):
+        return False
+    try:
+        with open(template, encoding="utf-8") as handle:
+            values = json.load(handle)
+        values = values.get("tune", values)     # a profile file keeps its values under "tune"
+    except (OSError, ValueError, AttributeError):
+        values = DEFAULTS
+    with open(path, "w", encoding="utf-8", newline="\n") as handle:
+        json.dump(values, handle, indent=2)
+        handle.write("\n")
+    return True
+
+
 def clamp(value, limit=1.0):
     if value != value:                      # NaN, which a hand-edited file can produce
         return 0.0
@@ -77,6 +104,7 @@ class LiveTune(object):
         self.path = path
         self.poll_seconds = poll_seconds
         self.values = dict(DEFAULTS)
+        self.centring_law = render.CentringLaw()
         self.loads = 0
         self.errors = 0
         self.last_error = None
@@ -217,10 +245,13 @@ class LiveTune(object):
             spring = self.values["spring"]
             damper = self.values["damper"]
             friction = self.values["friction"]
-            if spring:
-                out += -state.position * spring
-            if damper:
-                out += -state.velocity * damper
+            if self.values["centring"] == "tuned":
+                out += self.centring_law.force(spring, damper, self.values["centring_floor"])
+            else:
+                if spring:
+                    out += -state.position * spring
+                if damper:
+                    out += -state.velocity * damper
             if friction:
                 # Not -sign(velocity) * gain written out again. ffb_render already holds the
                 # law that was fitted to this wheel, dead band included, and the dead band
@@ -240,9 +271,8 @@ class ButtonTuner(object):
     """
     Adjust tuning from the wheel's own buttons, because nothing else can reach us.
 
-    While a game runs it owns the foreground and therefore the keyboard. That gate is the
-    reason this whole project exists. The wheel is the one input device whose state we read
-    directly, over the same shared section the shim publishes position through.
+    While a game runs it owns the foreground and therefore the keyboard. The wheel is the one
+    input device the bridge reads directly, so its buttons still reach it mid-race.
 
     ONE HONEST LIMITATION: there is no display in the car. Stepping a value gives immediate
     physical feedback, which is the entire point, but which parameter is selected does not,

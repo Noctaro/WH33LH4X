@@ -485,11 +485,8 @@ def create_direct_input(dll_path="dinput8.dll"):
     """
     DirectInput8Create(hinst, 0x0800, IID_IDirectInput8W, &out, NULL).
 
-    `dll_path` exists so the shim proxy can be tested: pass an absolute path to
-    `shim/build/dinput8.dll` and everything downstream runs through the proxy instead of the
-    system DLL, which is the only way to prove the proxy is transparent without launching a
-    game. Pass an absolute path when the proxy is meant: a bare name searches the
-    application directory first, and that is exactly the ambiguity being tested.
+    `dll_path` selects which dinput8.dll to load. A bare name searches the application
+    directory first, so pass an absolute path to be sure which copy is used.
     """
     dll = ctypes.WinDLL(dll_path)
     fn = dll.DirectInput8Create

@@ -3,7 +3,7 @@ vjoy_ffb_spike.py: does the vJoy force feedback callback actually work?
 
 This is the kill-switch for the whole bridge. The bridge plan is:
 
-    game (DirectInput) -> vJoy virtual wheel -> [this callback] -> WGI -> real HORI motor
+    game (DirectInput) -> vJoy virtual wheel -> [this callback] -> raw USB -> real HORI motor
 
 Everything downstream is pointless if the first arrow does not deliver usable data, so this
 tool tests exactly that arrow and nothing else. It never touches the real wheel.
@@ -120,10 +120,9 @@ class PacketSink(object):
     Records every FFB packet vJoy delivers, and prints it.
 
     The callback runs on VJOY'S OWN THREAD, not ours. For this spike that only means
-    serialising the prints, but it is the reason the real bridge must hand off over a queue
-    rather than calling WinRT from here: the WGI session is bound to the pump thread, and
-    calling into it from a foreign thread is exactly the kind of failure that presents as
-    "force works sometimes".
+    serialising the prints, but it is the reason the real bridge hands off over a queue
+    rather than changing effect state from here: a mix mutated mid-computation is exactly
+    the kind of failure that presents as "force works sometimes".
     """
 
     def __init__(self):

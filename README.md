@@ -1,25 +1,30 @@
+<p align="left"><img src="logo/logo.jpg" alt="WH33LH4X logo" width="240"></p>
+
 # WH33LH4X
 
-**Force feedback for the Hori Force Feedback Racing Wheel DLX in PC racing games.**
+**Force feedback for the Hori Force Feedback Racing Wheel DLX in PC racing games, on Windows
+and Linux.**
 
-The wheel has two USB modes and both are dead ends for sims. In PC mode DirectInput sees the
-wheel, but its joystick collection is input only, so there is no force feedback for any driver
-to expose. In Xbox mode force feedback works, but only through `Windows.Gaming.Input`, and
-racing games drive wheels through DirectInput. The result is a force feedback wheel with no
-force feedback in any PC sim.
+WH33LH4X talks to the wheel directly over USB and drives its motor. Games see an ordinary force
+feedback wheel: a vJoy device on Windows, a virtual wheel on Linux. A small window picks the
+game's profile, tunes the feel while you drive and tests the wheel.
 
-This closes that gap. It presents the wheel to games as an ordinary DirectInput force feedback
-wheel, and drives the real motor itself.
+**This is a beta.** It has been tested on one wheel, one Windows PC and one Linux machine, with
+DiRT 4. If you try it, please [report how it went](../../issues/new?template=test-report.yml),
+whether it worked or not: that is what decides when it becomes 1.0.
 
 ## Does this work for me?
 
 - **The wheel** is a Hori Force Feedback Racing Wheel DLX (`VID 0x0F0D`), in **Xbox mode**
   (`PID 0x015C`). A long press of the PROFILE button switches out of PC mode.
 - **The game** has to be one that works. [GAMES.md](GAMES.md) has the list and the per-game
-  setup. DiRT 4 is confirmed on hardware.
-- **Not a game with kernel anti-cheat** such as EasyAntiCheat or BattlEye. This tool puts a DLL
-  in the game folder, which is exactly the thing they exist to stop, and meaning well is not a
-  defence they accept.
+  setup. DiRT 4 is confirmed on hardware, on Windows and Linux. Games with kernel anti-cheat,
+  such as EasyAntiCheat or BattlEye, are untested.
+- **On Windows the wheel belongs to this tool while it is set up.** Talking to it over USB means
+  swapping Microsoft's Xbox driver for WinUSB, and while WinUSB is bound, Xbox games and the
+  HORI app no longer see the wheel. The window can put the Microsoft driver back in one click.
+- **On Linux nothing is swapped.** A one-time setup script gives your user access to the wheel,
+  and `xone`, if installed, keeps working for your other controllers.
 
 ## Quickstart
 
@@ -27,72 +32,95 @@ wheel, and drives the real motor itself.
 [Releases](../../releases) and extract it anywhere. It carries its own Python, so there is
 nothing else to install.
 
-**2. Install [vJoy 2.2.2.0](https://github.com/BrunnerInnovation/vJoy)** and configure device 1.
-The version matters, and so do a few checkboxes. You do not have to get it right from memory:
-the window checks all of it and tells you exactly what to change. Full walkthrough in
-[docs/vjoy.md](docs/vjoy.md).
+**2. Install vJoy 2.2.2.0 and set up device 1:** [docs/vjoy.md](docs/vjoy.md).
 
-**3. Do the per-game setup** from [GAMES.md](GAMES.md).
+**3. Run `WH33LH4X-GUI.cmd`.** Its Setup section checks vJoy and the wheel. If the wheel line
+says *Microsoft driver*, press **How to fix**: it walks you through binding WinUSB with
+[Zadig](https://zadig.akeo.ie).
 
-**4. Run `WH33LH4X-GUI.cmd`.** Pick the game's `.exe`, press **Start**.
+**4. Press Test force**, hands off the wheel. It turns a little right and left and tells you
+whether the whole chain works.
 
-The window handles the parts that are easy to get wrong. It launches Steam games the way Steam
-insists on, shows what is known to be quirky about the title you picked, and reports whether
-the bridge is really live rather than leaving you to guess.
+**5. Do the per-game setup** from [GAMES.md](GAMES.md), pick the game's profile, press
+**Start**, and start the game however you normally do.
 
-**5. Drive.**
+**6. Drive.**
 
-Prefer a terminal? Everything the window does, `WH33LH4X.cmd` does too. See
+Prefer a terminal? `WH33LH4X.cmd` runs the bridge without the window. See
 [COMMANDS.md](COMMANDS.md).
 
+### On Linux
+
+No driver swap and no vJoy: games see a virtual wheel through uinput.
+
+1. Download `WH33LH4X.flatpak` and `wh33lh4x-setup.sh` from [Releases](../../releases).
+2. Run the setup once. It gives your user access to the wheel and keeps the wheel awake.
+
+   ```
+   sudo sh wh33lh4x-setup.sh
+   flatpak install --user WH33LH4X.flatpak
+   ```
+
+3. Log out and back in, replug the wheel and let its calibration sweep finish.
+4. Start **WH33LH4X** from the app menu and carry on from step 4 above.
+
+Headless, over SSH: `flatpak run io.github.Noctaro.WH33LH4X bridge`, with any of the bridge's
+flags after it.
+
 ## Tuning
-The sliders work **while you drive**: a change reaches the wheel within half a
-second, mid corner.
+
+Pick a **profile** (Default, DiRT 4, RC car; on Linux DiRT 4 (Linux)), then adjust. The
+sliders work **while you drive**: a change reaches the wheel within half a second. **Save** keeps it in the
+profile, **Save as new** makes your own.
 
 | Slider | What it does |
 |---|---|
 | **Strength** | How hard the game's own force is felt. `1.00` is exactly what the game asked for. Set this first |
+| **Max force** | A ceiling on everything below it |
 | **Spring** | Pulls back to centre. For games that send no centring force of their own, which includes DiRT 4 |
-| **Damper** | Resists how fast you turn. This is what stops the spring overshooting and hunting |
+| **Damper** | Resists how fast you turn. Steadies the spring |
 | **Friction** | Constant drag whenever the wheel moves: weight, rather than centring |
-
-One thing worth knowing: **the wheel has a strength setting of
-its own**, in the *HORI FFB RWD-Devicemanager für Xbox Series X Series S* app from the
-Microsoft Store. It is a real gain stage above everything here, worth about 3.5x between its
-lowest and highest setting, and nothing in this project can read or change it. If two machines
-feel different with identical settings, look there first.
 
 Everything else, including the settings that have no slider, is in
 [docs/tuning.md](docs/tuning.md).
 
-## Why your antivirus may complain
+## Verify the download
 
-**This copies an unsigned `dinput8.dll` into your game's folder while you play, and removes it
-when the game exits.** That is the same mechanism malware uses to get code running inside
-another program, so a scanner objecting to it is not being stupid. Nothing here is code signed
-either. Both of those are worth saying plainly rather than hoping you do not notice.
+Releases are built by GitHub Actions from this repository. Nothing is code signed, so Windows
+may ask for confirmation on the first start.
 
-What you can check instead of trusting a signature:
+To check that your download is the one CI built:
 
-- **Build it yourself.** The DLL is compiled from `shim/*.c` in this repo by one script.
-- **Or verify what you downloaded.** Releases are built by GitHub Actions from public source,
-  and each one ships `SHA256SUMS.txt` plus a GitHub artifact attestation, so you can prove the
-  zip you have is the one CI built from a named commit.
+- **Windows:** `Get-FileHash WH33LH4X-windows-x64.zip` must match `SHA256SUMS.txt`, or run
+  `gh attestation verify WH33LH4X-windows-x64.zip --repo Noctaro/WH33LH4X`.
+- **Linux:** `sha256sum -c SHA256SUMS-linux.txt` in the download folder.
 
-The reasoning and the verification commands are
-in [SECURITY.md](SECURITY.md).
+Details are in [SECURITY.md](SECURITY.md).
+
+## The previous approach
+
+[v0.1.0](../../releases/tag/v0.1.0) injected a DLL into the game instead. It is not
+recommended.
 
 ## Where everything else is
 
+**For users**
+
 | Document | What is in it |
 |---|---|
-| [GAMES.md](GAMES.md) | Which games work, the per-game setup, and the quirks of each |
-| [docs/vjoy.md](docs/vjoy.md) | Installing and configuring vJoy, and the three ways it silently goes wrong |
-| [docs/tuning.md](docs/tuning.md) | Every `tune.json` key, and reading back what the force actually did |
-| [docs/hardware.md](docs/hardware.md) | What this wheel's firmware does and does not implement, measured |
-| [docs/development.md](docs/development.md) | Working on the code: venv, the probe tool, tests, building |
+| [GAMES.md](GAMES.md) | Which games work, and the setup for each |
+| [docs/vjoy.md](docs/vjoy.md) | Installing and setting up vJoy on Windows |
+| [docs/tuning.md](docs/tuning.md) | Every tuning setting, and checking what the force did |
+| [SECURITY.md](SECURITY.md) | What this tool changes on your system, and how to report a problem |
+
+**For developers**
+
+| Document | What is in it |
+|---|---|
+| [docs/development.md](docs/development.md) | Working on the code: venv, tests, building |
 | [COMMANDS.md](COMMANDS.md) | Every script and every flag |
-| [evidence/](evidence/README.md) | Four APIs that do **not** work on this wheel, and the probes that prove it |
+| [docs/hardware.md](docs/hardware.md) | What this wheel's firmware does and does not implement, measured |
+| [evidence/](evidence/README.md) | Why the other APIs cannot drive this wheel, and how the raw USB route was found |
 
 ## Thanks ♥
 
@@ -100,16 +128,24 @@ This sits on top of other people's work, all of it open source, and some of it i
 the project exists at all.
 
 **[vJoy](https://github.com/shauleiz/vJoy)**, Shaul Eizikovich, MIT. The virtual joystick
-driver the bridge is built on. Upstream is abandoned, but the forks kept it alive:
-**[njz3](https://github.com/njz3/vJoy)** added the force feedback effect block index in 2.2.0,
-without which concurrent effects cannot be told apart and this bridge does not work, and
-**[BrunnerInnovation](https://github.com/BrunnerInnovation/vJoy)** carried that into a signed
-Windows 11 build.
+driver the Windows bridge is built on, kept alive by the forks of
+**[njz3](https://github.com/njz3/vJoy)**, whose effect index this bridge depends on, and
+**[BrunnerInnovation](https://github.com/BrunnerInnovation/vJoy)**, who signed it for
+Windows 11.
 
 **[pyvjoyffb](https://github.com/Ultrawipf/pyvjoy)**, Yannick Richter, MIT, forked from
 **[tidzo/pyvjoy](https://github.com/tidzo/pyvjoy)**. Decodes force feedback through vJoy's own
-exports instead of reimplementing HID PID, and bundles the matching DLL. That is the whole
-usermode half of the problem, solved by someone else.
+exports instead of reimplementing HID PID, and bundles the matching DLL.
+
+**[libusb](https://libusb.info)** and **[pyusb](https://github.com/pyusb/pyusb)**, which carry
+every byte to and from the wheel, and **[Zadig](https://zadig.akeo.ie)**, which makes binding
+WinUSB a one-minute job.
+
+**[xone](https://github.com/medusalix/xone)**, whose open implementation of Microsoft's Game
+Input Protocol made the wheel's USB traffic readable.
+
+**[Sun Valley ttk theme](https://github.com/rdbende/Sun-Valley-ttk-theme)**, rdbende, MIT, which
+makes the window look like it should.
 
 No HORI code or assets are used anywhere in this project.
 

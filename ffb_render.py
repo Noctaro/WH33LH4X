@@ -140,7 +140,7 @@ def condition_force(kind, params, state):
 
 def legacy_condition_params(kind, gain, offset=0.0, deadband=0.10):
     """
-    Reproduce wheel_profile.CONDITION_GAINS behaviour exactly, as ConditionParams.
+    The synthetic conditions fitted to this wheel, as ConditionParams.
 
     CONSTRAINT: offset is the spring's centre and applies to the spring alone. Damper,
     friction and inertia react to velocity or acceleration, which have no centre, and
@@ -154,6 +154,37 @@ def legacy_condition_params(kind, gain, offset=0.0, deadband=0.10):
     return ConditionParams(offset=centre, pos_coeff=gain, neg_coeff=gain,
                            pos_saturation=1.0, neg_saturation=1.0,
                            deadband=0.0)
+
+
+class CentringLaw(object):
+    """The tuned Linux spring: linear spring, a floor faded in from centre, and a damper."""
+
+    # Velocity is sampled per input report and refreshed after STALE, as in
+    # evidence/gip_wheel_driver.py, so the smoothing does not depend on the loop rate.
+    STALE = 0.02
+    FLOOR_RAMP = 0.05       # distance over which the floor fades in; see evidence/RAW_USB.md
+
+    def __init__(self):
+        self.state = WheelState()
+        self._fed = None
+
+    def observe(self, position, now, fresh=True):
+        """Feed the position every tick; fresh means it came from a new input report."""
+        if fresh or self._fed is None or now - self._fed > self.STALE:
+            self.state.update(position, now)
+            self._fed = now
+
+    def force(self, spring, damper, floor):
+        state = self.state
+        centring = condition_force("spring", legacy_condition_params("spring", spring), state)
+        if floor:
+            ramp = floor * math.tanh(abs(state.position) / self.FLOOR_RAMP)
+            if abs(centring) < ramp:
+                centring = -ramp if state.position > 0 else ramp
+        if damper:
+            centring += condition_force("damper", legacy_condition_params("damper", damper),
+                                        state)
+        return centring
 
 
 # ---------------------------------------------------------------------------
@@ -189,11 +220,11 @@ def periodic_force(shape, magnitude, offset, phase_deg, period_s, elapsed_s):
 
 
 # How a game's direction field is read: "sin", "span" or "sign". Set live from tune.json.
-# See docs/tuning.md#how-dir_mode-reads-a-games-direction-field.
+# See docs/development.md#how-dir_mode-reads-a-games-direction-field.
 DIRECTION_MODE = "sin"
 
 # MEASURED: the span DiRT 4 uses, dirx 8191 (90 deg) to 16383 (180 deg).
-# See docs/tuning.md#how-dir_mode-reads-a-games-direction-field.
+# See docs/development.md#how-dir_mode-reads-a-games-direction-field.
 SPAN_LOW = 8191.0
 SPAN_HIGH = 16383.0
 SPAN_CENTRE = (SPAN_LOW + SPAN_HIGH) / 2.0        # 12287
@@ -370,7 +401,7 @@ class EffectMixer(object):
     Every effect the game has loaded, and their sum.
 
     CONSTRAINT: needs vJoy 2.2.0 or newer. Older builds report effect block index 1 for
-    everything, and this dictionary collapses to one entry. See docs/vjoy.md.
+    everything, and this dictionary collapses to one entry. See requirements.txt.
 
     Every effect renders in software and sums into one command, including conditions the
     firmware could run natively: the motor is driven through one held constant force effect,

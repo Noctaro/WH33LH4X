@@ -1,0 +1,16 @@
+{
+  "name": "RC car",
+  "notes": "No game force: the tuned Linux spring that centres the wheel for v3xctrl.",
+  "tune": {
+    "strength": 0.0,
+    "invert": false,
+    "dir_mode": "sin",
+    "max_force": 1.0,
+    "min_force": 0.0,
+    "spring": 0.25,
+    "damper": 0.08,
+    "friction": 0.0,
+    "centring": "tuned",
+    "centring_floor": 0.05
+  }
+}
