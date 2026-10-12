@@ -181,8 +181,8 @@ GAMES.md's status table, so it is edited first and the table is regenerated with
 own tuning, add a profile in `profiles/`.
 
 Keep GAMES.md to what a user does: the steps, the values, and what is still wrong. Measurements
-belong in [tuning.md](tuning.md) or [hardware.md](hardware.md), and unknowns stay unknowns,
-because a blank is more useful than a guess.
+belong in [Measured game values](#measured-game-values) or [hardware.md](hardware.md), and
+unknowns stay unknowns, because a blank is more useful than a guess.
 
 ```markdown
 ## Game name
@@ -211,6 +211,118 @@ Four things are worth measuring before writing any of it:
   correlation means nothing.
 - **Which in-game sliders actually do something.** Some do nothing until the device is
   correctly classified.
+
+## Measured game values
+
+What GAMES.md, docs/tuning.md and the profiles rest on. User pages keep the steps; the
+measurements are here.
+
+### How dir_mode reads a game's direction field
+
+A force arrives with a magnitude and a direction, and games disagree about which of the two
+carries the sign. Getting this wrong rectifies the output: the wheel pulls one way and never
+centres, while kerbs and gravel still feel correct, which is what makes it hard to spot.
+
+| Mode | Reads the field as |
+|---|---|
+| `sin` | A true polar angle, taking the X component. Correct for a game that points forces around a full circle |
+| `span` | A steering axis across the 90 to 180 degree quarter circle, interpolating between the ends |
+| `sign` | The same two directions with no interpolation, so nothing nulls out halfway |
+
+#### What was measured
+
+Sending cartesian +X through DirectInput to vJoy arrives as `DirX=8191`, a quarter of 32768, so
+the field is a full circle in 32768 steps and +X sits at 90 degrees. Sending -X arrives as 8191
+as well, because DirectInput normalises a single axis cartesian vector and the sign cannot
+survive that. **For a cartesian sender the sign travels in the magnitude**, and `+3000` and
+`-3000` round trip exactly.
+
+That is not the only convention. A game may send a positive magnitude and point it with a polar
+angle, flipping two angles to mean left and right. DiRT 4 does this, and not at 0 and 180 as
+expected but between **90 and 180**. Measured over one session:
+
+```
+8191  (90 deg)  x11780      <- one direction
+16383 (180 deg) x2990       <- the other
+12287 (135 deg) x29, then a long tail of ones and twos
+```
+
+Those two values are about 99% of every packet, and the 1253 others are transient sweeps
+between them, which is why the field first looked like a continuous axis. Both dominant values
+are non-negative under sine, since sin(90) is +1 and sin(180) is 0, so **a polar reading
+rectifies this game no matter how carefully the boundary is handled**. The quarter circle
+contains no negative sine to find.
+
+Hence a mode rather than a fix: both conventions are real and one wheel meets both. It is read
+live from `tune.json`, so a game that resends its direction every tick switches over within
+milliseconds. The alternative was a relaunch per guess, and each guess costs a game load and a
+drive back to the corner.
+
+`span` polarity was measured, not chosen. With the other sign, force correlated **+0.365** with
+steering angle, pushing deeper into the turn instead of back out of it.
+
+### The gain stage the software cannot see
+
+The wheel holds a force feedback strength setting of its own, in the **HORI FFB RWD-Devicemanager
+für Xbox Series X Series S** app from the Microsoft Store. It is the HORI app that can talk to
+the wheel in Xbox mode; the other HORI apps cannot. **It is driven with the wheel itself and
+does not respond to keyboard or mouse**, which is confusing the first time you open it.
+
+Nothing in this project can read or change that setting, and it sits above everything in
+`tune.json`. Measured 2026-08-26: at a fixed commanded force of `0.30`, the wheel travelled
+**0.099** at strength 8, **0.029** at strength 1, and **0.106** back at 8 again. About 3.5x,
+from identical software settings.
+
+If two machines feel different with the same settings, that is the first place to look.
+
+Those numbers were measured through `Windows.Gaming.Input`. Whether the setting still applies
+over raw USB is unmeasured, and while WinUSB is bound the HORI app cannot reach the wheel at
+all, so set it before binding and note what it is.
+
+### Where the numbers came from
+
+`min_force` comes from the breakaway measurement in
+[hardware.md](hardware.md#stiction-and-positions-the-wheel-will-not-leave), the smallest force
+that moves the wheel at all. The per-game values live in `profiles/`; what was measured to
+arrive at them is here.
+
+#### DiRT 4
+
+At `strength: 0.2`, `max_force: 0.45`, the game asked for the full ±1.000 and the wheel got
+±0.200. Across 1699 non-zero samples, 10.0% fell below breakaway and 0.3% hit the ceiling. So
+the bottom of the range is not the problem and the headroom is at the top, which is why raising
+`strength` is the change that matters and `min_force: 0.01` is a small one.
+
+`invert: true` was measured with our own output at zero and the car driving: DiRT 4's force
+points the same way as the steering angle, 140 samples, mean magnitude 0.596, 96% matching
+sign, symmetric on both sides. Applied unchanged that is positive feedback, and the wheel runs
+away into whatever corner it is turned into. Over raw USB the same setting was confirmed on
+2026-09-24: with `invert: true` the output opposed steering in 186 of 209 strong ticks.
+
+The game sends friction at roughly the same rate as constant force, 13,970 operations against
+13,950 over 374 telemetry samples, with two spring and two damper operations and no periodics.
+An earlier session recorded constant force only, and the likeliest explanation is that it
+predates registering vJoy as a wheel, which changes the profile the game hands out. Untested
+either way.
+
+### DiRT 4's device id
+
+`type="wheel"` is the part that matters. The GUID is your device's PID and VID concatenated,
+then `504944564944`, which is ASCII for `PIDVID`. vJoy is `VID_1234` `PID_BEAD`, hence
+`{BEAD1234-...}`. To read your own IDs:
+
+```powershell
+Get-ChildItem "HKCU:\System\CurrentControlSet\Control\MediaProperties\PrivateProperties\Joystick\OEM" |
+  ForEach-Object { "{0} -> {1}" -f $_.PSChildName, (Get-ItemProperty $_.PSPath).OEMName }
+```
+
+On Linux, Feral's port sends one constant force; the Windows version under Proton also sends
+friction, spring and damper, as it does on Windows.
+
+### Automobilista 2
+
+What we send is clean. Measured against `logs/vjoy_bridge_20260827_030410.log`, the steering
+fed to vJoy is the wheel position exactly, with no throttle term in it, at every position.
 
 ## What is where
 

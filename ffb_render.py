@@ -220,11 +220,11 @@ def periodic_force(shape, magnitude, offset, phase_deg, period_s, elapsed_s):
 
 
 # How a game's direction field is read: "sin", "span" or "sign". Set live from tune.json.
-# See docs/tuning.md#how-dir_mode-reads-a-games-direction-field.
+# See docs/development.md#how-dir_mode-reads-a-games-direction-field.
 DIRECTION_MODE = "sin"
 
 # MEASURED: the span DiRT 4 uses, dirx 8191 (90 deg) to 16383 (180 deg).
-# See docs/tuning.md#how-dir_mode-reads-a-games-direction-field.
+# See docs/development.md#how-dir_mode-reads-a-games-direction-field.
 SPAN_LOW = 8191.0
 SPAN_HIGH = 16383.0
 SPAN_CENTRE = (SPAN_LOW + SPAN_HIGH) / 2.0        # 12287
@@ -401,7 +401,7 @@ class EffectMixer(object):
     Every effect the game has loaded, and their sum.
 
     CONSTRAINT: needs vJoy 2.2.0 or newer. Older builds report effect block index 1 for
-    everything, and this dictionary collapses to one entry. See docs/vjoy.md.
+    everything, and this dictionary collapses to one entry. See requirements.txt.
 
     Every effect renders in software and sums into one command, including conditions the
     firmware could run natively: the motor is driven through one held constant force effect,
