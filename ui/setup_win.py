@@ -8,7 +8,7 @@ VJOY_DEVICE = 1
 VJOY_AXES = (("X", 0x30), ("Y", 0x31), ("Z", 0x32), ("Rx", 0x33), ("Ry", 0x34))
 
 # CONSTRAINT: 2.2.0 is the floor. Below it concurrent effects share block index 1 and collapse
-# into one, silently. See docs/vjoy.md.
+# into one, silently. See requirements.txt.
 VJOY_MIN_VERSION = 0x0220
 VJOY_DOWNLOAD = "https://github.com/BrunnerInnovation/vJoy"
 ZADIG_DOWNLOAD = "https://zadig.akeo.ie"
@@ -67,23 +67,15 @@ def vjoy_check():
                 "should not happen in the packaged bundle. Re-extract the download.")
     if dll is None or not dll.vJoyEnabled():
         return (False, "not installed", "vJoy is not installed",
-                "This bridge presents your wheel to games as a vJoy virtual\n"
-                "device, so vJoy has to be installed first.\n\n"
-                "Install vJoy 2.2.2.0 from:\n  %s\n\n"
-                "Then open 'Configure vJoy' and enable device 1." % VJOY_DOWNLOAD)
+                "Games see your wheel as a vJoy device. Install vJoy 2.2.2.0 from:\n  %s\n\n"
+                "Then set up device 1 as docs/vjoy.md describes." % VJOY_DOWNLOAD)
 
     raw = dll.GetvJoyVersion()
     if raw and raw < VJOY_MIN_VERSION:
         return (False, "version %s is too old" % vjoy_version_text(raw),
                 "vJoy %s is too old" % vjoy_version_text(raw),
                 "Install 2.2.2.0 from:\n  %s\n\n"
-                "Below 2.2.0 every concurrent force-feedback effect shares block\n"
-                "index 1, so a game sending a spring, a damper and a road texture\n"
-                "has all three collapse into one.\n\n"
-                "That failure is silent. Nothing errors, one effect at a time still\n"
-                "tests fine, and the only symptom is that the wheel feels wrong in a\n"
-                "real game."
-                % VJOY_DOWNLOAD)
+                "Older versions mix up effects that play at the same time." % VJOY_DOWNLOAD)
 
     from pyvjoy.constants import (
         VJD_STAT_BUSY,
@@ -99,41 +91,33 @@ def vjoy_check():
     if st == VJD_STAT_MISS:
         return (False, "device 1 missing",
                 "vJoy is installed but device 1 is not configured",
-                "Open 'Configure vJoy' from the Start menu, tick device 1, and give it:\n\n"
+                "Open 'Configure vJoy' from the Start menu, pick device 1 and set:\n\n"
                 "  Axes:    X, Y, Z, Rx, Ry\n"
-                "  Buttons: a handful, 12 is plenty\n"
+                "  Buttons: 10\n"
                 "  Force Feedback: tick 'Enable Effects'\n\n"
-                "Then press Apply. The bridge feeds device 1 specifically.")
+                "Tick 'Enable vJoy', then press Apply.")
     if st == VJD_STAT_BUSY:
         return (False, "device 1 busy",
                 "Another program already owns vJoy device 1",
-                "Something else is holding the device, often a bridge left running from an "
-                "earlier session, or another vJoy feeder.\n\n"
-                "Close it and press Stop here, then try again.")
+                "Close other programs that use vJoy, press Stop here, then try again.")
     if st not in (VJD_STAT_FREE, VJD_STAT_OWN):
         return (False, "unknown status %s" % st, "vJoy returned an unknown status",
-                "GetVJDStatus(%d) returned %r. Treat the device as unusable until it reads "
-                "free or owned." % (VJOY_DEVICE, st))
+                "Restart the PC. If it stays, reinstall vJoy 2.2.2.0.")
 
     # The device exists. Now the two configuration mistakes that still let it exist.
     if not dll.IsDeviceFfb(VJOY_DEVICE):
         return (False, "device 1 has no force feedback",
                 "Device 1 exists but force feedback is switched off",
-                "In 'Configure vJoy', select device 1 and tick 'Enable Effects' under Force "
-                "Feedback, then Apply.\n\n"
-                "Without it steering and pedals still work, so the game looks fine, and the "
-                "wheel simply never pushes back.")
+                "In 'Configure vJoy', pick device 1, tick 'Enable Effects' under Force "
+                "Feedback, then press Apply. Without it the wheel has no force.")
 
     missing = [name for name, usage in VJOY_AXES
                if not dll.GetVJDAxisExist(VJOY_DEVICE, usage)]
     if missing:
         return (False, "device 1 missing %s" % ", ".join(missing),
                 "Device 1 is missing axes",
-                "In 'Configure vJoy', select device 1 and enable these axes: %s\n\n"
-                "Missing: %s\n\n"
-                "A game binds steering, throttle and brake to specific axes, so an absent one "
-                "cannot be bound at all." % (", ".join(n for n, _ in VJOY_AXES),
-                                             ", ".join(missing)))
+                "In 'Configure vJoy', pick device 1, tick these axes, then press Apply: "
+                "%s" % ", ".join(missing))
 
     where = "ours" if st == VJD_STAT_OWN else "free"
     return (True, "OK, device 1 %s, v%s" % (where, vjoy_version_text(raw)), None, None)
